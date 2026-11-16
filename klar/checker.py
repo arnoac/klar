@@ -399,7 +399,7 @@ class Checker:
                                  "variant names are global and must be unique across all enums and structs")
                     self.variants[v.name] = VariantInfo(d.name, v.name, [(f, self.to_type(t, tps)) for f, t in v.fields],
                                                         d.tparams)
-                    self.enums[d.name].append(v.name)
+                    self.enums.setdefault(d.name, []).append(v.name)
                     v.module = d.module
                     self.decl_nodes[v.name] = v
             elif d.kind == "Trait":

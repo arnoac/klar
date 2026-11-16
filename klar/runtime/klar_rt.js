@@ -355,44 +355,82 @@ function $show(v, t, nested) {
 }
 
 // ---------------------------------------------------------------- JavaScript interop (extern "js:...")
-// Values are converted by the declared Klar type, like Python interop.
+// Values are converted by the declared Klar type, like Python interop. Nothing JavaScript-shaped leaks into
+// Klar: null/undefined arrive only as None (an Option), a thrown error only as Err (a Result), a Promise only
+// through a `uses io` extern, and a value of the wrong shape stops the program with E407.
 function $to_js(v, t) {
   switch (t.k) {
     case "l": return $arr(v).map(x => $to_js(x, t.e));
     case "m": { const o = {}; for (const [k, x] of $entries(v)) o[k] = $to_js(x, t.v); return o; }
-    case "st": { const o = {}; for (const [name, ft] of t.fs) o[name] = $to_js(v[name], ft); return o; }
+    case "st": {
+      const o = {};
+      for (const [name, ft] of t.fs) { const x = $to_js(v[name], ft); if (x !== undefined) o[name] = x; }
+      return o;
+    }
     case "en":
-      if (t.n === "Option") return v.t === "Some" ? $to_js(v.f[0], t.vs.Some[0][1]) : null;
+      if (t.n === "Option") return v.t === "Some" ? $to_js(v.f[0], t.vs.Some[0][1]) : undefined;
       return v.f.length ? { tag: v.t, values: v.f.map((x, i) => $to_js(x, t.vs[v.t][i][1])) } : v.t;
-    case "fn": return v;
+    case "fn": {
+      if (!t.ps) return v;
+      const what = "a Klar function called from JavaScript";
+      if (t.io) return (...xs) => v(...t.ps.map((p, i) => $from_js(xs[i], p, what))).then(r => $to_js(r, t.r));
+      return (...xs) => $to_js(v(...t.ps.map((p, i) => $from_js(xs[i], p, what))), t.r);
+    }
     default: return v;
   }
 }
-function $from_js(v, t, what) {
-  const bad = () => { throw new KlarError("E407", 0, 0, `${what} returned ${JSON.stringify(v)}, which is not a ${t.k}`); };
+const $js_kinds = { i: "int", f: "float", b: "bool", s: "str", l: "list", m: "map", st: "struct", en: "enum", fn: "function", x: "extern type" };
+function $js_show(v) {
+  if (v === undefined) return "undefined";
+  if (typeof v === "function") return "a function";
+  if (typeof v === "bigint") return String(v);
+  try { const j = JSON.stringify(v); return j === undefined ? String(v) : (j.length > 80 ? j.slice(0, 77) + "..." : j); }
+  catch (_) { return String(v); }
+}
+function $js_err(e) { return e instanceof Error ? (e.name && e.name !== "Error" ? e.name + ": " : "") + e.message : $js_show(e); }
+function $js_sync(v, what, l, c) {
+  if (v !== null && (typeof v === "object" || typeof v === "function") && typeof v.then === "function")
+    $fail("E407", l, c, `${what} returned a Promise, so it does something asynchronous: declare it with \`uses io\``);
+  return v;
+}
+function $from_js(v, t, what, l = 0, c = 0) {
+  const bad = () => {
+    const want = t.k === "st" || t.k === "en" || t.k === "x" ? `${$js_kinds[t.k]} ${t.n}` : $js_kinds[t.k] || t.k;
+    const hint = v === null || v === undefined ? "; if it can be missing, declare it as Option[...]" : "";
+    throw new KlarError("E407", l, c, `${what} returned ${$js_show(v)}, which is not ${/^[aeiou]/.test(want) ? "an" : "a"} ${want}${hint}`);
+  };
   switch (t.k) {
-    case "i": if (typeof v === "bigint") return $big(v, 0, 0); if (!Number.isInteger(v)) bad(); return $num2int(v);
+    case "i": if (typeof v === "bigint") return $big(v, l, c); if (!Number.isInteger(v)) bad(); return $num2int(v);
     case "f": if (typeof v !== "number") bad(); return v;
     case "b": if (typeof v !== "boolean") bad(); return v;
     case "s": if (typeof v !== "string") bad(); return v;
     case "u": return undefined;
-    case "l": if (!Array.isArray(v)) bad(); return $L(v.map(x => $from_js(x, t.e, what)));
+    case "l": if (!Array.isArray(v)) { if (v == null || typeof v[Symbol.iterator] !== "function" || typeof v === "string") bad(); v = [...v]; }
+      return $L(v.map(x => $from_js(x, t.e, what, l, c)));
     case "m": {
-      if (v instanceof Map) return $M([...v.entries()].map(([k, x]) => [k, $from_js(x, t.v, what)]));
+      if (v instanceof Map) return $M([...v.entries()].map(([k, x]) => [k, $from_js(x, t.v, what, l, c)]));
       if (typeof v !== "object" || v === null) bad();
-      return $M(Object.entries(v).map(([k, x]) => [k, $from_js(x, t.v, what)]));
+      return $M(Object.entries(v).map(([k, x]) => [k, $from_js(x, t.v, what, l, c)]));
     }
     case "st": {
       if (typeof v !== "object" || v === null) bad();
       const C = $structs[t.n];
-      return new C(...t.fs.map(([name, ft]) => $from_js(v[name], ft, what)));
+      return new C(...t.fs.map(([name, ft]) => $from_js(v[name], ft, `${what} (field \`${name}\`)`, l, c)));
     }
     case "en":
-      if (t.n === "Option") return v === null || v === undefined ? $None : $Some($from_js(v, t.vs.Some[0][1], what));
-      if (t.n === "Result") return $Ok($from_js(v, t.vs.Ok[0][1], what));
+      if (t.n === "Option") return v === null || v === undefined ? $None : $Some($from_js(v, t.vs.Some[0][1], what, l, c));
+      if (t.n === "Result") return $Ok($from_js(v, t.vs.Ok[0][1], what, l, c));
       if (typeof v === "string" && t.vs[v] && t.vs[v].length === 0) return new KE(v, []);
-      if (v && t.vs[v.tag]) return new KE(v.tag, v.values.map((x, i) => $from_js(x, t.vs[v.tag][i][1], what)));
+      if (v && t.vs[v.tag]) return new KE(v.tag, v.values.map((x, i) => $from_js(x, t.vs[v.tag][i][1], what, l, c)));
       bad();
+    case "x": if (v === null || v === undefined) bad(); return v;
+    case "fn": {
+      if (typeof v !== "function") bad();
+      if (!t.ps) return v;
+      const call = (...xs) => v(...xs.map((x, i) => $to_js(x, t.ps[i])));
+      if (t.io) return async (...xs) => $from_js(await call(...xs), t.r, what, l, c);
+      return (...xs) => $from_js($js_sync(call(...xs), what, l, c), t.r, what, l, c);
+    }
   }
   return v;
 }

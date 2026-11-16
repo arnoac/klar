@@ -1,0 +1,123 @@
+// Markdown notes: write on the left, see the formatted note on the right. Notes are kept in the browser.
+//
+// It uses two npm packages through typed bindings (npm/markdown.klar): `marked` turns Markdown into HTML and
+// `dompurify` strips scripts out of that HTML, so even a note containing <script> or onerror= is safe to show.
+//
+//   klar install                                       fetches the packages named in klar.toml [npm]
+//   klar dev app.klar                                  http://127.0.0.1:8000
+//   klar build --target web app.klar                   app.html: one file, the packages embedded, works offline
+//   klar test app.klar
+
+use std.ui { Next, ui_run, ui_save, ui_load }
+use std.html { Html, div, textarea, text, raw_html, class, value, placeholder, attr, on_input, on_click, button }
+use std.layout { Sm, Md, Tablet, container, row, stack, grid, spread, gap, cols_at, max_width, Wide, spacer }
+use std.kit { Secondary, Ghost, Neutral, variant, badge, panel, empty_state }
+use std.json { json_encode, json_decode }
+use npm.markdown { render_markdown }
+
+struct Page { body: str }
+
+struct Model {
+  pages: list[Page],
+  open: int,             // index into pages (notes)
+}
+
+enum Msg {
+  Edit(text: str),
+  Open(index: int),
+  Add,
+  Delete,
+}
+
+fn welcome() -> str {
+  return "# Welcome\n\nThis note is **Markdown**. Edit it on the left.\n\n- lists\n- `code`\n- [links](https://example.com)\n\n<img src=x onerror=\"alert('not with DOMPurify')\"> The broken image here tried to run a script; it was removed."
+}
+
+fn start(saved: Option[str]) -> Model {
+  let pages: list[Page] = match saved {
+    Some(s) => unwrap_or(json_decode(s), []),
+    None => [],
+  }
+  return Model(if len(pages) == 0 then [Page(welcome())] else pages, 0)
+}
+
+fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
+  let next = match msg {
+    Edit(t) => m with (pages: set_at(m.pages, m.open, Page(t))),
+    Open(i) => m with (open: i),
+    Add => Model(push(m.pages, Page("# New note\n\n")), len(m.pages)),
+    Delete => remove_open(m),
+  }
+  return Next(next, [ui_save("notes", json_encode(next.pages))])
+}
+
+fn remove_open(m: Model) -> Model {
+  let rest = slice(m.pages, 0, m.open) + slice(m.pages, m.open + 1, len(m.pages))
+  if len(rest) == 0 {
+    return Model([Page("# New note\n\n")], 0)
+  }
+  return Model(rest, min(m.open, len(rest) - 1))
+}
+
+// The first line of a note, without Markdown heading marks.
+fn title(n: Page) -> str {
+  let first = trim(unwrap_or(get(split(trim(n.body), "\n"), 0), ""))
+  let t = trim(replace(first, "#", ""))
+  return if t == "" then "Untitled" else t
+}
+
+fn word_count(s: str) -> int {
+  return len(filter(split(replace(s, "\n", " "), " "), fn(w) => trim(w) != ""))
+}
+
+fn view(m: Model) -> Html[Msg] {
+  let note = unwrap_or(get(m.pages, m.open), Page(""))
+  let tabs = mapi(m.pages, fn(i, n) => button([variant(if i == m.open then Secondary else Ghost), on_click(Open(i))], [text(title(n))]))
+  return container([max_width(Wide), gap(Md)], [
+    spread([], [
+      row([gap(Sm)], [text("Markdown notes"), badge([], Neutral, str(len(m.pages)) + (if len(m.pages) == 1 then " note" else " notes"))]),
+      row([gap(Sm)], [
+        button([variant(Secondary), on_click(Add)], [text("New note")]),
+        button([variant(Ghost), on_click(Delete)], [text("Delete")]),
+      ]),
+    ]),
+    row([gap(Sm)], tabs),
+    grid([cols_at(Tablet, 2), gap(Md)], [
+      panel([], "Write", str(word_count(note.body)) + " words", [
+        textarea([class("editor"), value(note.body), placeholder("# Title"), on_input(fn(t) => Edit(t)),
+          attr("rows", "18"), attr("spellcheck", "false")], []),
+      ], []),
+      panel([], "Preview", "rendered by marked, cleaned by DOMPurify", [
+        div([class("preview")], [raw_html(render_markdown(note.body))]),
+      ], []),
+    ]),
+  ])
+}
+
+fn mapi[T, R](xs: list[T], f: fn(int, T) -> R) -> list[R] {
+  var out: list[R] = []
+  for i in range(0, len(xs)) {
+    out = push(out, f(i, xs[i]))
+  }
+  return out
+}
+
+fn main() uses io {
+  ui_run(Next(start(ui_load("notes")), []), update, view)
+}
+
+test "titles come from the first line" {
+  assert title(Page("# Shopping\n\n- milk")) == "Shopping"
+  assert title(Page("   ")) == "Untitled"
+}
+
+test "deleting the last note leaves a fresh one" {
+  let m = remove_open(Model([Page("a")], 0))
+  assert len(m.pages) == 1 and m.open == 0
+}
+
+test "notes survive a save and load" {
+  let m = start(Some(json_encode([Page("# A"), Page("# B")])))
+  assert len(m.pages) == 2
+  assert len(start(None).pages) == 1
+}

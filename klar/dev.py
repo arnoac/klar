@@ -91,7 +91,8 @@ class Entry:
             is_ui = any(d.kind == "Extern" and d.target == "klar:ui.start" for d in prog.decls)
             self.kind = "web" if is_ui else "node"
             try:
-                js = compile_to_js(prog, self.path, self.kind)
+                out = os.path.join(os.path.dirname(self.path) if self.kind == "web" else self.tmp, self.stem + ".x")
+                js = compile_to_js(prog, self.path, self.kind, out)
             except KlarError as e:
                 errors = [e]
         if errors:
@@ -104,7 +105,7 @@ class Entry:
             return "\n".join(out)
         if self.kind == "web":
             self.out = os.path.join(os.path.dirname(self.path), self.stem + ".html")
-            text = WEB_PAGE.format(title=self.stem, js=js.replace("</script", "<\\/script"))
+            text = WEB_PAGE.format(title=self.stem, head=getattr(js, "head", ""), js=js.replace("</script", "<\\/script"))
         else:
             self.out = os.path.join(self.tmp, self.stem + ".mjs")
             text = js

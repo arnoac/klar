@@ -98,6 +98,18 @@ APP_DIR=examples/apps/todo_web node todo.mjs              # then open http://127
 
 (`./klarc` is a wrapper for `python3 -m klar`.)
 
+npm packages work in JavaScript builds with typed declarations, and never hand Klar code a null or an
+exception (see SPEC "JavaScript interop and npm" and `examples/apps/markdown_notes`):
+
+```
+./klarc add --npm marked                 # pins the exact version in klar.toml [npm]; install scripts never run
+./klarc bind marked                      # npm/marked.klar: extern declarations generated from marked's .d.ts
+```
+
+```klar
+extern "js:marked.parse" fn markdown_to_html(markdown: str) -> str
+```
+
 For editors, `./klarc lsp` is a language server: errors as you type with quick fixes, hover types, go to
 definition, rename and completion. Setup for VS Code, Neovim and Helix is in [editors/README.md](editors/README.md).
 
@@ -119,7 +131,9 @@ definition, rename and completion. Setup for VS Code, Neovim and Helix is in [ed
 | `klar/dev.py` | `klar dev`: rebuild on save, reload the browser, run the backend |
 | `klar/tasks.py` | tasks and channels in the interpreter (`std.task`) |
 | `klar/lsp.py` | `klar lsp`: the language server (diagnostics, hover, definitions, rename, completion) |
-| `klar/pkg.py` | packages: `klar.toml`, `klar.lock`, `klar new/add/install/update` |
+| `klar/pkg.py` | packages: `klar.toml`, `klar.lock`, `klar new/add/install/update`, npm packages via `[npm]` |
+| `klar/npm.py` | npm packages in JavaScript builds: resolving, Node imports, embedding ES modules in web pages, `klar bind` |
+| `klar/tools/dts2klar.mjs` | `klar bind`: TypeScript declarations to Klar externs (uses the TypeScript compiler) |
 | `klar/fmt.py` | `klar fmt`: one canonical layout, checked to keep the exact tokens |
 | `klar/runtime/*.js` | JavaScript runtime: values, standard library on Node, browser UI runtime |
 | `klar/runtime/klar_rt.h` | C runtime: lists, maps, strings, checked arithmetic, errors |
@@ -127,7 +141,7 @@ definition, rename and completion. Setup for VS Code, Neovim and Helix is in [ed
 | `klar/std/`, `klar/stdpy/` | standard library (Klar modules and their Python implementations) |
 | `klar/SPEC.md` | the complete language reference |
 | `examples/` | 7 small programs with expected output |
-| `examples/apps/` | component showcase (`showcase`), Klar Board (multi-user task board with logins and live updates, ~1,400 lines), full-stack todo app, server-rendered guestbook, todo JSON API, notes CLI, Python interop demo |
+| `examples/apps/` | component showcase (`showcase`), Klar Board (multi-user task board with logins and live updates, ~1,400 lines), full-stack todo app, server-rendered guestbook, todo JSON API, notes CLI, Python interop demo, Markdown notes (npm packages `marked` and `dompurify` in the browser and on Node) |
 | `editors/` | VS Code extension (highlighting + language server) and Neovim / Helix setup |
 | `bench/` | benchmarks against C, Go and Python (`python3 bench/run.py`), and the Benchmarks Game programs (`bench/benchmarksgame`) |
-| `tests/` | 121 tests: `python3 -m unittest discover tests` |
+| `tests/` | 137 tests: `python3 -m unittest discover tests` |

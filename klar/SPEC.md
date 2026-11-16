@@ -156,6 +156,8 @@ geometry = { path = "../geometry" }
 textkit = { git = "https://github.com/someone/textkit", tag = "v1.2.0" }   # or rev = / branch =
 [python]
 requests = "2.32.3"                                                        # for extern functions
+[npm]
+marked = "18.2.0"
 ```
 
 `use textkit { shout }` loads the dependency's `lib.klar`; `use textkit.case { ... }` its `case.klar`.
@@ -180,13 +182,13 @@ object with those attributes), variant = `("Variant", field1, ...)` or `"Variant
 extern type = the object. With a `Result[T, str]` result a Python exception becomes `Err("Type: message")`,
 else E407 (also for a value of the wrong type). Declare `uses io` for side effects: Klar trusts the signature.
 
-### JavaScript interop
+### JavaScript interop and npm
 
-In programs compiled with `--target node` or `--target web`, an extern target `"js:module.attribute"` calls
-JavaScript: `extern "js:node:crypto.randomUUID" fn uuid() -> str uses io`; `"js:globalThis.Math.hypot"`
-reaches globals. Values convert like Python interop (lists are arrays, maps and structs are objects, `None`
-is null); a returned Promise is awaited; a thrown exception becomes `Err` when the result is
-`Result[T, str]`. JavaScript externs fail with E407 in `klar run`.
+JavaScript builds call `"js:..."` targets: `"js:node:crypto.randomUUID"`, `"js:globalThis.Math.hypot"`, npm
+packages (`"js:marked.parse"`, `"js:new pkg.Class"`), first-argument members (`"js:.add"`, `"js:get .size"`,
+`set`). Values convert by type; null arrives only as `None`, a throw only as `Err` (if declared
+`Result[T, str]`), a Promise only with `uses io`, else E407. `klar add --npm marked` pins packages in
+`[npm]`; `klar bind marked` writes `npm/marked.klar` from `.d.ts` types.
 
 ## 5. Statements
 

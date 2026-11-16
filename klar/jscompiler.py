@@ -32,10 +32,13 @@ class Ctx:
 
 
 class JSCompiler:
-    def __init__(self, prog, file, target="node"):
+    def __init__(self, prog, file, target="node", out_path=None):
         self.prog = prog
         self.file = file or "<input>"
         self.target = target
+        self.out_path = out_path
+        self.js_modules = {}        # module specifier -> alias
+        self.bundler = None
         self.c = prog.checker
         self.fns = {d.name: d for d in prog.decls if d.kind == "Fn"}
         self.externs = {d.name: d for d in prog.decls if d.kind == "Extern"}
@@ -120,7 +123,7 @@ class JSCompiler:
         parts += self.defs
         main_call = f"await {main}()" if self.fn_is_io("main") else f"{main}()"
         parts.append(f"$start(async () => {{ {main_call}; }});")
-        return "\n".join(parts) + "\n"
+        return JSOutput("\n".join(parts) + "\n", self.bundler.head() if self.bundler else "")
 
     def struct_classes(self):
         out = []
@@ -573,6 +576,8 @@ class JSCompiler:
                 return f"(await $task.{op}({', '.join(codes + [str(e.line), str(e.col)])}))"
             fn = self.extern_fn(d, e)
             codes = self.seq(self.ordered_args(e, [p for p, _ in self.c.fns[d.name].params]))
+            if d.target.startswith("js:"):
+                codes += [str(e.line), str(e.col)]
             call = f"{fn}({', '.join(codes)})"
             return f"(await {call})" if "io" in self.c.fns[d.name].effects else call
         if tk == "trait":
@@ -609,31 +614,7 @@ class JSCompiler:
         name = f"x_{d.name}"
         if target.startswith("js:"):
             self.helpers[key] = name
-            spec = target[3:]
-            if spec.startswith("globalThis."):
-                ref = spec
-            else:
-                mod, _, attr = spec.rpartition(".")
-                if not mod:
-                    self.unsupported(node, f"extern target \"{target}\"", 'use "js:module.function", e.g. "js:node:crypto.randomUUID"')
-                alias = f"$js{len(self.imports)}"
-                self.imports.append(f"import * as {alias} from {json.dumps(mod)};")
-                ref = f"{alias}.{attr}" if attr.isidentifier() else f"{alias}[{json.dumps(attr)}]"
-            is_io = "io" in sig.effects
-            ps = [f"a{i}" for i in range(len(sig.params))]
-            conv = ", ".join(f"$to_js({p}, {self.desc(self._subst(t, {}))})" for p, (_, t) in zip(ps, sig.params))
-            rt = self._subst(sig.ret, {})
-            raw = f"{'await ' if is_io else ''}{ref}({conv})"
-            what = json.dumps(f"extern `{d.name}`")
-            if isinstance(rt, TCon) and rt.name == "Result":
-                inner = self.desc(rt.args[0])
-                body = (f"try {{ return $Ok($from_js({raw}, {inner}, {what})); }} "
-                        f"catch (e) {{ if (e instanceof KlarError) throw e; return $Err(String(e && e.message || e)); }}")
-            else:
-                body = (f"let r; try {{ r = {raw}; }} catch (e) {{ if (e instanceof KlarError) throw e; "
-                        f"$fail(\"E407\", {node.line}, {node.col}, {what} + \" threw \" + (e && e.message || e)); }} "
-                        f"return $from_js(r, {self.desc(rt)}, {what});")
-            self.defs.append(f"{'async ' if is_io else ''}function {name}({', '.join(ps)}) {{ {body} }}")
+            self.js_extern(d, sig, name, node)
             return name
         if self.target == "web" and target.startswith(NODE_ONLY):
             self.unsupported(node, f"`{d.name}` (it needs a server: files, processes and databases are not available in "
@@ -645,6 +626,82 @@ class JSCompiler:
                              '"js:module.function" target')
         self.helpers[key] = f"$std[{json.dumps(target)}]"
         return self.helpers[key]
+
+    def js_module(self, module, node):
+        """Alias of an imported JavaScript module (npm package, node: module or local .js/.mjs file)."""
+        if module in self.js_modules:
+            return self.js_modules[module]
+        from . import npm
+        src_dir = os.path.dirname(os.path.abspath(self.file)) if self.file != "<input>" else os.getcwd()
+        try:
+            if self.target == "web":
+                if module.startswith("node:"):
+                    self.unsupported(node, f"`{module}` (a Node built-in; the browser does not have it)",
+                                     "use it in a backend built with `--target node`")
+                if module.startswith(("http:", "https:", "data:")):
+                    spec = module
+                else:
+                    self.bundler = self.bundler or npm.WebBundler()
+                    spec = self.bundler.name(npm.resolve_module(module, src_dir, npm.WEB_CONDITIONS))
+            else:
+                out_dir = os.path.dirname(os.path.abspath(self.out_path)) if self.out_path else src_dir
+                spec = npm.node_specifier(module, src_dir, out_dir)
+        except npm.NpmError as ex:
+            raise KlarError("E601", ex.msg, node.line, node.col, ex.hint, self.file)
+        alias = f"$js{len(self.js_modules)}"
+        self.js_modules[module] = alias
+        self.imports.append(f"import * as {alias} from {json.dumps(spec)};")
+        return alias
+
+    def js_extern(self, d, sig, name, node):
+        """Wrapper for `extern "js:..."`: converts arguments by their Klar types, calls, converts the result back
+        (null/undefined only as Option, a thrown error only as Err), and enforces the declared effect."""
+        from . import npm
+        op, module, path = npm.parse_target(d.target[3:])
+        n = len(sig.params)
+        ps = [f"a{i}" for i in range(n)]
+        conv = [f"$to_js({p}, {self.desc(self._subst(t, {}))})" for p, (_, t) in zip(ps, sig.params)]
+        member = lambda base, names: base + "".join(f".{x}" if x.isidentifier() else f"[{json.dumps(x)}]" for x in names)
+        form = f'"js:{op + " " if op != "call" else ""}.name"'
+        if module is None and path and path[0] != "globalThis":
+            if n == 0:
+                self.unsupported(node, f"`{d.name}`: a member target needs the object as the first parameter",
+                                 f"extern {form} fn {d.name}(obj: SomeType, ...) -> ...")
+            ref, conv = member(conv[0], path), conv[1:]
+        elif module is None:
+            ref = member("", path)[1:]
+        else:
+            src_dir = os.path.dirname(os.path.abspath(self.file)) if self.file != "<input>" else os.getcwd()
+            mod, attrs = npm.split_module(module, src_dir)
+            ref = member(self.js_module(mod, node), attrs)
+        if op == "get":
+            if conv:
+                self.unsupported(node, f"`{d.name}`: a `get` target takes only the object", f'extern "js:get .size" fn size(obj: T) -> int')
+            raw = ref
+        elif op == "set":
+            if len(conv) != 1:
+                self.unsupported(node, f"`{d.name}`: a `set` target takes the object and the new value",
+                                 f'extern "js:set .value" fn set_value(obj: T, v: str) uses io')
+            raw = f"({ref} = {conv[0]}, undefined)"
+        else:
+            raw = f"{'new ' if op == 'new' else ''}{ref}({', '.join(conv)})"
+        is_io = "io" in sig.effects
+        rt = self._subst(sig.ret, {})
+        what = json.dumps(f"extern `{d.name}`")
+        where = "$l, $c"
+        if is_io:
+            got = f"await {raw}"
+        else:
+            got = f"$js_sync({raw}, {what}, {where})"
+        if isinstance(rt, TCon) and rt.name == "Result":
+            inner = self.desc(rt.args[0])
+            body = (f"let r; try {{ r = {got}; }} catch (e) {{ if (e instanceof KlarError) throw e; return $Err($js_err(e)); }} "
+                    f"return $Ok($from_js(r, {inner}, {what}, {where}));")
+        else:
+            body = (f"let r; try {{ r = {got}; }} catch (e) {{ if (e instanceof KlarError) throw e; "
+                    f"$fail(\"E407\", {where}, {what} + \" threw \" + $js_err(e) + \" (declare the result as Result[T, str] to handle it)\"); }} "
+                    f"return $from_js(r, {self.desc(rt)}, {what}, {where});")
+        self.defs.append(f"{'async ' if is_io else ''}function {name}({', '.join(ps + ['$l = 0', '$c = 0'])}) {{ {body} }}")
 
     # ------------------------------------------------------------------ match
     def e_Match(self, e):
@@ -709,13 +766,17 @@ class JSCompiler:
         if key in self.helpers:
             return self.helpers[key]
         k = self.kind(t)
-        simple = {"int": "i", "float": "f", "bool": "b", "unit": "u", "never": "u", "str": "s", "fn": "fn"}
+        simple = {"int": "i", "float": "f", "bool": "b", "unit": "u", "never": "u", "str": "s"}
         name = f"D{len(self.helpers)}"
         self.helpers[key] = name
         if k in simple:
             self.desc_decls.append(f"const {name} = {{k: \"{simple[k]}\"}};")
         elif k == "extern":
             self.desc_decls.append(f"const {name} = {{k: \"x\", n: {json.dumps(t.name)}}};")
+        elif k == "fn":
+            t = prune(t)
+            self.desc_decls.append(f"const {name} = {{k: \"fn\", io: {'true' if t.io else 'false'}}};")
+            self.desc_fills.append(f"{name}.ps = [{', '.join(self.desc(p) for p in t.params)}]; {name}.r = {self.desc(t.ret)};")
         elif k == "list":
             self.desc_decls.append(f"const {name} = {{k: \"l\"}};")
             self.desc_fills.append(f"{name}.e = {self.desc(t.args[0])};")
@@ -831,5 +892,14 @@ class JSCompiler:
         self.unsupported(e, f"built-in `{name}`")
 
 
-def compile_to_js(prog, file, target="node"):
-    return JSCompiler(prog, file, target).compile()
+class JSOutput(str):
+    """The compiled program; `head` holds HTML (an import map of embedded npm modules) that a web page must
+    include before the program's script."""
+    def __new__(cls, text, head=""):
+        o = super().__new__(cls, text)
+        o.head = head
+        return o
+
+
+def compile_to_js(prog, file, target="node", out_path=None):
+    return JSCompiler(prog, file, target, out_path).compile()

@@ -1,0 +1,19 @@
+// Bindings for two npm packages, `marked` (Markdown to HTML) and `dompurify` (removes scripts and other
+// dangerous markup from HTML).
+//
+// `klar bind marked` and `klar bind dompurify` write the full, cautious declarations (every function `uses io`
+// and returns Result). These are the three this app needs, tightened by hand after reading the packages' docs:
+// both functions are pure and do not throw on any string, so they are plain functions that `view` may call.
+// Klar still checks the claim at run time: if one returned a Promise or threw, the program would stop with E407
+// instead of carrying on with a wrong value.
+
+// Markdown to HTML. Output is NOT safe to show: Markdown may contain raw HTML, including <script>.
+extern "js:marked.parse" fn markdown_to_html(markdown: str) -> str
+
+// Removes scripts, event handlers and javascript: links from HTML (in the browser; it needs a DOM).
+extern "js:dompurify.default.sanitize" fn sanitize_html(html: str) -> str
+
+// Safe HTML for any Markdown text, user input included.
+fn render_markdown(markdown: str) -> str {
+  return sanitize_html(markdown_to_html(markdown))
+}

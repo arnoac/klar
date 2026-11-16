@@ -1,0 +1,21 @@
+// Converts a Markdown file to an HTML page on the command line, with the same npm package the browser app uses.
+//
+//   klar install                                      fetches marked and dompurify into node_modules/
+//   klar build --target node export.klar && node export.mjs notes.md > notes.html
+//
+// DOMPurify needs a browser DOM, so this script escapes nothing and is meant for your own files only.
+
+use std.fs { fs_read }
+use npm.markdown { markdown_to_html }
+
+fn main() uses io {
+  let files = args()
+  if len(files) != 1 {
+    print("usage: node export.mjs FILE.md")
+    return
+  }
+  match fs_read(files[0]) {
+    Ok(text) => print("<!doctype html>\n<meta charset=\"utf-8\">\n" + markdown_to_html(text)),
+    Err(e) => print("cannot read " + files[0] + ": " + e),
+  }
+}

@@ -25,6 +25,7 @@ structured errors).
 | 14. Layout (v0.12) | `std.layout`: containers, rows, stacks, grids, sidebars and centring, tuned with typed options (`gap(Sm)`, `cols_at(Tablet, 3)`, `col_span`, `max_width(Narrow)`, `hide_from(Tablet)`); responsive from the phone up, a typo is a compile error, and the same HTML on every backend; Klar Board dropped its hand-written layout CSS | responsive pages and apps without writing CSS; the base the component kit builds on |
 | 15. Components (v0.13) | `std.kit`: buttons with typed variants and sizes, fields with hints and problems, select, checkbox, switch, radio group, badges, alerts, toasts, dialogs, tabs, menus, panels, empty states, stats, avatars, breadcrumbs, progress, spinners and skeletons; a slim neutral theme (light and dark) restyled by one typed `kit_theme`; roles, labels, focus and keyboard handling built in; state stays in the app model; `on_key`; type parameters usable in local annotations | modern-looking apps with no CSS; Klar Board and the todo app use it |
 | 16. Tables, combobox, drag and drop (v0.14) | `data_table` (sortable, paged, `aria-sort`), `combobox` (filter as you type, arrow keys, `aria-activedescendant`), dialogs that keep Tab inside and give focus back, `on_drag`/`on_drop`/`on_drag_end` with a drop highlight, `on_blur`, `on_press`; Klar Board cards move by dragging | the components most data apps need, with keyboard and screen reader support |
+| 17. npm packages | typed `js:` externs for npm packages: constructors, methods, properties, callbacks both ways; null only as `None`, exceptions only as `Err`, Promises only with `uses io` (else E407); `[npm]` in klar.toml with exact versions, `npm ci` against package-lock.json, install scripts off; web builds embed the packages' ES modules (still one offline .html); `klar bind` generates declarations from `.d.ts` | the npm ecosystem from Klar without giving up its guarantees; `examples/apps/markdown_notes` (marked + DOMPurify) |
 
 ## Next
 
@@ -53,6 +54,10 @@ structured errors).
 * In the interpreter, lists are copied on update, so building a large list one `push` at a time is O(n²)
   (compiled code does it in O(1) amortised). The interpreter is about 20 to 100 times slower than Python.
 * Python externs run only in the interpreter, `js:` externs only in JavaScript builds.
+* npm: `klar bind` cannot express unions of different types, intersections, `any`, tuples, rest parameters
+  or built-ins like `Date` and `Uint8Array` (it lists what it skipped), and it marks every function
+  `uses io` returning Result until you tighten it. Web builds need packages that ship ES modules (CommonJS-only
+  packages work with `--target node`).
 * No package registry yet: dependencies are git URLs or folders. Types and enum variants must be unique
   across all packages (functions you do not import are renamed automatically).
 * Native tasks are OS threads (cheap while waiting, but thousands at once cost real memory); channels are

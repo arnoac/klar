@@ -178,7 +178,7 @@ WEB_PAGE = """<!doctype html>
 </head>
 <body>
 <div id="app"></div>
-<script type="module">
+{head}<script type="module">
 {js}
 </script>
 </body>
@@ -196,21 +196,21 @@ def cmd_build_js(path, out, target, as_json, quiet=False):
         e = check_main_signature(prog, path)
         if e:
             errors = [e]
+    stem = os.path.splitext(os.path.basename(path))[0]
+    out = out or stem + (".mjs" if target == "node" else ".html")
     if not errors:
         try:
-            js = compile_to_js(prog, path, target)
+            js = compile_to_js(prog, path, target, out)
         except KlarError as e:
             errors = [e]
     if errors:
         report(errors, src, as_json)
         return 1
-    stem = os.path.splitext(os.path.basename(path))[0]
-    out = out or stem + (".mjs" if target == "node" else ".html")
     with open(out, "w", encoding="utf-8") as f:
         if target == "node":
             f.write("#!/usr/bin/env node\n" + js)
         else:
-            f.write(WEB_PAGE.format(title=stem, js=js.replace("</script", "<\\/script")))
+            f.write(WEB_PAGE.format(title=stem, head=getattr(js, "head", ""), js=js.replace("</script", "<\\/script")))
     if target == "node":
         os.chmod(out, 0o755)
     if not quiet:
@@ -300,6 +300,11 @@ def main(argv=None):
     ad.add_argument("--tag", help="a tag, e.g. v1.2.0")
     ad.add_argument("--branch", help="a branch (the lock file still pins its commit)")
     ad.add_argument("--python", metavar="NAME==VERSION", help="a pinned Python package for extern functions")
+    ad.add_argument("--npm", metavar="NAME[@VERSION]", help="a pinned npm package for \"js:\" extern functions")
+    bd = sub.add_parser("bind", help="write Klar extern declarations for an npm package from its TypeScript types")
+    bd.add_argument("module", help="the npm package (or package/subpath), e.g. marked")
+    bd.add_argument("-o", "--output", help="where to write (default: npm/NAME.klar in the project)")
+    bd.add_argument("--prefix", help="prefix for generated type names (default: the package name in PascalCase)")
     sub.add_parser("install", help="fetch the dependencies klar.toml and klar.lock name")
     up = sub.add_parser("update", help="move git dependencies to the newest commit their tag/branch allows")
     up.add_argument("names", nargs="*", help="only these dependencies (default: all)")
@@ -327,12 +332,15 @@ def main(argv=None):
         return cmd_dev(a.files, a.port)
     if a.cmd == "test":
         return cmd_test(a.file, a.json)
+    if a.cmd == "bind":
+        from . import npm
+        return npm.cmd_bind(a.module, a.output, a.prefix)
     if a.cmd in ("new", "add", "install", "update"):
         from . import pkg
         if a.cmd == "new":
             return pkg.cmd_new(a.name)
         if a.cmd == "add":
-            return pkg.cmd_add(a.name, a.path, a.git, a.rev, a.tag, a.branch, a.python)
+            return pkg.cmd_add(a.name, a.path, a.git, a.rev, a.tag, a.branch, a.python, a.npm)
         if a.cmd == "install":
             return pkg.cmd_install()
         return pkg.cmd_install(set(a.names) if a.names else "all")

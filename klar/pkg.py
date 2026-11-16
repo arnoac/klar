@@ -12,13 +12,18 @@ packages for externs, and `klar.lock`, which pins every git dependency to a comm
     [python]
     requests = "2.32.3"
 
+    [npm]
+    marked = "18.2.0"
+
 `use textkit { ... }` loads textkit's lib.klar; `use textkit.case { ... }` loads case.klar in its folder.
-Git dependencies (and their own dependencies, flattened) live in .klar/deps/, Python packages in .klar/python/.
+Git dependencies (and their own dependencies, flattened) live in .klar/deps/, Python packages in .klar/python/,
+npm packages in node_modules/ (klar writes package.json from [npm]; npm's package-lock.json pins the rest).
 
     klar new NAME                      a new package folder
     klar add NAME --path DIR           depend on a local package
     klar add NAME --git URL [--tag T | --rev R | --branch B]
     klar add --python NAME==VERSION    a pinned Python package for externs
+    klar add --npm NAME[@VERSION]      a pinned npm package for "js:" externs (latest version if none given)
     klar install                       fetch what klar.toml and klar.lock name
     klar update [NAME...]              move git dependencies to the newest commit their tag/branch allows
 """
@@ -33,6 +38,7 @@ from .errors import KlarError
 
 MANIFEST, LOCK = "klar.toml", "klar.lock"
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+EXACT_RE = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$")
 REF_KEYS = ("rev", "tag", "branch")
 
 
@@ -92,6 +98,12 @@ class Manifest:
             if not isinstance(ver, str) or not ver:
                 raise PkgError(f"{self.path}: python package `{name}` needs a version string", f'{name} = "1.2.3"')
             self.python[name] = ver
+        self.npm = {}
+        for name, ver in data.get("npm", {}).items():
+            if not isinstance(ver, str) or not EXACT_RE.match(ver):
+                raise PkgError(f"{self.path}: npm package `{name}` must be pinned to one exact version, not {ver!r}",
+                               f'{name} = "1.2.3" (ranges like ^1.2 would let a new, unreviewed release in)')
+            self.npm[name] = ver
 
     def dep_dir(self, name, project_root):
         spec = self.deps[name]
@@ -249,12 +261,14 @@ def install(root, update=None, log=None):
     log = log or (lambda m: print(m, file=sys.stderr))
     root = os.path.abspath(root)
     locked_git, locked_py = read_lock(root)
-    git_out, py_out, py_from = {}, {}, {}
+    git_out, py_out, py_from, npm_out, npm_from = {}, {}, {}, {}, {}
     seen = {}                                             # name -> (source key, declared by)
     top = Manifest(root)
     queue = [(top, n) for n in top.deps]
     for name, ver in top.python.items():
         py_out[name], py_from[name] = ver, top.name
+    for name, ver in top.npm.items():
+        npm_out[name], npm_from[name] = ver, top.name
     while queue:
         man, name = queue.pop(0)
         spec = man.deps[name]
@@ -286,8 +300,15 @@ def install(root, update=None, log=None):
                 raise PkgError(f"Python package `{pname}` is pinned to {py_out[pname]} by {py_from[pname]} "
                                f"and to {ver} by {sub.name}", "pin the same version in both klar.toml files")
             py_out[pname], py_from[pname] = ver, sub.name
+        for pname, ver in sub.npm.items():
+            if pname in npm_out and npm_out[pname] != ver:
+                raise PkgError(f"npm package `{pname}` is pinned to {npm_out[pname]} by {npm_from[pname]} "
+                               f"and to {ver} by {sub.name}", "pin the same version in both klar.toml files")
+            npm_out[pname], npm_from[pname] = ver, sub.name
     if py_out:
         _pip(root, py_out, log)
+    if npm_out:
+        _npm(root, npm_out, log)
     write_lock(root, git_out, py_out)
     return git_out, py_out
 
@@ -309,6 +330,81 @@ def _pip(root, reqs, log):
         raise PkgError("pip install failed:\n" + (r.stderr.strip() or r.stdout.strip())[-2000:])
     with open(stamp, "w", encoding="utf-8") as f:
         f.write("\n".join(want))
+
+
+NPM_NOTE = "Written by `klar install` from the [npm] table of klar.toml: edit klar.toml, not this file."
+
+
+def _npm(root, reqs, log):
+    """Install npm packages into node_modules/ with npm. klar keeps package.json's dependencies equal to the
+    [npm] table; npm's package-lock.json pins every package underneath (commit it). Install scripts are not run."""
+    import json
+    pj = os.path.join(root, "package.json")
+    meta = {}
+    if os.path.exists(pj):
+        try:
+            with open(pj, encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, ValueError) as ex:
+            raise PkgError(f"{pj}: {ex}", "fix or delete package.json; klar install writes it from klar.toml")
+    ours = meta.get("description") == NPM_NOTE or not meta
+    deps = dict(meta.get("dependencies", {})) if not ours else {}
+    deps.update(reqs)
+    if ours:
+        meta = {"private": True, "description": NPM_NOTE, "dependencies": {}}
+    meta["dependencies"] = dict(sorted(deps.items()))
+    text = json.dumps(meta, indent=2) + "\n"
+    stamp = os.path.join(root, "node_modules", ".klar-installed")
+    old = None
+    if os.path.exists(pj):
+        with open(pj, encoding="utf-8") as f:
+            old = f.read()
+    if old == text and os.path.exists(stamp):
+        with open(stamp, encoding="utf-8") as f:
+            if f.read() == text:
+                return
+    with open(pj, "w", encoding="utf-8") as f:
+        f.write(text)
+    npm = shutil.which("npm")
+    if not npm:
+        raise PkgError("npm packages need Node.js and npm, and `npm` is not on PATH", "install Node.js (it includes npm)")
+    log(f"installing npm packages: {' '.join(f'{n}@{v}' for n, v in sorted(reqs.items()))}")
+    # With a lock whose dependencies match, `npm ci` installs exactly what it pins and checks every tarball's
+    # integrity hash; otherwise `npm install` resolves the change and rewrites package-lock.json.
+    cmd = "install"
+    lock = os.path.join(root, "package-lock.json")
+    if os.path.exists(lock):
+        try:
+            with open(lock, encoding="utf-8") as f:
+                locked = json.load(f).get("packages", {}).get("", {}).get("dependencies", {})
+            if locked == meta["dependencies"]:
+                cmd = "ci"
+        except (OSError, ValueError):
+            pass
+    r = subprocess.run([npm, cmd, "--no-audit", "--no-fund", "--ignore-scripts", "--loglevel=error"],
+                       cwd=root, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise PkgError("npm install failed:\n" + (r.stderr.strip() or r.stdout.strip())[-2000:],
+                       "check the package name and version in klar.toml [npm]")
+    with open(stamp, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def npm_latest(name):
+    npm = shutil.which("npm")
+    if not npm:
+        raise PkgError("npm packages need Node.js and npm, and `npm` is not on PATH", "install Node.js (it includes npm)")
+    r = subprocess.run([npm, "view", name, "version"], capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip():
+        raise PkgError(f"npm has no package `{name}`", "check the name on https://www.npmjs.com")
+    return r.stdout.strip().splitlines()[-1].strip().strip("'")
+
+
+NPM_NAME_RE = re.compile(r"^(@[a-z0-9][\w.-]*/)?[a-z0-9][\w.-]*$")
+
+
+def _toml_key(name):
+    return name if re.match(r"^[A-Za-z0-9_-]+$", name) else _q(name)
 
 
 # ---------------------------------------------------------------------------------------------- editing klar.toml
@@ -377,7 +473,7 @@ def _root_or_fail():
     return root
 
 
-def cmd_add(name, path=None, git=None, rev=None, tag=None, branch=None, python=None):
+def cmd_add(name, path=None, git=None, rev=None, tag=None, branch=None, python=None, npm=None):
     try:
         root = _root_or_fail()
         man_path = os.path.join(root, MANIFEST)
@@ -391,6 +487,14 @@ def cmd_add(name, path=None, git=None, rev=None, tag=None, branch=None, python=N
             if not sep or not ver:
                 raise PkgError("pin an exact version: `klar add --python requests==2.32.3`")
             _set_entry(man_path, "python", pname, _q(ver))
+        elif npm:
+            at = npm.rfind("@")
+            nname, ver = (npm[:at], npm[at + 1:]) if at > 0 else (npm, "")
+            if not NPM_NAME_RE.match(nname):
+                raise PkgError(f"`{nname}` is not an npm package name", "for example: klar add --npm marked@18.2.0")
+            ver = ver or npm_latest(nname)
+            npm = f"{nname}@{ver}"
+            _set_entry(man_path, "npm", _toml_key(nname), _q(ver))
         else:
             if not name or not NAME_RE.match(name):
                 raise PkgError("the dependency name must be lower_snake_case: it is what `use NAME...` says")
@@ -415,7 +519,7 @@ def cmd_add(name, path=None, git=None, rev=None, tag=None, branch=None, python=N
         _report(ex)
         print("klar.toml was left unchanged", file=sys.stderr)
         return 1
-    print("added " + (python or name), file=sys.stderr)
+    print("added " + (python or npm or name), file=sys.stderr)
     return 0
 
 
@@ -423,9 +527,10 @@ def cmd_install(update=None):
     try:
         root = _root_or_fail()
         git, py = install(root, update)
+        npm = Manifest(root).npm
     except PkgError as ex:
         return _report(ex)
-    print(f"{len(git)} git dependencies, {len(py)} Python packages: up to date", file=sys.stderr)
+    print(f"{len(git)} git dependencies, {len(py)} Python packages, {len(npm)} npm packages: up to date", file=sys.stderr)
     return 0
 
 
