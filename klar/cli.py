@@ -155,7 +155,8 @@ def cmd_build(path, out, release, emit_c, as_json, quiet=False):
         print("error: no C compiler found (install tcc, gcc or clang)", file=sys.stderr)
         return 1
     gc = ["-DKLAR_GC"] if has_gc() else []
-    cmd = cc + gc + ["-o", out, c_path, "-lm"] + info.get("libs", []) + (["-lgc"] if gc else [])
+    extra = os.environ.get("KLAR_CFLAGS", "").split()      # e.g. sanitizers in CI: -fsanitize=address,undefined
+    cmd = cc + gc + extra + ["-o", out, c_path, "-lm"] + info.get("libs", []) + (["-lgc"] if gc else [])
     status = os.spawnvp(os.P_WAIT, cmd[0], cmd)
     t2 = time.perf_counter()
     if status != 0:

@@ -27,6 +27,7 @@ fn main() uses io {
     web_post("/echo", fn(req) => http_text(200, "got {len(req.body)}")),
     web_get("/inject", fn(req) => HttpResponse(200, ["x-evil": "a\\r\\nset-cookie: pwned=1", "x-ok": "fine"], "body")),
     web_get("/badname", fn(req) => HttpResponse(200, ["bad name": "x"], "body")),
+    web_get("/crash/:i", fn(req) => http_text(200, "item {[1, 2][unwrap(parse_int(req.params["i"]))]}")),
   ]
   match web_serve(web_port(8080), routes) { Ok(_) => {}, Err(e) => print("server error: {e}") }
 }
@@ -108,6 +109,16 @@ class HostileRequests(unittest.TestCase):
                 self.assertRegex(r, rb"^(HTTP/1\.[01] 4\d\d|)$|^HTTP/1\.[01] 4")
                 # still alive
                 self.assertEqual(wait_for(f"http://127.0.0.1:{port}/"), "home")
+                self.assertIsNone(proc.poll())
+
+    def test_a_runtime_error_in_a_handler_fails_only_that_request(self):
+        for name, argv in self.backends:
+            with self.subTest(backend=name):
+                port, proc = self.run_server(argv)
+                r = raw(port, b"GET /crash/7 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+                self.assertRegex(r, rb"^HTTP/1\.[01] 500")
+                r = raw(port, b"GET /crash/1 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+                self.assertTrue(r.endswith(b"item 2"), r)
                 self.assertIsNone(proc.poll())
 
     def test_header_injection_is_dropped(self):
@@ -309,6 +320,15 @@ class Audit(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("std.web flaw", r.stdout)
         self.assertIn("upgrade Klar", r.stdout)
+
+    def test_unreachable_advisories_are_a_warning(self):
+        osv = OsvStandIn({})
+        self.addCleanup(osv.close)
+        d = self.project()
+        env = dict(os.environ, PYTHONPATH=ROOT, KLAR_OSV_URL=osv.url, KLAR_ADVISORIES_URL="http://127.0.0.1:9/x")
+        r = subprocess.run([sys.executable, "-m", "klar", "audit"], cwd=d, env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Klar's own advisories were not checked", r.stdout)
 
     def test_unreachable_database_is_not_all_clear(self):
         d = self.project()

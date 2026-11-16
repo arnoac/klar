@@ -96,11 +96,12 @@ def collect(root):
 
 # ---------------------------------------------------------------------------------------------- sources
 
-def _http_json(url, payload=None, timeout=30):
+def _http_json(url, payload=None, timeout=30, token=None):
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    req = urllib.request.Request(url, data=data, method="POST" if data else "GET",
-                                 headers={"content-type": "application/json", "accept": "application/json",
-                                          "user-agent": "klar-audit"})
+    headers = {"content-type": "application/json", "accept": "application/json", "user-agent": "klar-audit"}
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, method="POST" if data else "GET", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8"))
@@ -181,7 +182,9 @@ def _in_range(version, spec):
 def query_klar(version):
     """Published advisories for the Klar toolchain that affect `version`."""
     url = os.environ.get("KLAR_ADVISORIES_URL") or ADVISORIES_URL
-    data = _http_json(url)
+    # GitHub allows 60 unauthenticated requests an hour per address; in CI, GITHUB_TOKEN lifts that
+    token = os.environ.get("GITHUB_TOKEN") if url.startswith("https://api.github.com/") else None
+    data = _http_json(url, token=token)
     out = []
     for adv in data if isinstance(data, list) else []:
         for v in adv.get("vulnerabilities") or []:
@@ -220,7 +223,13 @@ def audit(root):
                 "summary": v.get("summary") or (v.get("details") or "").split("\n")[0][:160],
                 "fixed": fixed, "fix": _fix_hint(p, fixed), "url": f"https://osv.dev/vulnerability/{v.get('id')}",
             })
-    for adv in query_klar(__version__):
+    try:
+        klar_advisories = query_klar(__version__)
+    except AuditError as ex:
+        klar_advisories = []
+        warnings.append(f"Klar's own advisories were not checked ({ex}); see "
+                        "https://github.com/arnoac/klar/security/advisories")
+    for adv in klar_advisories:
         findings.append({"ecosystem": "klar", "name": "klar", "version": __version__, "id": adv["id"], "aliases": [],
                          "severity": adv["severity"], "summary": adv["summary"], "fixed": adv["fixed"],
                          "fix": "upgrade Klar: git pull in your Klar checkout, then run `klar audit` again",

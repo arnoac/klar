@@ -1394,6 +1394,8 @@ static int64_t kx_sqlite_close(void *db) { sqlite3_close((sqlite3 *)db); return 
 
 /* ------------------------------------------------------------------ std.http (client and server) */
 #ifdef K_STD_NET
+#include <setjmp.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -1728,6 +1730,19 @@ static int kx_bad_header(KStr *s, int name) {
     }
     return name && s->len == 0;
 }
+/* Handlers that are running (each on its own connection thread, one at a time under the baton) and where to
+ * jump back to if one hits a runtime error. Only touched while holding the baton. */
+typedef struct { pthread_t thread; jmp_buf *back; } KXRecover;
+static KXRecover kx_recover[1100]; static int kx_nrecover;
+static void kx_fail_hook(void) {
+    for (int i = kx_nrecover - 1; i >= 0; i--)
+        if (pthread_equal(kx_recover[i].thread, pthread_self())) longjmp(*kx_recover[i].back, 1);
+}
+static void kx_recover_pop(void) {
+    pthread_t me = pthread_self();
+    for (int i = kx_nrecover - 1; i >= 0; i--)
+        if (pthread_equal(kx_recover[i].thread, me)) { kx_recover[i] = kx_recover[--kx_nrecover]; return; }
+}
 static void kx_serve_one(int fd, KClo *handler) {
     struct timeval tv = {30, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
@@ -1786,7 +1801,22 @@ static void kx_serve_one(int fd, KClo *handler) {
     KStr *body = k_str_new(in.p + hlen, bl);
     KS *req = k_struct_new(6, k_p2s(method), k_p2s(path), k_p2s(query), k_p2s(hs), k_p2s(body), k_p2s(k_map_empty(1)));
     pthread_mutex_lock(&kt_mu);           /* the handler is Klar code: it runs holding the baton */
-    KS *resp = K_S2P(KS *, K_CALL1(handler, k_p2s(req)));
+    KS *resp;
+    jmp_buf back;
+    if (kx_nrecover >= (int)(sizeof kx_recover / sizeof kx_recover[0])) {
+        resp = K_S2P(KS *, K_CALL1(handler, k_p2s(req)));
+    } else if (setjmp(back) == 0) {
+        k_fail_hook = kx_fail_hook;
+        kx_recover[kx_nrecover].thread = pthread_self(); kx_recover[kx_nrecover++].back = &back;
+        resp = K_S2P(KS *, K_CALL1(handler, k_p2s(req)));
+        kx_recover_pop();
+    } else {
+        /* a runtime error in the handler (already printed): this request gets 500, the server goes on */
+        kx_recover_pop();
+        resp = k_struct_new(3, (KS)(int64_t)500,
+                            k_p2s(k_map_put(k_map_empty(1), k_p2s(k_cstr("content-type")), k_p2s(k_cstr("text/plain; charset=utf-8")))),
+                            k_p2s(k_cstr("internal error\n")));
+    }
     fflush(stdout);
     int64_t status = (int64_t)resp[0];
     KMap *rh = K_S2P(KMap *, resp[1]);

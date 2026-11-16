@@ -55,6 +55,9 @@ static const char *k_file = "<input>";
 static int k_argc;
 static char **k_argv;
 
+/* Set by the HTTP server: a runtime error inside a request handler answers that request with 500 (the hook
+ * jumps back to the server) instead of ending the whole server. Elsewhere it returns and the program exits. */
+static void (*k_fail_hook)(void);
 __attribute__((noreturn, cold)) static void k_fail(const char *code, int line, int col, const char *fmt, ...) {
     fflush(stdout);
     fprintf(stderr, "error[%s] %s:%d:%d: ", code, k_file, line, col);
@@ -63,6 +66,7 @@ __attribute__((noreturn, cold)) static void k_fail(const char *code, int line, i
     vfprintf(stderr, fmt, ap);
     va_end(ap);
     fprintf(stderr, "\n");
+    if (k_fail_hook) k_fail_hook();
     exit(1);
 }
 
