@@ -75,6 +75,25 @@ fn main() uses io {
         self.assertIn("return, break or continue", r.stdout + r.stderr)
 
 
+class ArrowBlockLambda(unittest.TestCase):
+    def test_fn_arrow_block(self):
+        src = '''
+fn main() uses io {
+  let words = ["a", "bb", "ccc"]
+  let lines = map(words, fn(w) => {
+    let n = len(w)
+    if n > 2 {
+      return "{w}!"
+    }
+    return "{w}:{n}"
+  })
+  print(join(lines, " "))
+}
+'''
+        out, _ = run_everywhere(self, src)
+        self.assertEqual(out, "a:1 bb:2 ccc!\n")
+
+
 class StdinStderr(unittest.TestCase):
     def test_read_all_and_eprint(self):
         src = '''

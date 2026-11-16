@@ -36,6 +36,47 @@ Commands (run them from this folder, with `bin` on your `PATH`):
 Only the standard library is available (no packages). Python externs are not allowed.
 """
 
+KLAR_WEB_FOOTER = """
+## Language and tools
+
+Write the app in **Klar**, in the file `main.klar` in this folder (you may add more `.klar` modules next to
+it), as a browser app using `std.ui` (see "Web apps" in the reference). Klar is a new language: you will not
+have seen it before. Everything you need to learn it is in this folder:
+
+* `toolchain/klar/SPEC.md`: the complete language reference (read this first).
+* `toolchain/klar/std/*.klar`: the standard library sources, with every signature.
+* `toolchain/README.md`, `toolchain/DESIGN.md` and `toolchain/examples/`: overview, design notes and example
+  programs (`examples/apps/` has browser apps).
+
+Commands (run them from this folder, with `bin` on your `PATH`):
+
+* `klarc check main.klar` type-checks (`--json` for machine-readable errors); `klarc explain E301` explains a code.
+* `klarc build --target web main.klar` makes `main.html`, a self-contained page. The tests open `main.html`
+  (served over HTTP) in a browser. This is exactly how it will be graded.
+* `klarc test main.klar` runs `test` blocks.
+
+Only the standard library is available (no packages). A headless Chromium with Playwright is installed for
+Node.js (`require("playwright")`) if you want to try the page in a browser.
+"""
+
+TS_WEB_FOOTER = """
+## Language and tools
+
+Write the app in **TypeScript**, in the file `main.ts` in this folder (you may add more `.ts` modules next to
+it; import them with a `.js` extension). `index.html` loads the compiled `dist/main.js` as a module and has an
+empty `<div id="app">`; the tests open `index.html` (served over HTTP) in a browser. Do not change
+`index.html` or `tsconfig.json` (strict mode); use the DOM directly, since no npm packages are available and
+nothing can be installed.
+
+Commands (run them from this folder, with `bin` on your `PATH`):
+
+* `tsc -p .` type-checks and compiles to `dist/`. Grading runs `tsc -p .` and then opens `index.html`; a type
+  error fails the build.
+
+A headless Chromium with Playwright is installed for Node.js (`require("playwright")`) if you want to try the
+page in a browser.
+"""
+
 TS_FOOTER = """
 ## Language and tools
 
@@ -99,6 +140,8 @@ class Klar:
     name = "klar"
     entry = "main.klar"
     footer = KLAR_FOOTER
+    web_footer = KLAR_WEB_FOOTER
+    web_page = "main.html"
 
     def prepare(self, ws, docs="repo"):
         tc = os.path.join(ws, "toolchain")
@@ -122,11 +165,23 @@ class Klar:
     def command(self, ws):
         return ["sh", os.path.join(ws, "toolchain", "klarc"), "run", self.entry]
 
+    def build_web(self, ws):
+        out = os.path.join(ws, self.web_page)
+        if os.path.exists(out):
+            os.remove(out)
+        p = subprocess.run(["sh", os.path.join(ws, "toolchain", "klarc"), "build", "--target", "web", self.entry,
+                            "-o", out], cwd=ws, capture_output=True, text=True, timeout=300)
+        return p.returncode == 0 and os.path.isfile(out), (p.stdout + p.stderr)
+
 
 class TypeScript:
     name = "ts"
     entry = "main.ts"
     footer = TS_FOOTER
+    web_footer = TS_WEB_FOOTER
+    web_page = "index.html"
+    INDEX = ('<!doctype html>\n<html>\n<head>\n  <meta charset="utf-8">\n  <title>App</title>\n</head>\n<body>\n'
+             '  <div id="app"></div>\n  <script type="module" src="dist/main.js"></script>\n</body>\n</html>\n')
 
     def prepare(self, ws, docs="repo"):
         with open(os.path.join(ws, "tsconfig.json"), "w") as f:
@@ -151,6 +206,11 @@ class TypeScript:
 
     def command(self, ws):
         return ["node", "--no-warnings", os.path.join(ws, "dist", "main.js")]
+
+    def build_web(self, ws):
+        with open(os.path.join(ws, "index.html"), "w") as f:   # graded with the original page
+            f.write(self.INDEX)
+        return self.build(ws)
 
 
 LANGS = {"klar": Klar(), "ts": TypeScript()}

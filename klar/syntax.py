@@ -1118,8 +1118,9 @@ class Parser:
             ret = self.parse_type()
         if self.at_sym("=>"):
             self.advance()
-            body = self.parse_expr()
-            return Node("Lambda", t.line, t.col, params=params, ret=ret, body=body, block=False)
+            if not self.at_sym("{"):   # `fn(x) => { ... }` is the block form, as in JavaScript
+                body = self.parse_expr()
+                return Node("Lambda", t.line, t.col, params=params, ret=ret, body=body, block=False)
         if self.at_sym("{"):
             body = self.parse_block()
             return Node("Lambda", t.line, t.col, params=params, ret=ret, body=body, block=True)

@@ -1,0 +1,11 @@
+ok: event gala
+ok: event talk
+ok: ann bought 2 for gala (20.00)
+error: sold out: gala
+ok: cat bought 5 for talk (0.00)
+ok: price gala 12.50
+ok: bob bought 1 for gala (12.50)
+ok: refunded 2 to ann (25.00)
+error: nothing to refund: ann
+gala: 1/3 sold, revenue 7.50
+talk: 5/100 sold, revenue 0.00

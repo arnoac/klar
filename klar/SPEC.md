@@ -286,7 +286,7 @@ error type is an enum with one variant holding that error, `?` wraps it in that 
 ```klar
 let double = fn(x: int) => x * 2                  // expression body
 let inc = fn(x) => x + 1                          // parameter types inferred where possible
-let clamp = fn(x: int) -> int {                   // block body uses return
+let clamp = fn(x: int) -> int {      // block body uses return; `fn(x) => { ... }` too
   if x < 0 { return 0 }
   return x
 }

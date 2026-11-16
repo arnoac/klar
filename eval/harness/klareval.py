@@ -66,13 +66,23 @@ def prepare(task, lang, ws, docs="repo"):
     if os.path.exists(ws) and os.listdir(ws):
         raise SystemExit(f"{ws} exists and is not empty")
     os.makedirs(ws, exist_ok=True)
+    _, mod = load_tests(task)
+    web = getattr(mod, "KIND", "cli") == "web"
     with open(os.path.join(TASKS, task, "TASK.md")) as f:
-        text = f.read().rstrip() + "\n" + LANGS[lang].footer
+        text = f.read().rstrip() + "\n" + (LANGS[lang].web_footer if web else LANGS[lang].footer)
     with open(os.path.join(ws, "TASK.md"), "w") as f:
         f.write(text)
     with open(os.path.join(ws, "PROMPT.md"), "w") as f:
         f.write(FIRST_PROMPT)
     LANGS[lang].prepare(ws, docs)
+    if web and lang == "ts":
+        with open(os.path.join(ws, "index.html"), "w") as f:
+            f.write(LANGS[lang].INDEX)
+    # tasks that change an existing program ship it in starter/LANG (code) and starter/shared (data)
+    for part in (lang, "shared"):
+        src = os.path.join(TASKS, task, "starter", part)
+        if os.path.isdir(src):
+            shutil.copytree(src, ws, dirs_exist_ok=True)
     os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
 
 
@@ -85,13 +95,14 @@ def grade(task, lang, ws):
     if not os.path.isfile(os.path.join(ws, language.entry)):
         result["build_log"] = f"{language.entry} is missing"
         return finish(result, started)
-    ok, log = language.build(ws)
+    web = getattr(mod, "KIND", "cli") == "web"
+    ok, log = language.build_web(ws) if web else language.build(ws)
     result["build_ok"], result["build_log"] = ok, log[-6000:]
     if not ok:
         result["tests"] = [{"name": n, "ok": False, "message": "build failed"} for n, _ in tests]
         return finish(result, started)
     timeout = getattr(mod, "TIMEOUT", 60)
-    prog = Program(language.command(ws), ws, timeout=timeout)
+    prog = Program(language.command(ws), ws, timeout=timeout, page=language.web_page if web else None)
     for name, fn in tests:
         t0 = time.time()
         try:

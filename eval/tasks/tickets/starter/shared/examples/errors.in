@@ -1,0 +1,9 @@
+event gala 3
+event gala x 100
+event gala 3 100
+event gala 3 100
+buy gala ann 0
+buy fair ann 1
+dance gala
+price gala -5
+report extra

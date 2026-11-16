@@ -16,6 +16,28 @@ from langs import find_node_types  # noqa: E402
 HAVE_TS = shutil.which("tsc") is not None and shutil.which("node") is not None and find_node_types() is not None
 
 
+def have_browser():
+    if shutil.which("node") is None:
+        return False
+    import subprocess
+    probe = "try { require('playwright') } catch { require(require('path').join(require('child_process')" \
+            ".execSync('npm root -g').toString().trim(), 'playwright')) }"
+    return subprocess.run(["node", "-e", probe], capture_output=True).returncode == 0
+
+
+HAVE_BROWSER = have_browser()
+
+
+def runnable_tasks():
+    """Every task, except browser tasks when there is no headless browser to test them in."""
+    out = []
+    for task in klareval.task_names():
+        _, mod = klareval.load_tests(task)
+        if getattr(mod, "KIND", "cli") != "web" or HAVE_BROWSER:
+            out.append(task)
+    return out
+
+
 class EvalTasks(unittest.TestCase):
     def grade_reference(self, task, lang):
         language = klareval.LANGS[lang]
@@ -33,13 +55,13 @@ class EvalTasks(unittest.TestCase):
         self.assertGreater(result["total"], 10)
 
     def test_klar_references_pass(self):
-        for task in klareval.task_names():
+        for task in runnable_tasks():
             with self.subTest(task=task):
                 self.grade_reference(task, "klar")
 
     @unittest.skipUnless(HAVE_TS, "needs tsc, node and @types/node")
     def test_typescript_references_pass(self):
-        for task in klareval.task_names():
+        for task in runnable_tasks():
             with self.subTest(task=task):
                 self.grade_reference(task, "ts")
 

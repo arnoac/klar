@@ -50,6 +50,12 @@ compiler errors they hit, are the most useful output for improving Klar.
 | [orders](tasks/orders/TASK.md) | JSON in, JSON out | 20 | validating untyped JSON (`null` versus absent, `2.5` versus `"2"`), aggregation |
 | [notes_api](tasks/notes_api/TASK.md) | HTTP JSON API with an HTML page and persistence | 18 | routing, request validation, status codes, HTML escaping, data surviving a restart |
 | [sheet](tasks/sheet/TASK.md) | spreadsheet evaluator | 22 | a parser, recursive evaluation, cycle detection, precise error rules; includes generated sheets checked against an independent model |
+| [tickets](tasks/tickets/TASK.md) | change an existing program | 17 | reading someone else's code, a bug described only by its symptom, a feature ticket that must fit the existing conventions, no regressions |
+| [splitter](tasks/splitter/TASK.md) | browser app | 14 | DOM events and forms, state, rounding, `localStorage`, text that must not become markup; tested in headless Chromium |
+
+`tickets` ships the program to change in `starter/` (the same program in both languages, with the same bug).
+`splitter`'s tests (`hidden/tests.mjs`) drive the page with Playwright and wait up to two seconds for each
+expected state, because a page may render on the next animation frame (Klar's `std.ui` does).
 
 Each task folder holds `TASK.md`, `hidden/tests.py` (never shown to the agent) and `reference/` solutions in
 both languages. The reference solutions pass every test; they prove the tests are passable in both
@@ -66,7 +72,7 @@ Rules that keep the comparison fair:
 ## Running it
 
 Requirements: Python 3.10+, Node.js 22+ with `tsc` on `PATH` and `@types/node` installed somewhere (found
-through `npm root -g`, or set `KLAREVAL_NODE_TYPES`).
+through `npm root -g`, or set `KLAREVAL_NODE_TYPES`), and for browser tasks Playwright with Chromium for Node.js.
 
 Any agent that can be started from a shell command can be tested. The command runs inside the workspace, with
 `bin/` first on `PATH`; `{workspace}`, `{prompt_file}`, `{model}` and `{round}` are filled in. `PROMPT.md`

@@ -1,0 +1,229 @@
+// Box office: reads commands from standard input, one per line, and prints what happened.
+//
+//   event ID CAPACITY PRICE     create an event (price in cents)
+//   price ID PRICE              change the price of future purchases
+//   buy ID PERSON QTY           buy QTY tickets
+//   refund ID PERSON            give back all of PERSON's tickets for the event
+//   capacity ID N               change the capacity
+//   report                      sold tickets and revenue per event
+//
+// A purchase that does not fit joins the event's waitlist; freed seats go to the waitlist in order.
+
+struct Waiting { person: str, qty: int }
+
+struct Event {
+  id: str,
+  capacity: int,
+  price: int,
+  sold: int,
+  revenue: int,
+  holders: map[str, int],   // person -> tickets held
+  paid: map[str, int],      // person -> cents paid for the tickets held
+  waiting: list[Waiting],
+}
+
+// All events by id, plus their ids in the order they were created.
+struct Office { events: map[str, Event], order: list[str] }
+
+// The office after a command, and the text to print.
+struct Outcome { office: Office, text: str }
+
+fn money(cents: int) -> str {
+  let c = cents % 100
+  let pad = if c < 10 then "0" else ""
+  return "{cents / 100}.{pad}{c}"
+}
+
+fn count(text: str) -> Option[int] {
+  if text == "" or not all(chars(text), fn(c) => c >= "0" and c <= "9") {
+    return None
+  }
+  return parse_int(text)
+}
+
+fn fail(office: Office, text: str) -> Outcome {
+  return Outcome(office, "error: {text}")
+}
+
+fn save(office: Office, e: Event, text: str) -> Outcome {
+  return Outcome(office with (events: put(office.events, e.id, e)), text)
+}
+
+fn run(office: Office, words: list[str]) -> Outcome {
+  let cmd = words[0]
+  let args = slice(words, 1, len(words))
+  return match cmd {
+    "event" => new_event(office, args),
+    "price" => set_price(office, args),
+    "buy" => buy(office, args),
+    "refund" => refund(office, args),
+    "capacity" => set_capacity(office, args),
+    "report" => {
+      if len(args) != 0 {
+        return fail(office, "usage: report")
+      }
+      return Outcome(office, report(office))
+    }
+    _ => fail(office, "unknown command: {cmd}"),
+  }
+}
+
+fn new_event(office: Office, args: list[str]) -> Outcome {
+  if len(args) != 3 {
+    return fail(office, "usage: event ID CAPACITY PRICE")
+  }
+  let id = args[0]
+  if has(office.events, id) {
+    return fail(office, "event exists: {id}")
+  }
+  let cap = match count(args[1]) {
+    Some(n) => n,
+    None => { return fail(office, "bad number: {args[1]}") }
+  }
+  let price = match count(args[2]) {
+    Some(n) => n,
+    None => { return fail(office, "bad number: {args[2]}") }
+  }
+  let e = Event(id: id, capacity: cap, price: price, sold: 0, revenue: 0, holders: [:], paid: [:], waiting: [])
+  return save(office with (order: push(office.order, id)), e, "ok: event {id}")
+}
+
+fn set_price(office: Office, args: list[str]) -> Outcome {
+  if len(args) != 2 {
+    return fail(office, "usage: price ID PRICE")
+  }
+  let e = match get(office.events, args[0]) {
+    Some(found) => found,
+    None => { return fail(office, "no such event: {args[0]}") }
+  }
+  let price = match count(args[1]) {
+    Some(n) => n,
+    None => { return fail(office, "bad number: {args[1]}") }
+  }
+  return save(office, e with (price: price), "ok: price {e.id} {money(price)}")
+}
+
+fn buy(office: Office, args: list[str]) -> Outcome {
+  if len(args) != 3 {
+    return fail(office, "usage: buy ID PERSON QTY")
+  }
+  let e = match get(office.events, args[0]) {
+    Some(found) => found,
+    None => { return fail(office, "no such event: {args[0]}") }
+  }
+  let person = args[1]
+  let qty = match count(args[2]) {
+    Some(n) => n,
+    None => { return fail(office, "bad number: {args[2]}") }
+  }
+  if qty == 0 {
+    return fail(office, "bad number: {args[2]}")
+  }
+  if e.sold + qty > e.capacity {
+    if any(e.waiting, fn(w) => w.person == person) {
+      return fail(office, "already waiting: {person}")
+    }
+    let queued = e with (waiting: push(e.waiting, Waiting(person, qty)))
+    return save(office, queued, "waitlist: {person} wants {qty} for {e.id} (position {len(queued.waiting)})")
+  }
+  let sale = sell(e, person, qty)
+  return save(office, sale.event, sale.text)
+}
+
+struct Sale { event: Event, text: str }
+
+fn sell(e: Event, person: str, qty: int) -> Sale {
+  let cost = qty * e.price
+  let after = e with (sold: e.sold + qty, revenue: e.revenue + cost,
+                      holders: put(e.holders, person, unwrap_or(get(e.holders, person), 0) + qty),
+                      paid: put(e.paid, person, unwrap_or(get(e.paid, person), 0) + cost))
+  return Sale(after, "ok: {person} bought {qty} for {e.id} ({money(cost)})")
+}
+
+// Fills the waitlisted requests that fit now, front to back; `text` gets one line per fill.
+fn fill(e: Event, text: str) -> Sale {
+  var ev = e with (waiting: [])
+  var out = text
+  for w in e.waiting {
+    if ev.sold + w.qty <= ev.capacity {
+      let sale = sell(ev, w.person, w.qty)
+      ev = sale.event
+      out = "{out}\n{sale.text}"
+    } else {
+      ev = ev with (waiting: push(ev.waiting, w))
+    }
+  }
+  return Sale(ev, out)
+}
+
+fn set_capacity(office: Office, args: list[str]) -> Outcome {
+  if len(args) != 2 {
+    return fail(office, "usage: capacity ID N")
+  }
+  let e = match get(office.events, args[0]) {
+    Some(found) => found,
+    None => { return fail(office, "no such event: {args[0]}") }
+  }
+  let n = match count(args[1]) {
+    Some(k) => k,
+    None => { return fail(office, "bad number: {args[1]}") }
+  }
+  if n < e.sold {
+    return fail(office, "capacity below sold: {e.id}")
+  }
+  let filled = fill(e with (capacity: n), "ok: capacity {e.id} {n}")
+  return save(office, filled.event, filled.text)
+}
+
+fn refund(office: Office, args: list[str]) -> Outcome {
+  if len(args) != 2 {
+    return fail(office, "usage: refund ID PERSON")
+  }
+  let e = match get(office.events, args[0]) {
+    Some(found) => found,
+    None => { return fail(office, "no such event: {args[0]}") }
+  }
+  let person = args[1]
+  let held = unwrap_or(get(e.holders, person), 0)
+  if held == 0 {
+    if not any(e.waiting, fn(w) => w.person == person) {
+      return fail(office, "nothing to refund: {person}")
+    }
+    let left = e with (waiting: filter(e.waiting, fn(w) => w.person != person))
+    return save(office, left, "ok: left waitlist: {person}")
+  }
+  let amount = unwrap_or(get(e.paid, person), 0)
+  let after = e with (sold: e.sold - held, revenue: e.revenue - amount, holders: remove(e.holders, person),
+                      paid: remove(e.paid, person))
+  let filled = fill(after, "ok: refunded {held} to {person} ({money(amount)})")
+  return save(office, filled.event, filled.text)
+}
+
+fn report(office: Office) -> str {
+  if len(office.order) == 0 {
+    return "no events"
+  }
+  let lines = map(office.order, fn(id) => {
+    let e = office.events[id]
+    let waiting = if len(e.waiting) > 0 then ", waiting {len(e.waiting)}" else ""
+    return "{e.id}: {e.sold}/{e.capacity} sold, revenue {money(e.revenue)}{waiting}"
+  })
+  return join(lines, "\n")
+}
+
+fn main() uses io {
+  var office = Office(events: [:], order: [])
+  while true {
+    let line = match read_line() {
+      Some(l) => l,
+      None => break,
+    }
+    let words = filter(split(replace(trim(line), "\t", " "), " "), fn(w) => w != "")
+    if len(words) == 0 or starts_with(words[0], "#") {
+      continue
+    }
+    let out = run(office, words)
+    office = out.office
+    print(out.text)
+  }
+}

@@ -1,0 +1,128 @@
+// Reference solution for the splitter task (used to validate the hidden tests).
+
+use std.ui { Next, Cmd, ui_run, ui_save, ui_load }
+use std.html { Html, div, p, ul, li, form, input, button, text, nothing, id, class, value, placeholder, input_type,
+  on_input, on_submit, on_click }
+use std.json { json_encode, json_decode }
+
+struct Expense { name: str, cents: int, desc: str }
+
+struct Model { expenses: list[Expense], name: str, amount: str, desc: str, error: str }
+
+enum Msg {
+  SetName(text: str),
+  SetAmount(text: str),
+  SetDesc(text: str),
+  Add,
+  Remove(index: int),
+}
+
+fn storage_key() -> str {
+  return "splitter.expenses"
+}
+
+fn digits(s: str) -> bool {
+  return s != "" and all(chars(s), fn(c) => c >= "0" and c <= "9")
+}
+
+// "12.5" -> Some(1250); None unless digits with an optional one- or two-digit fraction.
+fn parse_cents(raw: str) -> Option[int] {
+  let parts = split(trim(raw), ".")
+  if len(parts) > 2 or not digits(parts[0]) {
+    return None
+  }
+  let whole = parse_int(parts[0])? * 100
+  if len(parts) == 1 {
+    return Some(whole)
+  }
+  let frac = parts[1]
+  if not digits(frac) or len(frac) > 2 {
+    return None
+  }
+  let f = parse_int(frac)?
+  return Some(whole + (if len(frac) == 1 then f * 10 else f))
+}
+
+fn money(c: int) -> str {
+  let a = abs(c)
+  let pad = if a % 100 < 10 then "0" else ""
+  return "{a / 100}.{pad}{a % 100}"
+}
+
+fn signed(c: int) -> str {
+  let sign = if c > 0 then "+" else if c < 0 then "-" else ""
+  return "{sign}{money(c)}"
+}
+
+fn saved(m: Model) -> Next[Model, Msg] {
+  return Next(m, [ui_save(storage_key(), json_encode(m.expenses))])
+}
+
+fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
+  return match msg {
+    SetName(t) => Next(m with (name: t), []),
+    SetAmount(t) => Next(m with (amount: t), []),
+    SetDesc(t) => Next(m with (desc: t), []),
+    Remove(i) => saved(m with (expenses: slice(m.expenses, 0, i) + slice(m.expenses, i + 1, len(m.expenses)))),
+    Add => {
+      let who = trim(m.name)
+      if who == "" {
+        return Next(m with (error: "Enter who paid."), [])
+      }
+      return match parse_cents(m.amount) {
+        Some(c) => if c <= 0 then Next(m with (error: "Enter an amount above zero."), [])
+          else saved(m with (expenses: push(m.expenses, Expense(who, c, trim(m.desc))), amount: "", desc: "",
+                             error: "")),
+        None => Next(m with (error: "Enter an amount such as 12.50."), []),
+      }
+    }
+  }
+}
+
+fn balances(expenses: list[Expense]) -> list[str] {
+  var paid: map[str, int] = [:]
+  for x in expenses {
+    paid = put(paid, x.name, unwrap_or(get(paid, x.name), 0) + x.cents)
+  }
+  let people = sort(keys(paid))
+  let n = len(people)
+  if n == 0 {
+    return []
+  }
+  let total = sum(map(expenses, fn(x) => x.cents))
+  let share = (2 * total + n) / (2 * n)
+  let owed = paid
+  return map(people, fn(who) => "{who}: {signed(owed[who] - share)}")
+}
+
+fn expense_row(x: Expense, i: int) -> Html[Msg] {
+  let what = if x.desc == "" then "" else " for {x.desc}"
+  return li([], [text("{x.name} paid {money(x.cents)}{what} "),
+                 button([class("remove"), input_type("button"), on_click(Remove(i))], [text("Remove")])])
+}
+
+fn view(m: Model) -> Html[Msg] {
+  let total = sum(map(m.expenses, fn(x) => x.cents))
+  return div([], [
+    form([on_submit(Add)], [
+      input([id("name"), placeholder("Who paid"), value(m.name), on_input(fn(s) => SetName(s))]),
+      input([id("amount"), placeholder("Amount"), value(m.amount), on_input(fn(s) => SetAmount(s))]),
+      input([id("desc"), placeholder("For what"), value(m.desc), on_input(fn(s) => SetDesc(s))]),
+      button([id("add"), input_type("submit")], [text("Add")]),
+    ]),
+    if m.error == "" then nothing() else p([id("error")], [text(m.error)]),
+    ul([id("expenses")], map(range(0, len(m.expenses)), fn(i) => expense_row(m.expenses[i], i))),
+    p([id("total")], [text("Total: {money(total)}")]),
+    ul([id("balances")], map(balances(m.expenses), fn(line) => li([], [text(line)]))),
+  ])
+}
+
+fn main() uses io {
+  let stored: Result[list[Expense], str] = json_decode(unwrap_or(ui_load(storage_key()), "[]"))
+  ui_run(Next(Model(unwrap_or(stored, []), "", "", "", ""), []), update, view)
+}
+
+test "shares round half up" {
+  let xs = [Expense("a", 1000, ""), Expense("b", 1, ""), Expense("c", 1, "")]
+  assert balances(xs) == ["a: +6.66", "b: -3.33", "c: -3.33"]
+}

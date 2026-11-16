@@ -1,0 +1,9 @@
+error: usage: event ID CAPACITY PRICE
+error: bad number: x
+ok: event gala
+error: event exists: gala
+error: bad number: 0
+error: no such event: fair
+error: unknown command: dance
+error: bad number: -5
+error: usage: report

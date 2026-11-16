@@ -1,0 +1,10 @@
+event gala 3 1000
+event talk 100 0
+buy gala ann 2
+buy gala bob 2
+buy talk cat 5
+price gala 1250
+buy gala bob 1
+refund gala ann
+refund gala ann
+report

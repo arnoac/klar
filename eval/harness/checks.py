@@ -39,8 +39,22 @@ class Run:
 
 
 class Program:
-    def __init__(self, command, cwd, timeout=60):
+    def __init__(self, command, cwd, timeout=60, page=None):
         self.command, self.cwd, self.timeout = command, cwd, timeout
+        self.page = page          # web tasks: the built page, relative to cwd
+        self._browser = {}
+
+    def browser(self, tests_mjs):
+        """Runs every test in a web task's tests.mjs once (in headless Chromium) and returns the results by name."""
+        if tests_mjs not in self._browser:
+            runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser.mjs")
+            p = subprocess.run(["node", runner, self.cwd, self.page, tests_mjs], capture_output=True, text=True,
+                               timeout=600)
+            try:
+                self._browser[tests_mjs] = json.loads(p.stdout.strip().split("\n")[-1])
+            except (ValueError, IndexError):
+                raise Fail(f"browser test runner failed: {(p.stdout + p.stderr)[-600:]}")
+        return self._browser[tests_mjs]
 
     def run(self, stdin="", args=(), env=None):
         full_env = dict(os.environ, **(env or {}))
