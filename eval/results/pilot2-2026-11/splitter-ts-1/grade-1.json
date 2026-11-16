@@ -1,0 +1,82 @@
+{
+  "task": "splitter",
+  "lang": "ts",
+  "build_ok": true,
+  "build_log": "",
+  "tests": [
+    {
+      "name": "test_adds_an_expense",
+      "ok": true,
+      "seconds": 5.44
+    },
+    {
+      "name": "test_balances_example",
+      "ok": true,
+      "seconds": 0.0
+    },
+    {
+      "name": "test_clears_amount_and_desc_keeps_name",
+      "ok": true,
+      "seconds": 0.0
+    },
+    {
+      "name": "test_empty_name_shows_error_then_clears",
+      "ok": true,
+      "seconds": 0.0
+    },
+    {
+      "name": "test_enter_key_adds",
+      "ok": true,
+      "seconds": 0.0
+    },
+    {
+      "name": "test_invalid_amounts_show_error",
+      "ok": true,
+      "seconds": 0.0
+    },
+    {
+      "name": "test_many_expenses_and_large_amounts",
+      "ok": true,
+      "seconds": 0.0
+    },
+    {
+      "name": "test_remove_expense",
+      "ok": true,
+      "seconds": 0.0
+    },
+    {
+      "name": "test_share_rounds_half_up",
+      "ok": true,
+      "seconds": 0.0
+    },
+    {
+      "name": "test_sorted_names_case_sensitive",
+      "ok": true,
+      "seconds": 0.0
+    },
+    {
+      "name": "test_starts_empty",
+      "ok": true,
+      "seconds": 0.0
+    },
+    {
+      "name": "test_survives_reload",
+      "ok": true,
+      "seconds": 0.0
+    },
+    {
+      "name": "test_text_is_not_markup",
+      "ok": true,
+      "seconds": 0.0
+    },
+    {
+      "name": "test_trims_name_and_merges_people",
+      "ok": true,
+      "seconds": 0.0
+    }
+  ],
+  "passed": 14,
+  "total": 14,
+  "seconds": 6.43,
+  "all_pass": true
+}

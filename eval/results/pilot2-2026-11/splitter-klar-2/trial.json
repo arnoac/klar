@@ -1,0 +1,33 @@
+{
+  "task": "splitter",
+  "lang": "klar",
+  "model": "pilot-agent",
+  "docs": "repo",
+  "max_rounds": 3,
+  "rounds": [
+    {
+      "round": 1,
+      "agent": {
+        "exit": null,
+        "seconds": 85.7,
+        "tokens": 101485,
+        "tool_uses": 14
+      },
+      "build_ok": true,
+      "passed": 14,
+      "total": 14,
+      "failing": []
+    }
+  ],
+  "first_try_pass": true,
+  "first_try_score": 1.0,
+  "rounds_to_pass": 1,
+  "final_score": 1.0,
+  "tools": {
+    "tool_calls": 3,
+    "check_calls": 2,
+    "failed_checks": 0,
+    "run_calls": 0,
+    "error_codes": {}
+  }
+}

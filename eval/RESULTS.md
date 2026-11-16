@@ -1,5 +1,81 @@
 # Results
 
+## Second pilot, November 2026: harder tasks
+
+**Setup.** Same agent and method as the first pilot below, after fixing findings 1 to 5 of that pilot. Two new
+tasks: `tickets` (change an existing program: fix a refund bug, add a waitlist and a command, keep all other
+output identical) and `splitter` (a browser app with storage, tested in headless Chromium through element
+ids). Two trials per language on each, plus two more Klar trials of `sheet` to see whether the fixes changed
+its cost. 10 trials. Raw records and programs are in [results/pilot2-2026-11](results/pilot2-2026-11).
+
+| task | language | first try | first-try tests | checks (failed) | compiler errors | agent time | agent tokens |
+|---|---|---|---|---|---|---|---|
+| tickets (1) | Klar | pass | 17/17 | 1 (0) | - | 52 s | 79,649 |
+| tickets (2) | Klar | pass | 17/17 | 2 (1) | E301 | 57 s | 80,754 |
+| tickets (1) | TypeScript | pass | 17/17 | not logged | - | 36 s | 65,734 |
+| tickets (2) | TypeScript | pass | 17/17 | not logged | - | 35 s | 65,643 |
+| splitter (1) | Klar | pass | 14/14 | 2 (0) | - | 106 s | 100,854 |
+| splitter (2) | Klar | pass | 14/14 | 2 (0) | - | 86 s | 101,485 |
+| splitter (1) | TypeScript | pass | 14/14 | 2 (0) | - | 61 s | 67,545 |
+| splitter (2) | TypeScript | pass | 14/14 | 1 (0) | - | 43 s | 65,547 |
+| sheet (3) | Klar | pass | 22/22 | 1 (0) | - | 116 s | 84,952 |
+| sheet (4) | Klar | pass | 22/22 | 3 (0) | - | 545 s | 96,037 |
+
+On `tickets` and `splitter` only: Klar median 72 s and 90,800 tokens, TypeScript 40 s and 65,700 tokens.
+
+### What this says
+
+* **Still no difference in correctness.** All 10 trials passed every hidden test on the first try, including
+  the browser app and the change to existing code. These tasks do not separate the languages for this model
+  either, so the claim "fewer errors in Klar" remains untested rather than confirmed.
+* **Klar still costs more: about 1.8x the time and 38% more tokens** on the new tasks. Most of the extra
+  tokens are reading SPEC and std sources; the browser app cost the most, because `std.ui` behaviour had to
+  be read from the runtime (see below).
+* **The pilot-1 fixes worked where they applied.** No agent hit list copying, `None => break`, stdin or exit
+  status problems. `sheet` in Klar ran 116 s and 545 s (225 s and 406 s before). The slow trial spent its time
+  on its own choice to write a second implementation in Python and compare 150 random sheets, and then on
+  interpreter speed for an extreme input it made up (1.9M cell references, 53 s); the hidden tests never
+  come close to that.
+* **One compiler error in 10 trials**, and it was Klar's: `push([text], lines)` gave E301 with a hint to use
+  `str(value)`, when the fix is `[text] + lines`.
+* **Measurement gap.** The two TypeScript `tickets` trials compiled (their notes say so and `dist/` was
+  built) but the wrapper logged no calls, so their check counts are missing. One Klar agent's first command
+  also failed with `klarc: command not found` after `export PATH=...`. The cause is not known; the next run
+  should log through a mechanism that does not depend on the agent's PATH.
+
+### What tripped the agents up in Klar
+
+None of these came up for TypeScript, apart from the TASK wording point in 7.
+
+1. **`std.ui` redraws one frame late, and nothing says so.** The page re-renders on `requestAnimationFrame`,
+   so a test (or an agent's own Playwright script) that reads the DOM right after a click sees the old
+   state, or half of the new one. Both `splitter` agents lost time on it; our own hidden tests had to poll.
+   SPEC should say it, and the runtime could render synchronously after an event handler.
+2. **`std.ui` details only in the sources**: whether `value(...)` sets the live input value on every redraw
+   (it does), that `on_key` exists (SPEC lists the name only), the `ui_load` in `main` + `ui_save` in `update`
+   recipe for storage, and that `std.ui` alone is enough without `std.kit` or `std.layout`.
+3. **Recursion depth is not stated.** A recursive function fails with E406 somewhere between depth 1,000 and
+   3,000 in the interpreter. Both `sheet` agents tested for it and rewrote their searches to be iterative.
+4. **Interpreter speed is still not documented**: about 2.5 microseconds per loop iteration that indexes a
+   list. Agents could not tell whether compiling the program was allowed.
+5. **The name rule in SPEC does not match the checker.** SPEC says a name is declared once per function,
+   inner blocks included; the checker accepts `let w` in two sibling blocks and a match binding that reuses a
+   name from elsewhere. One agent was left unsure which is right.
+6. **No top-level constants**, and SPEC does not say to use zero-argument functions instead.
+7. **Smaller**: the E301 hint for `push(list, list)` (above); TASK says `klarc` while SPEC says `klar`; when
+   a function ending in a `match` whose arms all return counts as returning (E305) is not spelled out.
+
+TypeScript agents' only notes were about the workspace: `tsconfig.json` compiles every `.ts` file, so test
+scripts had to be `.cjs`, and `"type": "module"` blocks `require`.
+
+### What the next run needs
+
+* **A smaller or cheaper model as the subject.** A strong model at the ceiling on every task cannot show a
+  difference in errors; the compiler's help should matter more where first drafts are wrong. The harness
+  already records the model name; the subject just has to be configured.
+* Fix findings 1 to 3 above and the E301 hint, then rerun `splitter`.
+* Fix the tool logging gap before counting checks again.
+
 ## Pilot, November 2026
 
 **Setup.** One general-purpose coding agent (a current frontier model, recorded as `pilot-agent`), run with

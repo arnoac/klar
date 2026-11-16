@@ -1,0 +1,97 @@
+{
+  "task": "tickets",
+  "lang": "ts",
+  "build_ok": true,
+  "build_log": "",
+  "tests": [
+    {
+      "name": "test_basic_flow_without_price_change",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_capacity_command",
+      "ok": true,
+      "seconds": 0.04
+    },
+    {
+      "name": "test_capacity_down_to_sold",
+      "ok": true,
+      "seconds": 0.04
+    },
+    {
+      "name": "test_existing_errors_unchanged",
+      "ok": true,
+      "seconds": 0.02
+    },
+    {
+      "name": "test_filled_buyer_refund_pays_fill_price",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_generated_sessions",
+      "ok": true,
+      "seconds": 0.26
+    },
+    {
+      "name": "test_leave_waitlist",
+      "ok": true,
+      "seconds": 0.04
+    },
+    {
+      "name": "test_no_events_report",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_refund_after_several_prices",
+      "ok": true,
+      "seconds": 0.04
+    },
+    {
+      "name": "test_refund_fills_waitlist_in_order_at_current_price",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_refund_pays_what_was_paid",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_skips_request_that_does_not_fit",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_too_big_requests_stay_and_later_ones_fill",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_wait_only_once",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_waitlist_instead_of_sold_out",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_waitlisted_holder_refund_refunds_tickets",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_waitlists_are_per_event",
+      "ok": true,
+      "seconds": 0.04
+    }
+  ],
+  "passed": 17,
+  "total": 17,
+  "seconds": 1.5,
+  "all_pass": true
+}

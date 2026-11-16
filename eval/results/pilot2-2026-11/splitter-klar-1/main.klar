@@ -1,0 +1,215 @@
+// Splitter: share expenses between friends, entirely in the browser.
+
+use std.ui { Next, Cmd, ui_run, ui_save, ui_load }
+use std.html { Html, div, h1, h2, ul, li, form, input, button, text, nothing, p, span, class, id, value,
+  placeholder, input_type, on_input, on_submit, on_click, attr, html_render }
+use std.json { json_encode, json_decode }
+
+struct Expense { name: str, cents: int, desc: str }
+
+struct Model {
+  expenses: list[Expense],
+  name: str,
+  amount: str,
+  desc: str,
+  error: str,
+}
+
+enum Msg {
+  SetName(s: str),
+  SetAmount(s: str),
+  SetDesc(s: str),
+  Add,
+  Remove(index: int),
+}
+
+fn storage_key() -> str { return "splitter.expenses" }
+
+// ---- amounts
+
+fn is_digit(c: str) -> bool {
+  return c >= "0" and c <= "9" and len(c) == 1
+}
+
+fn digits_value(s: str) -> int {
+  var n = 0
+  for c in chars(s) {
+    n = n * 10 + unwrap(parse_int(c))
+  }
+  return n
+}
+
+fn all_digits(s: str) -> bool {
+  return all(chars(s), fn(c) => is_digit(c))
+}
+
+// Parses an amount like "12", "12.5", "12.50" into cents; None when invalid or not above zero.
+fn parse_amount(raw: str) -> Option[int] {
+  let s = trim(raw)
+  let parts = split(s, ".")
+  if len(parts) > 2 { return None }
+  let whole = parts[0]
+  if len(whole) == 0 or not all_digits(whole) { return None }
+  var cents = digits_value(whole) * 100
+  if len(parts) == 2 {
+    let frac = parts[1]
+    if len(frac) < 1 or len(frac) > 2 or not all_digits(frac) { return None }
+    let f = if len(frac) == 1 then digits_value(frac) * 10 else digits_value(frac)
+    cents = cents + f
+  }
+  if cents <= 0 { return None }
+  return Some(cents)
+}
+
+fn fmt_cents(c: int) -> str {
+  let a = abs(c)
+  let frac = a % 100
+  let fs = if frac < 10 then "0{frac}" else "{frac}"
+  let body = "{a / 100}.{fs}"
+  return if c < 0 then "-{body}" else body
+}
+
+fn fmt_signed(c: int) -> str {
+  return if c > 0 then "+{fmt_cents(c)}" else fmt_cents(c)
+}
+
+// ---- totals
+
+fn total_cents(xs: list[Expense]) -> int {
+  return fold(xs, 0, fn(acc, e) => acc + e.cents)
+}
+
+fn people(xs: list[Expense]) -> list[str] {
+  var seen: list[str] = []
+  for e in xs {
+    if not contains(seen, e.name) {
+      seen = push(seen, e.name)
+    }
+  }
+  return sort(seen)
+}
+
+fn balances(xs: list[Expense]) -> list[(str, int)] {
+  let names = people(xs)
+  let n = len(names)
+  if n == 0 { return [] }
+  let total = total_cents(xs)
+  let share = (2 * total + n) / (2 * n)
+  return map(names, fn(nm) => (nm, total_cents(filter(xs, fn(e) => e.name == nm)) - share))
+}
+
+fn expense_text(e: Expense) -> str {
+  let d = trim(e.desc)
+  return if d == "" then "{e.name} paid {fmt_cents(e.cents)}" else "{e.name} paid {fmt_cents(e.cents)} for {d}"
+}
+
+// ---- update
+
+fn save(xs: list[Expense]) -> list[Cmd[Msg]] {
+  return [ui_save(storage_key(), json_encode(xs))]
+}
+
+fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
+  return match msg {
+    SetName(s) => Next(m with (name: s), []),
+    SetAmount(s) => Next(m with (amount: s), []),
+    SetDesc(s) => Next(m with (desc: s), []),
+    Add => add(m),
+    Remove(i) => {
+      let xs = slice(m.expenses, 0, i) + slice(m.expenses, i + 1, len(m.expenses))
+      return Next(m with (expenses: xs), save(xs))
+    }
+  }
+}
+
+fn add(m: Model) -> Next[Model, Msg] {
+  let nm = trim(m.name)
+  if nm == "" {
+    return Next(m with (error: "Please enter who paid."), [])
+  }
+  return match parse_amount(m.amount) {
+    None => Next(m with (error: "Please enter an amount greater than zero, like 12.50."), []),
+    Some(c) => {
+      let xs = push(m.expenses, Expense(nm, c, trim(m.desc)))
+      return Next(m with (expenses: xs, amount: "", desc: "", error: ""), save(xs))
+    }
+  }
+}
+
+// ---- view
+
+fn view(m: Model) -> Html[Msg] {
+  let rows = map(range(0, len(m.expenses)), fn(i) => li([], [
+    span([], [text(expense_text(m.expenses[i]))]),
+    text(" "),
+    button([class("remove"), input_type("button"), on_click(Remove(i)), attr("aria-label", "Remove")], [text("Remove")]),
+  ]))
+  let bal = map(balances(m.expenses), fn(b) => li([], [text("{b.0}: {fmt_signed(b.1)}")]))
+  return div([class("container"), attr("style", "max-width: 40rem; margin: 2rem auto; padding: 0 1rem")], [
+    h1([], [text("Splitter")]),
+    form([on_submit(Add)], [
+      div([attr("style", "display: flex; flex-wrap: wrap; gap: 0.5rem")], [
+        input([id("name"), placeholder("Who paid?"), value(m.name), on_input(fn(s) => SetName(s))]),
+        input([id("amount"), placeholder("Amount, e.g. 12.50"), value(m.amount), on_input(fn(s) => SetAmount(s))]),
+        input([id("desc"), placeholder("What for? (optional)"), value(m.desc), on_input(fn(s) => SetDesc(s))]),
+        button([id("add"), input_type("submit")], [text("Add")]),
+      ]),
+    ]),
+    if m.error == "" then nothing() else p([id("error"), attr("role", "alert"), attr("style", "color: var(--danger)")], [text(m.error)]),
+    h2([], [text("Expenses")]),
+    ul([id("expenses")], rows),
+    p([id("total")], [text("Total: {fmt_cents(total_cents(m.expenses))}")]),
+    h2([], [text("Balances")]),
+    ul([id("balances")], bal),
+  ])
+}
+
+fn load_expenses(saved: Option[str]) -> list[Expense] {
+  return match saved {
+    None => [],
+    Some(t) => {
+      let r: Result[list[Expense], str] = json_decode(t)
+      return unwrap_or(r, [])
+    }
+  }
+}
+
+fn main() uses io {
+  let xs = load_expenses(ui_load(storage_key()))
+  ui_run(Next(Model(xs, "", "", "", ""), []), update, view)
+}
+
+// ---- tests
+
+test "amount parsing" {
+  assert parse_amount("5") == Some(500)
+  assert parse_amount(" 5.5 ") == Some(550)
+  assert parse_amount("0.01") == Some(1)
+  assert parse_amount("0") == None
+  assert parse_amount("-1") == None
+  assert parse_amount("1.234") == None
+  assert parse_amount("abc") == None
+  assert parse_amount("") == None
+  assert parse_amount("1.") == None
+  assert parse_amount(".5") == None
+}
+
+test "balances" {
+  let xs = [Expense("Ann", 3000, "pizza"), Expense("Bob", 1000, "")]
+  assert balances(xs) == [("Ann", 1000), ("Bob", -1000)]
+  let ys = [Expense("Ann", 1000, ""), Expense("Bob", 0, ""), Expense("Cy", 0, "")]
+  assert map(balances(ys), fn(b) => fmt_signed(b.1)) == ["+6.67", "-3.33", "-3.33"]
+  assert fmt_signed(0) == "0.00"
+  assert expense_text(xs[0]) == "Ann paid 30.00 for pizza"
+  assert expense_text(xs[1]) == "Bob paid 10.00"
+}
+
+test "adding validates" {
+  let m = Model([], "  Ann ", "12.5", "pizza", "")
+  let n = update(m, Add).model
+  assert len(n.expenses) == 1
+  assert n.amount == "" and n.desc == "" and n.name == "  Ann "
+  let bad = update(n with (amount: "x"), Add).model
+  assert bad.error != "" and len(bad.expenses) == 1
+  assert contains(html_render(view(bad)), "id=\"error\"")
+}
