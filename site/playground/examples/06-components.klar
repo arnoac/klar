@@ -1,0 +1,55 @@
+// Components
+// std.kit: tabs, fields, a switch, a dialog and toasts, with no CSS written.
+
+use std.ui { Next, ui_run, ui_after }
+use std.html { Html, h1, p, input, button, text, value, on_input, on_click }
+use std.layout { Sm, Md, container, stack, row, gap }
+use std.kit { Tab, Toast, Success, Outline, Destructive, tabs, field, toggle, dialog, toasts, variant, alert, Info }
+
+struct Model { tab: str, name: str, emails: bool, confirming: bool, notes: list[Toast], next_id: int }
+
+enum Msg { Picked(tab: str), Named(name: str), Emails(on: bool), AskDelete, CloseDialog, Delete, Dismiss(id: int) }
+
+fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
+  return match msg {
+    Picked(t) => Next(m with (tab: t), []),
+    Named(n) => Next(m with (name: n), []),
+    Emails(on) => Next(m with (emails: on), []),
+    AskDelete => Next(m with (confirming: true), []),
+    CloseDialog => Next(m with (confirming: false), []),
+    Delete => Next(m with (confirming: false, next_id: m.next_id + 1,
+      notes: push(m.notes, Toast(m.next_id, Success, "Deleted", "The project is gone."))), [ui_after(3000, Dismiss(m.next_id))]),
+    Dismiss(id) => Next(m with (notes: filter(m.notes, fn(t) => t.id != id)), []),
+  }
+}
+
+fn profile(m: Model) -> Html[Msg] {
+  return stack([gap(Md)], [
+    field("Name", input([value(m.name), on_input(fn(s) => Named(s))])),
+    toggle("Email me", "News about Klar, at most once a month.", m.emails, fn(on) => Emails(on)),
+    p([], [text(if m.name == "" then "Hello!" else "Hello, {m.name}!")]),
+  ])
+}
+
+fn danger(m: Model) -> Html[Msg] {
+  return stack([gap(Md)], [
+    alert([], Info, "Careful", [text("Deleting cannot be undone.")]),
+    row([], [button([variant(Destructive), on_click(AskDelete)], [text("Delete project")])]),
+  ])
+}
+
+fn view(m: Model) -> Html[Msg] {
+  return container([], [
+    h1([], [text("Settings")]),
+    tabs([], m.tab, [Tab("profile", "Profile", profile(m)), Tab("danger", "Danger zone", danger(m))], fn(t) => Picked(t)),
+    dialog(m.confirming, "Delete this project?", "This cannot be undone.", CloseDialog, [], [
+      button([variant(Outline), on_click(CloseDialog)], [text("Cancel")]),
+      button([variant(Destructive), on_click(Delete)], [text("Delete")]),
+    ]),
+    toasts(m.notes, fn(id) => Dismiss(id)),
+  ])
+}
+
+fn main() uses io {
+  ui_run(Next(Model("profile", "", true, false, [], 1), []), update, view)
+}

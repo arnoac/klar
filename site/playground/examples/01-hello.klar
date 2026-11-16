@@ -1,0 +1,17 @@
+// Hello, Klar
+// Edit this program and press Run (or Ctrl+Enter). Test runs the test blocks.
+
+fn greeting(name: str) -> str {
+  return if name == "" then "Hello, stranger!" else "Hello, {name}!"
+}
+
+fn main() uses io {
+  for name in ["Ada", "", "Grace"] {
+    print(greeting(name))
+  }
+}
+
+test "greets by name" {
+  assert greeting("Ada") == "Hello, Ada!"
+  assert greeting("") == "Hello, stranger!"
+}

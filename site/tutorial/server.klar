@@ -1,0 +1,52 @@
+// The backend: serves the page and answers the typed calls from api.klar.
+//
+//   klar dev server.klar app.klar      then open http://127.0.0.1:8000
+
+use std.web { Route, web_get, web_serve, web_port, web_file }
+use std.api { ApiError, Refused, api_serve }
+use std.sqlite { Database }
+use api { Bookmark, NewBookmark, list_bookmarks, add_bookmark, remove_bookmark, check_bookmark }
+use store { store_open, store_list, store_add, store_remove }
+
+fn everything(db: Database) -> Result[list[Bookmark], ApiError] uses io {
+  return Ok(store_list(db)?)
+}
+
+// `?` on a database error gives Internal, which the client sees as a 500.
+fn save(db: Database, b: NewBookmark) -> Result[Bookmark, ApiError] uses io {
+  let valid = match check_bookmark(b) {
+    Ok(v) => v,
+    Err(problem) => { return Err(Refused(400, problem)) }
+  }
+  return Ok(store_add(db, valid)?)
+}
+
+fn delete(db: Database, id: int) -> Result[unit, ApiError] uses io {
+  if not store_remove(db, id)? {
+    return Err(Refused(404, "no such bookmark"))
+  }
+  return Ok(())
+}
+
+fn routes(db: Database) -> list[Route] {
+  return [
+    web_get("/", fn(req) => web_file("app.html")),
+    api_serve(list_bookmarks(), fn(req, nothing) => everything(db)),
+    api_serve(add_bookmark(), fn(req, b) => save(db, b)),
+    api_serve(remove_bookmark(), fn(req, id) => delete(db, id)),
+  ]
+}
+
+fn main() uses io {
+  match store_open("bookmarks.db") {
+    Err(e) => print("cannot open the database: {e}"),
+    Ok(db) => {
+      let port = web_port(8080)
+      print("bookmarks on http://127.0.0.1:{port}")
+      match web_serve(port, routes(db)) {
+        Ok(_) => {}
+        Err(e) => print("server error: {e}"),
+      }
+    }
+  }
+}

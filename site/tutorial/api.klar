@@ -1,0 +1,30 @@
+// The calls between the browser (app.klar) and the server (server.klar), and the data they carry.
+// Both sides import this file, so the checker holds both ends to the same types.
+
+use std.api { Api }
+
+struct Bookmark { id: int, title: str, url: str }
+struct NewBookmark { title: str, url: str }
+
+fn list_bookmarks() -> Api[unit, list[Bookmark]] { return Api("list_bookmarks") }
+fn add_bookmark() -> Api[NewBookmark, Bookmark] { return Api("add_bookmark") }
+fn remove_bookmark() -> Api[int, unit] { return Api("remove_bookmark") }
+
+// The rules for a new bookmark, shared by the form (instant feedback) and the server (the real check).
+fn check_bookmark(b: NewBookmark) -> Result[NewBookmark, str] {
+  let title = trim(b.title)
+  let url = trim(b.url)
+  if title == "" {
+    return Err("Give the bookmark a title.")
+  }
+  if not (starts_with(url, "https://") or starts_with(url, "http://")) {
+    return Err("The address must start with https:// or http://.")
+  }
+  return Ok(NewBookmark(title: title, url: url))
+}
+
+test "titles are required and addresses must be web links" {
+  assert check_bookmark(NewBookmark(" Klar ", " https://example.com ")) == Ok(NewBookmark("Klar", "https://example.com"))
+  assert is_err(check_bookmark(NewBookmark("", "https://example.com")))
+  assert is_err(check_bookmark(NewBookmark("Bad", "javascript:alert(1)")))
+}

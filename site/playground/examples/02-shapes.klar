@@ -1,0 +1,39 @@
+// Enums and match
+// A match must cover every case: delete the Triangle arm and press Run to see the checker's answer.
+
+enum Shape {
+  Circle(radius: float),
+  Rect(width: float, height: float),
+  Triangle(base: float, height: float),
+}
+
+fn area(s: Shape) -> float {
+  return match s {
+    Circle(r) => 3.14159 * r * r,
+    Rect(w, h) => w * h,
+    Triangle(b, h) => b * h / 2.0,
+  }
+}
+
+fn describe(s: Shape) -> str {
+  let kind = match s {
+    Circle(_) => "circle",
+    Rect(w, h) => if w == h then "square" else "rectangle",
+    Triangle(_, _) => "triangle",
+  }
+  return "{kind} with area {area(s)}"
+}
+
+fn main() uses io {
+  let shapes = [Circle(1.0), Rect(width: 2.0, height: 2.0), Rect(2.0, 3.0), Triangle(4.0, 1.5)]
+  for s in shapes {
+    print(describe(s))
+  }
+  let total = fold(shapes, 0.0, fn(acc, s) => acc + area(s))
+  print("total area: {total}")
+}
+
+test "areas" {
+  assert area(Rect(2.0, 3.0)) == 6.0
+  assert describe(Rect(1.0, 1.0)) == "square with area 1.0"
+}

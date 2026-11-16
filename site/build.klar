@@ -1,0 +1,598 @@
+// Builds klar's website: the landing page, the guides, the language and library references, the playground
+// page and llms.txt. It is a Klar program itself, built from std.html, std.layout and std.kit.
+//
+//   klar run site/build.klar [OUT]       (from the repository root; OUT defaults to site/_site)
+//
+// site/build.sh runs this and then adds the playground's compiler (see site/README.md).
+
+use std.html { Html, Attr, text, raw_html, el, nothing, div, span, p, a, h1, h2, h3, ul, li, pre, code, nav, header,
+  footer, section, article, small, strong, img, button, select, option, textarea, label, class, id, href, src, alt, attr,
+  flag, html_render, html_escape, html_theme_css }
+use std.layout { Sm, Md, Lg, Xl, Tablet, Laptop, Readable, Wide, Full, container, row, stack, grid, spread, sidebar, box,
+  spacer, gap, cols, cols_at, max_width, pad_y, side_width, hide_from, show_from, grow }
+use std.kit { Outline, Ghost, Secondary, Neutral, Info, Large, variant, size, badge, kit_theme, default_theme }
+use std.fs { fs_read, fs_write, fs_mkdir, fs_list }
+use std.json { json_encode }
+use std.process { process_run, process_exit }
+use md { MdHeading, MdLink, md_render, md_headings, md_title, md_anchor }
+use highlight { highlight_klar }
+use stdref { StdItem, StdModule, std_parse, std_prelude, std_doc_markdown, std_summary }
+
+fn repo() -> str { return "https://github.com/arnoac/klar" }
+fn repo_file(path: str) -> str { return repo() + "/blob/main/" + path }
+
+// Where links in the Markdown sources lead on the site.
+fn site_links(root: str) -> list[MdLink] {
+  return [
+    MdLink("klar/SPEC.md", root + "reference.html"),
+    MdLink("SPEC.md", root + "reference.html"),
+    MdLink("start.md", root + "start.html"),
+    MdLink("tutorial.md", root + "tutorial.html"),
+  ]
+}
+
+// ---- page shell
+
+struct NavItem { slug: str, label: str, url: str }
+
+fn nav_items(root: str) -> list[NavItem] {
+  return [
+    NavItem("start", "Get started", root + "start.html"),
+    NavItem("tutorial", "Tutorial", root + "tutorial.html"),
+    NavItem("reference", "Language", root + "reference.html"),
+    NavItem("std", "Library", root + "std/index.html"),
+    NavItem("playground", "Playground", root + "playground.html"),
+  ]
+}
+
+fn logo(root: str) -> Html[unit] {
+  return a([class("brand"), href(root + "index.html"), attr("aria-label", "Klar home")], [
+    img([class("on-light"), src(root + "assets/logo-light.svg"), alt("Klar"), attr("height", "28")]),
+    img([class("on-dark"), src(root + "assets/logo-dark.svg"), alt("Klar"), attr("height", "28")]),
+  ])
+}
+
+fn site_header(root: str, current: str) -> Html[unit] {
+  let links = map(nav_items(root), fn(item) => a([href(item.url), class(if item.slug == current then "current" else ""),
+    attr("aria-current", if item.slug == current then "page" else "false")], [text(item.label)]))
+  return header([class("site-header")], [
+    div([class("site-header-in")], [
+      logo(root),
+      nav([class("site-nav"), attr("aria-label", "Main")], links),
+      spacer(),
+      a([class("site-agents"), href(root + "llms.txt"), attr("title", "The whole language in one file, for AI agents")], [text("llms.txt")]),
+      a([class("site-gh"), href(repo())], [text("GitHub")]),
+    ]),
+  ])
+}
+
+fn site_footer(root: str) -> Html[unit] {
+  return footer([class("site-footer")], [
+    container([max_width(Wide)], [
+      spread([], [
+        row([gap(Md)], [
+          a([href(root + "start.html")], [text("Get started")]),
+          a([href(root + "reference.html")], [text("Language reference")]),
+          a([href(root + "std/index.html")], [text("Standard library")]),
+          a([href(root + "llms.txt")], [text("llms.txt")]),
+          a([href(repo())], [text("Source on GitHub")]),
+        ]),
+        small([], [text("Klar is open source under the MIT License.")]),
+      ]),
+    ]),
+  ])
+}
+
+// Content-Security-Policy for the static pages: nothing runs or loads that is not on this site. The
+// playground has its own (it needs WebAssembly and a sandboxed frame for the programs it runs).
+fn page_csp() -> str {
+  return "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; "
+    + "object-src 'none'; base-uri 'none'; form-action 'none'"
+}
+
+fn playground_csp() -> str {
+  return "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; "
+    + "connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; frame-src 'self' blob:; "
+    + "object-src 'none'; base-uri 'none'; form-action 'none'"
+}
+
+fn page_html(root: str, title: str, description: str, csp: str, body: Html[unit], scripts: list[str]) -> str {
+  let script_tags = join(map(scripts, fn(s) => "<script type=\"module\" src=\"{html_escape(root + s)}\"></script>\n"), "")
+  return "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
+    + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+    + "<meta http-equiv=\"Content-Security-Policy\" content=\"{html_escape(csp)}\">\n"
+    + "<title>{html_escape(title)}</title>\n"
+    + "<meta name=\"description\" content=\"{html_escape(description)}\">\n"
+    + "<link rel=\"icon\" href=\"{root}assets/icon.svg\" type=\"image/svg+xml\">\n"
+    + "<link rel=\"stylesheet\" href=\"{root}site.css\">\n"
+    + script_tags
+    + "</head>\n<body>\n" + html_render(body) + "\n</body>\n</html>\n"
+}
+
+fn code_block(lang: str, source: str) -> Html[unit] {
+  return pre([class("code"), attr("data-lang", lang)], [code([], if lang == "klar" then highlight_klar(source) else [text(source)])])
+}
+
+// ---- documentation pages
+
+// A docs page: the site's sections and this page's headings down the side, the content in the middle.
+fn doc_layout(root: str, current: str, toc: list[MdHeading], body: list[Html[unit]]) -> Html[unit] {
+  let on_page = if len(toc) == 0 then nothing() else div([class("toc")], [
+    p([class("side-title")], [text("On this page")]),
+    ul([], map(toc, fn(h) => li([class("toc-" + str(h.level))], [a([href("#" + h.anchor)], [text(h.title)])]))),
+  ])
+  let side = div([class("doc-side")], [
+    p([class("side-title")], [text("Documentation")]),
+    ul([class("side-nav")], map(nav_items(root), fn(item) => li([], [a([href(item.url),
+      class(if item.slug == current then "current" else "")], [text(item.label)])]))),
+    on_page,
+  ])
+  return div([], [
+    site_header(root, current),
+    div([class("doc-wrap")], [sidebar([side_width(15), gap(Xl)], side, article([class("prose")], body))]),
+    site_footer(root),
+  ])
+}
+
+// Replaces each `<!-- include PATH -->` or `<!-- include PATH#section -->` line with that file (or the part of it
+// under a `// ---- section` comment) as a Klar code block, so guides show code that is tested.
+fn expand_includes(src: str) -> Result[str, str] uses io {
+  var out: list[str] = []
+  for line in split(src, "\n") {
+    let t = trim(line)
+    if starts_with(t, "<!-- include ") and ends_with(t, "-->") {
+      let target = trim(slice(t, 13, len(t) - 3))
+      let parts = split(target, "#")
+      let file = fs_read(parts[0])?
+      let body = if len(parts) > 1 then file_section(file, parts[1]) else trim(file)
+      if body == "" {
+        return Err("include {target}: no such section")
+      }
+      out = push(push(push(out, "```klar"), body), "```")
+    } else {
+      out = push(out, line)
+    }
+  }
+  return Ok(join(out, "\n"))
+}
+
+fn file_section(file: str, name: str) -> str {
+  var keep: list[str] = []
+  var inside = false
+  for line in split(file, "\n") {
+    if starts_with(line, "// ---- ") {
+      inside = trim(slice(line, 8, len(line))) == name
+    } else if inside {
+      keep = push(keep, line)
+    }
+  }
+  return trim(join(keep, "\n"))
+}
+
+fn markdown_page(out: str, root: str, slug: str, file: str, description: str) -> Result[unit, str] uses io {
+  let source = expand_includes(fs_read(file)?)?
+  let body = md_render(source, site_links(root))
+  let html = page_html(root, md_title(source) + " · Klar", description, page_csp(), doc_layout(root, slug, md_headings(source), body), [])
+  return fs_write(out + "/" + slug + ".html", html)
+}
+
+// ---- standard library reference
+
+fn std_modules() -> Result[list[StdModule], str] uses io {
+  let spec = fs_read("klar/SPEC.md")?
+  var mods: list[StdModule] = []
+  for f in fs_list("klar/std")? {
+    if ends_with(f, ".klar") {
+      let name = slice(f, 0, len(f) - 5)
+      mods = push(mods, std_parse(name, fs_read("klar/std/" + f)?, spec))
+    }
+  }
+  return Ok(mods)
+}
+
+// The first line of a module's introduction without its "std.name: " prefix.
+fn module_blurb(m: StdModule) -> str {
+  let first = split(m.intro, "\n")[0]
+  let parts = split(first, ": ")
+  return if len(parts) > 1 then upper(slice(parts[1], 0, 1)) + slice(join(slice(parts, 1, len(parts)), ": "), 1, 1000) else first
+}
+
+fn std_item_html(root: str, it: StdItem) -> Html[unit] {
+  return section([class("std-item"), id(it.name)], [
+    h3([], [code([], [text(it.name)]), a([class("anchor"), href("#" + it.name), attr("aria-hidden", "true")], [text("#")])]),
+    code_block("klar", it.signature),
+    div([], md_render(std_doc_markdown(it.doc), site_links(root))),
+  ])
+}
+
+fn std_module_page(root: str, m: StdModule, mods: list[StdModule]) -> Html[unit] {
+  let intro_lines = slice(split(m.intro, "\n"), 1, 1000)
+  let names = map(m.items, fn(it) => it.name) + map(m.also, fn(it) => it.name)
+  let also = if len(m.also) == 0 then [] else [
+    h2([id("more")], [text("More functions")]),
+    p([], [text("Listed without a description in the source; the signature says what they do.")]),
+    code_block("klar", join(map(m.also, fn(it) => it.signature), "\n")),
+  ]
+  let body = [
+    p([class("eyebrow")], [a([href("index.html")], [text("Standard library")])]),
+    h1([], [code([], [text("std." + m.name)])]),
+    p([class("lead")], [text(module_blurb(m))]),
+    div([], md_render(std_doc_markdown(join(intro_lines, "\n")), site_links(root))),
+    code_block("klar", "use std.{m.name} {{ " + join(slice(names, 0, 4), ", ") + (if len(names) > 4 then ", ... }}" else " }}")),
+    div([class("std-index")], map(m.items, fn(it) => a([href("#" + it.name)], [code([], [text(it.name)])]))
+      + map(m.also, fn(it) => a([href("#more")], [code([], [text(it.name)])]))),
+  ] + map(m.items, fn(it) => std_item_html(root, it)) + also + [
+    p([class("source-link")], [a([href(repo_file("klar/std/" + m.name + ".klar"))], [text("Source: klar/std/{m.name}.klar")])]),
+  ]
+  let toc = map(m.items, fn(it) => MdHeading(level: 3, title: it.name, anchor: it.name))
+  return doc_layout(root, "std", toc, body)
+}
+
+fn builtins_page(root: str, groups: list[StdModule]) -> Html[unit] {
+  let body = [
+    p([class("eyebrow")], [a([href("index.html")], [text("Standard library")])]),
+    h1([], [text("Built-in functions")]),
+    p([class("lead")], [text("Always available, with no `use`. Functions marked * in the language reference accept several types; the signature here shows the common case.")]),
+  ] + map(groups, fn(g) => section([], [
+    h2([id(md_anchor(g.name))], [text(upper(slice(g.name, 0, 1)) + slice(g.name, 1, 1000))]),
+    code_block("klar", join(map(g.items, fn(it) => it.signature), "\n")),
+  ])) + [p([class("source-link")], [a([href(repo_file("klar/prelude.py"))], [text("Source: klar/prelude.py")])])]
+  let toc = map(groups, fn(g) => MdHeading(level: 2, title: g.name, anchor: md_anchor(g.name)))
+  return doc_layout(root, "std", toc, body)
+}
+
+fn std_index_page(root: str, mods: list[StdModule]) -> Html[unit] {
+  let card_for = fn(name: str, url: str, blurb: str) => a([class("module-card"), href(url)], [
+    code([], [text(name)]), span([], [text(blurb)]),
+  ])
+  let body = [
+    h1([], [text("Standard library")]),
+    p([class("lead")], [text("Every module ships with Klar. Import names with use std.NAME {{ ... }}. These pages are generated from the library's source on every build, so they always match the compiler.")]),
+    div([class("module-grid")], push(map(mods, fn(m) => card_for("std." + m.name, m.name + ".html", module_blurb(m))),
+      card_for("built-ins", "builtins.html", "Lists, strings, maps, numbers, Option and Result: always available."))),
+  ]
+  return doc_layout(root, "std", [], body)
+}
+
+// ---- landing page
+
+fn feature(title: str, body: str) -> Html[unit] {
+  return div([class("feature")], [h3([], [text(title)]), p([], [text(body)])])
+}
+
+fn mistake_output() -> str uses io {
+  return match process_run(["python3", "-m", "klar", "check", "site/examples/mistake.klar"]) {
+    Ok(r) => trim(replace(r.stdout + r.stderr, "site/examples/", "")),
+    Err(e) => "(could not run the checker: {e})",
+  }
+}
+
+fn landing(root: str, sample: str, mistake: str, checked: str) -> Html[unit] {
+  return div([], [
+    site_header(root, ""),
+    el("main", [], [
+      section([class("hero")], [
+        container([max_width(Wide)], [
+          row([], [badge([], Info, "v0.15 · young and moving fast")]),
+          h1([], [text("A programming language for AI agents, and the people who work with them.")]),
+          p([class("lead")], [text("Klar is statically typed and small enough to learn from one page. Its compiler answers every mistake with a code, a position and a fix, so an agent can repair its own work. One language covers the browser, the server and the command line.")]),
+          row([gap(Sm)], [
+            a([class("button"), href(root + "playground.html")], [text("Try it in your browser")]),
+            a([class("button"), variant(Outline), href(root + "start.html")], [text("Get started")]),
+            a([class("button"), variant(Ghost), href(root + "llms.txt")], [text("For agents: llms.txt")]),
+          ]),
+        ]),
+      ]),
+      section([class("band")], [
+        container([max_width(Wide)], [
+          grid([cols(1), cols_at(Laptop, 2), gap(Lg)], [
+            stack([gap(Sm)], [p([class("caption")], [text("A whole program, with its test")]), code_block("klar", sample)]),
+            stack([gap(Sm)], [
+              p([class("caption")], [text("A mistake an agent might make, and what the compiler says")]),
+              code_block("klar", mistake),
+              pre([class("code terminal")], [code([], [text("$ klar check mistake.klar\n" + checked)])]),
+            ]),
+          ]),
+        ]),
+      ]),
+      section([class("band")], [
+        container([max_width(Wide)], [
+          h2([], [text("Built so that code comes out right")]),
+          grid([cols(1), cols_at(Tablet, 2), cols_at(Laptop, 3), gap(Lg)], [
+            feature("One page to learn", "The complete language reference is about 4,000 words. An agent reads it once, and llms.txt adds every library signature in a single file."),
+            feature("Mistakes caught before running", "Static types, no null, exhaustive match, and side effects declared in signatures (uses io). Every error has a stable code, line and column, and usually a hint; klar check --json gives it to tools."),
+            feature("One obvious way", "No shadowing, no overloading, immutable values and one name for each thing across a program, so reading and changing code holds fewer surprises."),
+            feature("Front end to back end", "Typed HTML, layouts and accessible components for the browser, routes and typed calls for the server, SQLite rows as records, live updates. Both sides share their types."),
+            feature("Safe by default", "HTML is escaped, SQL built from strings is a compile error, cross-site posts are refused, dependencies are pinned and hash-checked, and klar audit checks them for known vulnerabilities."),
+            feature("Runs where you need it", "An interpreter for quick runs, native executables through C, JavaScript for browsers and Node, and WebAssembly for heavy work in the page. npm packages and Python libraries come in with typed signatures."),
+          ]),
+        ]),
+      ]),
+      section([class("band")], [
+        container([max_width(Wide)], [
+          h2([], [text("Where Klar stands today")]),
+          p([class("lead narrow")], [text("Klar is new, and we measure it rather than promise. Here is what the numbers say so far.")]),
+          grid([cols(1), cols_at(Laptop, 3), gap(Lg)], [
+            feature("Agents: as correct, not yet as cheap", "Across three pilots with hidden tests, agents passed tasks in Klar as often as in TypeScript, but took longer and used more tokens; with a smaller model, about 2.4 times the time and 54% more tokens. The tasks so far are too easy to separate the languages on correctness."),
+            feature("Speed: depends on the backend", "Compiled with --release, Klar runs within 1 to 3 times of C and Go on the Benchmarks Game. The interpreter behind klar run is slow, 20 to 100 times slower than Python; build anything that computes a lot."),
+            feature("Ecosystem: borrowed for now", "There is no package registry yet. Klar packages come from git or local folders, and npm and Python libraries fill the gaps with typed bindings."),
+          ]),
+          row([gap(Md)], [
+            a([href(repo_file("eval/RESULTS.md"))], [text("Agent evaluation results")]),
+            a([href(repo_file("bench/benchmarksgame/README.md"))], [text("Benchmarks")]),
+            a([href(repo_file("ROADMAP.md"))], [text("Roadmap")]),
+          ]),
+        ]),
+      ]),
+      section([class("band")], [
+        container([max_width(Wide)], [
+          grid([cols(1), cols_at(Laptop, 2), gap(Lg)], [
+            stack([gap(Sm)], [
+              h2([], [text("Working with an agent?")]),
+              p([], [text("Give it llms.txt: the complete language reference followed by the signature and summary of every standard library function, in one plain text file. Then let it run klar check --json and klar test, and read the hints.")]),
+              row([gap(Sm)], [a([class("button"), variant(Outline), href(root + "llms.txt")], [text("Open llms.txt")])]),
+            ]),
+            box([], [code_block("text", "Read https://arnoac.github.io/klar/llms.txt before writing Klar.\nCheck your work with: klar check --json && klar test")]),
+          ]),
+        ]),
+      ]),
+    ]),
+    site_footer(root),
+  ])
+}
+
+// ---- playground page
+
+struct Example { name: str, title: str, code: str }
+
+fn examples() -> Result[list[Example], str] uses io {
+  var out: list[Example] = []
+  for f in fs_list("site/playground/examples")? {
+    if ends_with(f, ".klar") {
+      let source = fs_read("site/playground/examples/" + f)?
+      let first = split(source, "\n")[0]
+      let title = if starts_with(first, "// ") then slice(first, 3, len(first)) else f
+      let name = slice(f, 0, len(f) - 5)
+      out = push(out, Example(name: name, title: title, code: source))
+    }
+  }
+  return Ok(out)
+}
+
+fn playground(root: str, exs: list[Example]) -> Html[unit] {
+  let choices = map(exs, fn(e) => option([attr("value", e.name)], [text(e.title)]))
+  return div([class("pg-page")], [
+    site_header(root, "playground"),
+    el("main", [class("pg")], [
+      div([class("pg-bar")], [
+        label([class("visually-hidden"), attr("for", "pg-example")], [text("Example")]),
+        select([id("pg-example")], choices),
+        button([id("pg-run"), attr("title", "Run (Ctrl+Enter)"), flag("disabled", true)], [text("Run")]),
+        button([id("pg-test"), variant(Outline), flag("disabled", true)], [text("Test")]),
+        button([id("pg-fmt"), variant(Ghost), flag("disabled", true)], [text("Format")]),
+        button([id("pg-share"), variant(Ghost)], [text("Share")]),
+        spacer(),
+        span([id("pg-status"), class("pg-status"), attr("role", "status")], [text("Loading the compiler...")]),
+      ]),
+      div([class("pg-panes")], [
+        div([class("pg-editor")], [
+          pre([class("pg-hl code"), attr("aria-hidden", "true")], [code([id("pg-hl")], [])]),
+          textarea([id("pg-code"), attr("spellcheck", "false"), attr("autocapitalize", "off"), attr("autocomplete", "off"),
+            attr("aria-label", "Klar code")], []),
+        ]),
+        div([class("pg-out")], [
+          div([id("pg-preview-wrap"), class("pg-preview"), attr("hidden", "")], []),
+          pre([id("pg-console"), class("pg-console"), attr("aria-live", "polite")], []),
+        ]),
+      ]),
+      p([class("pg-note")], [
+        text("The real Klar compiler runs in your browser (Python compiled to WebAssembly, via Pyodide), turns your program into JavaScript and runs it in a sandboxed frame with no network access. Nothing is sent to a server. Files, processes, databases and servers are not available here; "),
+        a([href(root + "start.html")], [text("install Klar")]),
+        text(" for those."),
+      ]),
+    ]),
+  ])
+}
+
+// ---- llms.txt
+
+fn llms_txt(spec: str, mods: list[StdModule], groups: list[StdModule]) -> str {
+  var out: list[str] = [
+    "# Klar",
+    "",
+    "> Klar is a statically typed, general-purpose programming language designed to be easy for AI agents to learn, read, write and repair. Files end in .klar. This file is everything needed to write correct Klar: the complete language reference, then the signature of every built-in and standard library function.",
+    "",
+    "Workflow: `klar check --json FILE` (every error has a code, line, col and usually a hint), `klar test`, `klar run FILE`, `klar build`. Docs: https://arnoac.github.io/klar/ · Source: " + repo(),
+    "",
+  ]
+  // the reference's own title would be a second H1
+  let spec_lines = split(spec, "\n")
+  out = out + ["## Language reference", ""] + map(slice(spec_lines, 1, len(spec_lines)), fn(l) => if starts_with(l, "#") then "#" + l else l)
+  out = out + ["", "## Built-in functions (no import)", "", "```klar"]
+  for g in groups {
+    out = push(out, "// " + g.name)
+    out = out + map(g.items, fn(it) => it.signature)
+  }
+  out = out + ["```", "", "## Standard library", "", "Import with `use std.NAME {{ name1, name2 }}`. Each entry is the signature, then its summary.", ""]
+  for m in mods {
+    out = out + ["### std." + m.name, "", module_blurb(m), "", "```klar"]
+    for it in m.items {
+      let summary = std_summary(it.doc)
+      out = push(out, it.signature + (if summary == "" then "" else "   // " + summary))
+    }
+    out = out + map(m.also, fn(it) => it.signature)
+    out = out + ["```", ""]
+  }
+  return join(out, "\n")
+}
+
+// ---- styles
+
+fn site_css() -> str {
+  return html_theme_css() + kit_theme(default_theme() with (accent: "#2563eb")) + "\n" + r"""
+:root { --site-max: 76rem; --tok-kw: #7c3aed; --tok-type: #0369a1; --tok-str: #15803d; --tok-num: #c2410c; --tok-com: #71717a; --tok-fn: #1d4ed8; }
+@media (prefers-color-scheme: dark) { :root { --tok-kw: #c4b5fd; --tok-type: #7dd3fc; --tok-str: #86efac; --tok-num: #fdba74; --tok-com: #a1a1aa; --tok-fn: #93c5fd; } }
+html { scroll-padding-top: 4.5rem; }
+body { margin: 0; }
+body > * { max-width: none; padding-left: 0; padding-right: 0; }
+.on-dark { display: none; }
+@media (prefers-color-scheme: dark) { .on-dark { display: inline; } .on-light { display: none; } }
+.site-header { padding: 0; position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
+.site-header-in { max-width: var(--site-max); margin: 0 auto; padding: 0.6rem 1rem; display: flex; align-items: center; gap: 1.25rem; }
+.brand { display: flex; align-items: center; flex: none; }
+.brand img { height: 28px; width: auto; display: block; }
+.brand img.on-dark { display: none; }
+@media (prefers-color-scheme: dark) { .brand img.on-dark { display: block; } .brand img.on-light { display: none; } }
+.site-nav { display: flex; flex-wrap: nowrap; gap: 0.25rem; overflow-x: auto; scrollbar-width: none; }
+.site-nav a, .site-agents, .site-gh { color: var(--muted); text-decoration: none; padding: 0.35rem 0.6rem; border-radius: var(--radius); white-space: nowrap; font-size: 0.925rem; }
+.site-nav a:hover, .site-agents:hover, .site-gh:hover { color: var(--fg); background: var(--subtle); }
+.site-nav a.current { color: var(--fg); font-weight: 600; }
+.site-agents { font-family: var(--mono); font-size: 0.85rem; }
+@media (max-width: 760px) { .site-header-in { flex-wrap: wrap; row-gap: 0.25rem; } .site-nav { order: 3; width: 100%; margin: 0 -0.6rem; } .site-agents { display: none; } }
+@media (max-width: 1023px) { .pg-editor { min-height: 22rem; } .pg-console { min-height: 8rem; } }
+.site-footer { border-top: 1px solid var(--border); padding: 2rem 0; margin-top: 4rem; color: var(--muted); font-size: 0.9rem; }
+.site-footer a { color: var(--muted); }
+a.button { display: inline-flex; align-items: center; text-decoration: none; }
+.hero { padding: 4.5rem 0 3rem; }
+.hero h1 { font-size: clamp(2rem, 5vw, 3.4rem); line-height: 1.08; letter-spacing: -0.03em; max-width: 22ch; margin: 1rem 0; }
+.lead { font-size: 1.15rem; color: var(--muted); max-width: 46rem; line-height: 1.6; }
+.narrow { max-width: 40rem; }
+.band { padding: 2.5rem 0; }
+.band h2 { font-size: 1.6rem; letter-spacing: -0.02em; margin: 0 0 1.25rem; }
+.caption { color: var(--muted); font-size: 0.9rem; margin: 0; }
+.feature { border: 1px solid var(--border); border-radius: calc(var(--radius) * 1.5); padding: 1.25rem; background: var(--surface); }
+.feature h3 { margin: 0 0 0.5rem; font-size: 1.05rem; }
+.feature p { margin: 0; color: var(--muted); line-height: 1.6; }
+pre.code { background: var(--subtle); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.9rem 1rem; overflow-x: auto; font-size: 0.86rem; line-height: 1.55; margin: 0; }
+pre.code code { background: none; padding: 0; font-size: inherit; }
+code, pre, textarea { font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; }
+pre.terminal { background: #0b0d12; color: #e4e4e7; border-color: #0b0d12; }
+.tok-kw { color: var(--tok-kw); } .tok-type { color: var(--tok-type); } .tok-str { color: var(--tok-str); }
+.tok-num { color: var(--tok-num); } .tok-com { color: var(--tok-com); font-style: italic; } .tok-fn { color: var(--tok-fn); }
+.doc-wrap { max-width: var(--site-max); margin: 0 auto; padding: 2rem 1rem; }
+.doc-side { position: sticky; top: 4.5rem; max-height: calc(100vh - 5.5rem); overflow-y: auto; font-size: 0.9rem; }
+@media (max-width: 639px) { .doc-side { display: none; } }
+.side-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 0.5rem; font-weight: 600; }
+.doc-side ul { list-style: none; padding: 0; margin: 0 0 1.5rem; }
+.doc-side li a { display: block; padding: 0.2rem 0.5rem; border-radius: var(--radius); color: var(--muted); text-decoration: none; }
+.doc-side li a:hover { color: var(--fg); background: var(--subtle); }
+.doc-side li a.current { color: var(--fg); font-weight: 600; background: var(--subtle); }
+.toc li.toc-3 a { padding-left: 1.25rem; font-size: 0.85rem; }
+.prose { min-width: 0; max-width: 48rem; line-height: 1.7; }
+.prose h1 { font-size: 2.2rem; letter-spacing: -0.02em; line-height: 1.15; margin: 0 0 1rem; }
+.prose h2 { margin: 2.5rem 0 0.75rem; padding-top: 0.5rem; letter-spacing: -0.01em; }
+.prose h3 { margin: 1.75rem 0 0.5rem; }
+.prose pre.code { margin: 1rem 0; }
+.prose :not(pre) > code { background: var(--subtle); padding: 0.1rem 0.35rem; border-radius: 0.3rem; font-size: 0.88em; }
+.prose blockquote { margin: 1rem 0; padding: 0.25rem 1rem; border-left: 3px solid var(--accent); color: var(--muted); background: var(--subtle); border-radius: 0 var(--radius) var(--radius) 0; }
+.anchor { margin-left: 0.4rem; color: var(--border); text-decoration: none; opacity: 0; }
+h1:hover .anchor, h2:hover .anchor, h3:hover .anchor { opacity: 1; }
+.table-wrap { overflow-x: auto; margin: 1rem 0; }
+.table-wrap table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+.table-wrap th, .table-wrap td { border-bottom: 1px solid var(--border); padding: 0.45rem 0.6rem; text-align: left; vertical-align: top; }
+.eyebrow { margin: 0 0 0.25rem; font-size: 0.9rem; }
+.std-index { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 1rem 0 2rem; }
+.std-index a { text-decoration: none; }
+.std-item { border-top: 1px solid var(--border); padding-top: 0.5rem; margin-top: 1.5rem; }
+.source-link { margin-top: 3rem; font-size: 0.9rem; }
+.module-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 0.75rem; margin-top: 1.5rem; }
+.module-card { display: flex; flex-direction: column; gap: 0.35rem; padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius); text-decoration: none; color: var(--fg); background: var(--surface); }
+.module-card:hover { border-color: var(--accent); }
+.module-card span { color: var(--muted); font-size: 0.9rem; line-height: 1.5; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.pg-page { display: flex; flex-direction: column; min-height: 100vh; }
+.pg { flex: 1; display: flex; flex-direction: column; max-width: 100rem; width: 100%; margin: 0 auto; padding: 0.75rem 1rem 1rem; box-sizing: border-box; gap: 0.75rem; }
+.pg-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.pg-bar select { width: auto; max-width: 16rem; }
+.pg-status { color: var(--muted); font-size: 0.875rem; }
+.pg-panes { flex: 1; display: grid; grid-template-columns: 1fr; gap: 0.75rem; min-height: 32rem; }
+@media (min-width: 1024px) { .pg-panes { grid-template-columns: 1fr 1fr; } }
+.pg-editor { position: relative; border: 1px solid var(--border); border-radius: var(--radius); background: var(--subtle); min-height: 24rem; overflow: hidden; }
+.pg-editor pre, .pg-editor textarea { position: absolute; inset: 0; margin: 0; padding: 0.9rem 1rem; border: 0; border-radius: 0; font-family: var(--mono); font-size: 0.86rem; line-height: 1.55; white-space: pre; overflow: auto; tab-size: 2; box-sizing: border-box; letter-spacing: normal; }
+.pg-editor pre { background: transparent; pointer-events: none; }
+.pg-editor textarea { background: transparent; color: transparent; caret-color: var(--fg); resize: none; outline: none; width: 100%; height: 100%; box-shadow: none; }
+.pg-editor textarea::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); color: transparent; }
+.pg-editor:focus-within { border-color: var(--accent); }
+.pg-out { display: flex; flex-direction: column; gap: 0.75rem; min-height: 16rem; }
+.pg-preview { flex: 1; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--bg); min-height: 20rem; }
+.pg-preview iframe { width: 100%; height: 100%; min-height: 20rem; border: 0; display: block; }
+.pg-console { flex: 1; margin: 0; background: #0b0d12; color: #e4e4e7; border-radius: var(--radius); padding: 0.9rem 1rem; font-family: var(--mono); font-size: 0.85rem; line-height: 1.55; overflow: auto; white-space: pre-wrap; min-height: 10rem; }
+.pg-console .err { color: #fca5a5; }
+.pg-console .ok { color: #86efac; }
+.pg-console .dim { color: #a1a1aa; }
+.pg-console button.jump { all: unset; cursor: pointer; text-decoration: underline; color: #93c5fd; }
+.pg-note { color: var(--muted); font-size: 0.85rem; margin: 0; }
+"""
+}
+
+// ---- main
+
+fn copy_file(from: str, to: str) -> Result[unit, str] uses io {
+  return fs_write(to, fs_read(from)?)
+}
+
+fn build(out: str) -> Result[int, str] uses io {
+  let dirs = [out, out + "/assets", out + "/std", out + "/playground"]
+  for d in dirs {
+    fs_mkdir(d)?
+  }
+  var pages = 0
+  fs_write(out + "/site.css", site_css())?
+  copy_file("assets/logo/logo-light.svg", out + "/assets/logo-light.svg")?
+  copy_file("assets/logo/logo-dark.svg", out + "/assets/logo-dark.svg")?
+  copy_file("assets/logo/icon.svg", out + "/assets/icon.svg")?
+
+  let sample = fs_read("site/examples/sample.klar")?
+  let mistake = fs_read("site/examples/mistake.klar")?
+  let desc = "Klar is a statically typed programming language designed for AI agents and the people who work with them: one page to learn, precise compiler feedback, one language for browser and server."
+  fs_write(out + "/index.html", page_html("", "Klar: a programming language for AI agents", desc, page_csp(),
+    landing("", trim(sample), trim(mistake), mistake_output()), []))?
+  pages = pages + 1
+
+  markdown_page(out, "", "start", "site/content/start.md", "Install Klar, run your first program and make a web app.")?
+  markdown_page(out, "", "tutorial", "site/content/tutorial.md", "Build a small full-stack app in Klar: a typed API, SQLite, and a browser app.")?
+  markdown_page(out, "", "reference", "klar/SPEC.md", "The complete Klar language reference.")?
+  pages = pages + 3
+
+  let mods = std_modules()?
+  let groups = std_prelude(fs_read("klar/prelude.py")?)
+  fs_write(out + "/std/index.html", page_html("../", "Standard library · Klar", "Klar's standard library, generated from its source.",
+    page_csp(), std_index_page("../", mods), []))?
+  fs_write(out + "/std/builtins.html", page_html("../", "Built-in functions · Klar", "Klar's built-in functions.", page_csp(),
+    builtins_page("../", groups), []))?
+  for m in mods {
+    fs_write(out + "/std/" + m.name + ".html", page_html("../", "std.{m.name} · Klar", module_blurb(m), page_csp(),
+      std_module_page("../", m, mods), []))?
+  }
+  pages = pages + 2 + len(mods)
+
+  let exs = examples()?
+  fs_write(out + "/playground/examples.json", json_encode(exs))?
+  for f in ["playground.js", "compiler-worker.js", "highlight.js"] {
+    copy_file("site/playground/" + f, out + "/playground/" + f)?
+  }
+  fs_write(out + "/playground.html", page_html("", "Playground · Klar", "Write and run Klar in your browser, with no install.",
+    playground_csp(), playground("", exs), ["playground/playground.js"]))?
+  pages = pages + 1
+
+  let not_found = div([], [site_header("/klar/", ""), container([pad_y(Xl)], [
+    h1([], [text("Page not found")]),
+    p([], [a([href("/klar/index.html")], [text("Back to the Klar home page")])]),
+  ])])
+  fs_write(out + "/404.html", page_html("/klar/", "Not found · Klar", "Page not found.", page_csp(), not_found, []))?
+
+  fs_write(out + "/llms.txt", llms_txt(fs_read("klar/SPEC.md")?, mods, groups))?
+  return Ok(pages)
+}
+
+fn main() uses io {
+  let given = args()
+  let out = if len(given) > 0 then given[0] else "site/_site"
+  match build(out) {
+    Ok(n) => print("built {n} pages, the playground and llms.txt in {out}"),
+    Err(e) => {
+      eprint("site build failed: {e}")
+      process_exit(1)
+    }
+  }
+}

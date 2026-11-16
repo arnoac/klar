@@ -1,0 +1,31 @@
+// Bookmarks in SQLite. Rows come back as Bookmark values, matched by column name.
+
+use std.sqlite { Database, sqlite_open, sqlite_exec, sqlite_rows, sqlite_last_id, sql }
+use api { Bookmark, NewBookmark }
+
+fn store_open(path: str) -> Result[Database, str] uses io {
+  let db = sqlite_open(path)?
+  let _ = sqlite_exec(db, "create table if not exists bookmarks (id integer primary key, title text not null, url text not null)", [])?
+  return Ok(db)
+}
+
+fn store_list(db: Database) -> Result[list[Bookmark], str] uses io {
+  return sqlite_rows(db, "select id, title, url from bookmarks order by id desc", [])
+}
+
+fn store_add(db: Database, b: NewBookmark) -> Result[Bookmark, str] uses io {
+  let _ = sqlite_exec(db, "insert into bookmarks (title, url) values (?, ?)", [sql(b.title), sql(b.url)])?
+  return Ok(Bookmark(id: sqlite_last_id(db), title: b.title, url: b.url))
+}
+
+fn store_remove(db: Database, id: int) -> Result[bool, str] uses io {
+  return Ok(sqlite_exec(db, "delete from bookmarks where id = ?", [sql(id)])? > 0)
+}
+
+test "add, list and remove" {
+  let db = unwrap(store_open(":memory:"))
+  let saved = unwrap(store_add(db, NewBookmark("Klar", "https://example.com")))
+  assert unwrap(store_list(db)) == [saved]
+  assert unwrap(store_remove(db, saved.id))
+  assert unwrap(store_list(db)) == []
+}

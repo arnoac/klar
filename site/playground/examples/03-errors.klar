@@ -1,0 +1,48 @@
+// Errors without exceptions
+// Option and Result instead of null and exceptions; `?` passes an error up.
+
+struct Order { item: str, quantity: int, price_cents: int }
+
+fn parse_order(line: str) -> Result[Order, str] {
+  let parts = split(line, ",")
+  if len(parts) != 3 {
+    return Err("expected item,quantity,price but got '{line}'")
+  }
+  let quantity = parse_int(parts[1]).ok_or("bad quantity '{parts[1]}'")?
+  let price = parse_int(parts[2]).ok_or("bad price '{parts[2]}'")?
+  if quantity <= 0 {
+    return Err("quantity must be positive")
+  }
+  return Ok(Order(item: trim(parts[0]), quantity: quantity, price_cents: price))
+}
+
+fn total(lines: list[str]) -> Result[int, str] {
+  var sum = 0
+  for line in lines {
+    let o = parse_order(line)?
+    sum = sum + o.quantity * o.price_cents
+  }
+  return Ok(sum)
+}
+
+fn money(cents: int) -> str {
+  let rest = cents % 100
+  return "{cents / 100}." + (if rest < 10 then "0" else "") + str(rest)
+}
+
+fn main() uses io {
+  let good = ["tea, 2, 350", "cake, 1, 420"]
+  let bad = ["tea, 2, 350", "cake, lots, 420"]
+  for batch in [good, bad] {
+    match total(batch) {
+      Ok(cents) => print("total: {money(cents)}"),
+      Err(e) => print("error: {e}"),
+    }
+  }
+}
+
+test "a bad line stops the total" {
+  assert total(["a, 1, 100"]) == Ok(100)
+  assert total(["a, x, 100"]) == Err("bad quantity ' x'")
+  assert money(1205) == "12.05"
+}

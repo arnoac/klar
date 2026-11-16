@@ -1,0 +1,15 @@
+enum Status { Draft, Published, Archived }
+
+fn label(s: Status) -> str {
+  return match s {
+    Draft => "draft",
+    Published => "live",
+  }
+}
+
+fn main() uses io {
+  let posts = [Draft, Archived]
+  if len(posts) {
+    print(label(posts[0]))
+  }
+}

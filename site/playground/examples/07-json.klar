@@ -1,0 +1,22 @@
+// Automatic JSON
+// json_encode and json_decode work for every type; the type to read comes from where the result goes.
+
+use std.json { json_encode, json_decode }
+
+enum Role { Reader, Editor, Admin }
+struct User { name: str, role: Role, email: Option[str], tags: list[str] }
+
+fn main() uses io {
+  let ada = User(name: "Ada", role: Admin, email: Some("ada@example.com"), tags: ["math", "engines"])
+  let text = json_encode(ada)
+  print(text)
+
+  let back: Result[User, str] = json_decode(text)
+  print(back == Ok(ada))
+
+  let wrong: Result[User, str] = json_decode(r"{\"name\": \"Bob\", \"role\": \"Owner\", \"tags\": []}")
+  match wrong {
+    Ok(u) => print("read {u.name}"),
+    Err(e) => print("could not read it: {e}"),
+  }
+}

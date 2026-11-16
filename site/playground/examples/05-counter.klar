@@ -1,0 +1,42 @@
+// A browser app
+// Model, messages, a pure update and a pure view: std.ui runs it in the page.
+
+use std.ui { Next, ui_run }
+use std.html { Html, h1, p, button, text, on_click }
+use std.layout { Sm, container, row, gap }
+use std.kit { Outline, Ghost, variant, badge, Neutral }
+
+struct Model { count: int, step: int }
+
+enum Msg { Increment, Decrement, Reset, SetStep(step: int) }
+
+fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
+  return match msg {
+    Increment => Next(m with (count: m.count + m.step), []),
+    Decrement => Next(m with (count: m.count - m.step), []),
+    Reset => Next(m with (count: 0), []),
+    SetStep(s) => Next(m with (step: s), []),
+  }
+}
+
+fn view(m: Model) -> Html[Msg] {
+  return container([], [
+    h1([], [text("Counter")]),
+    p([], [text("The count is "), badge([], Neutral, str(m.count))]),
+    row([gap(Sm)], [
+      button([on_click(Decrement)], [text("- {m.step}")]),
+      button([on_click(Increment)], [text("+ {m.step}")]),
+      button([variant(Ghost), on_click(Reset)], [text("Reset")]),
+    ]),
+    row([gap(Sm)], map([1, 5, 10], fn(s) => button([variant(if s == m.step then Outline else Ghost), on_click(SetStep(s))], [text("step {s}")]))),
+  ])
+}
+
+fn main() uses io {
+  ui_run(Next(Model(count: 0, step: 1), []), update, view)
+}
+
+test "steps" {
+  let m = update(update(Model(0, 1), SetStep(5)).model, Increment).model
+  assert m.count == 5
+}

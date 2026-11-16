@@ -8,7 +8,9 @@
 A statically typed, general-purpose programming language designed to be easy for AI agents to learn, read,
 write and repair. The complete language reference is [klar/SPEC.md](klar/SPEC.md) (about 4,000 words); the
 reasoning behind each design choice is in [DESIGN.md](DESIGN.md), and what comes next is in
-[ROADMAP.md](ROADMAP.md).
+[ROADMAP.md](ROADMAP.md). The website, **https://arnoac.github.io/klar/**, has a guide, a tutorial, the standard
+library reference and a [playground](https://arnoac.github.io/klar/playground.html) that runs Klar in your
+browser; AI agents can read the whole language in one file, [llms.txt](https://arnoac.github.io/klar/llms.txt).
 
 Whether agents really make fewer mistakes in Klar is measured in [eval/](eval/README.md): the same tasks with
 hidden tests, given to an AI agent in Klar and in TypeScript. The first pilot's results, including where Klar
@@ -199,6 +201,7 @@ reach you, and the known limits.
 | `examples/apps/` | component showcase (`showcase`), Klar Board (multi-user task board with logins and live updates, ~1,400 lines), full-stack todo app, Game of Life on WebAssembly (`life`), server-rendered guestbook, todo JSON API, notes CLI, Python interop demo, Markdown notes (npm packages `marked` and `dompurify` in the browser and on Node) |
 | `editors/` | VS Code extension (highlighting, language server, debugger) and Neovim / Helix setup |
 | `bench/` | benchmarks against C, Go and Python (`python3 bench/run.py`), the Benchmarks Game programs (`bench/benchmarksgame`), and WebAssembly vs JavaScript in the browser (`bench/wasm`) |
+| `site/` | the website and playground, written in Klar (`site/build.sh`; see [site/README.md](site/README.md)) |
 | `tests/` | 172 tests: `python3 -m unittest discover tests` |
 
 ## License

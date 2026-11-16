@@ -1,0 +1,219 @@
+// The standard library reference, read straight from the sources (klar/std/*.klar and the built-ins in
+// klar/prelude.py), so it always matches the compiler that ships with it.
+//
+// A declaration's documentation is the run of `//` lines right above it. A function that the module itself
+// calls and that the language reference (`spec`) never names is an internal helper and is left out;
+// everything else is listed.
+
+use std.regex { regex_find_all }
+
+// One documented name: its kind ("fn" or "type"), name, signature as written in the source, and its comment.
+struct StdItem { kind: str, name: str, signature: str, doc: str }
+
+// A module: its name ("fs"), its introduction (the comment at the top), what it declares, and the
+// undocumented functions it offers.
+struct StdModule { name: str, intro: str, items: list[StdItem], also: list[StdItem] }
+
+fn std_strip_comment(line: str) -> str {
+  let t = slice(line, 2, len(line))
+  return if starts_with(t, " ") then slice(t, 1, len(t)) else t
+}
+
+fn std_is_decl(line: str) -> bool {
+  return starts_with(line, "fn ") or starts_with(line, "extern ") or starts_with(line, "enum ")
+    or starts_with(line, "struct ") or starts_with(line, "trait ")
+}
+
+// The name in "fn name[T](...", "struct Name {", "extern type Name".
+fn std_name_after(line: str, keyword: str) -> str {
+  let rest = slice(line, len(keyword), len(line))
+  var name = ""
+  for c in chars(rest) {
+    if c == "[" or c == "(" or c == " " or c == r"{" {
+      break
+    }
+    name = name + c
+  }
+  return name
+}
+
+// Drops `extern "target" ` so an extern reads like any other function.
+fn std_without_extern(line: str) -> str {
+  if starts_with(line, "extern type ") {
+    return slice(line, 7, len(line))
+  }
+  if not starts_with(line, "extern \"") {
+    return line
+  }
+  let parts = split(line, "\" ")
+  return join(slice(parts, 1, len(parts)), "\" ")
+}
+
+fn std_called_in(src: str, name: str) -> bool {
+  return len(regex_find_all("(?<![A-Za-z0-9_])" + name + r"\(", src)) > 1
+}
+
+// Parses one module's source.
+fn std_parse(name: str, src: str, spec: str) -> StdModule {
+  let lines = split(replace(src, "\r\n", "\n"), "\n")
+  let n = len(lines)
+  var i = 0
+  var intro: list[str] = []
+  while i < n and starts_with(lines[i], "//") {
+    intro = push(intro, std_strip_comment(lines[i]))
+    i = i + 1
+  }
+  let code_only = join(filter(lines, fn(l) => not starts_with(trim(l), "//")), "\n")
+  var items: list[StdItem] = []
+  var also: list[StdItem] = []
+  var pending: list[str] = []
+  while i < n {
+    let line = lines[i]
+    if starts_with(line, "//") {
+      let c = std_strip_comment(line)
+      pending = if starts_with(c, "----") then [] else push(pending, c)
+      i = i + 1
+    } else if std_is_decl(line) {
+      let plain = std_without_extern(line)
+      var sig = plain
+      var kind = "fn"
+      var item_name = ""
+      if starts_with(plain, "fn ") {
+        item_name = std_name_after(plain, "fn ")
+        var j = i
+        sig = plain
+        while not contains(sig, r"{") and j + 1 < n and not starts_with(lines[j], "extern ") {
+          j = j + 1
+          sig = sig + "\n" + lines[j]
+        }
+        if contains(sig, r"{") {
+          sig = trim(split(sig, r" {")[0])
+        }
+        i = j + 1
+      } else if starts_with(plain, "type ") {
+        kind = "type"
+        item_name = std_name_after(plain, "type ")
+        sig = "extern " + plain
+        i = i + 1
+      } else {
+        kind = "type"
+        let keyword = if starts_with(plain, "enum ") then "enum " else if starts_with(plain, "struct ") then "struct " else "trait "
+        item_name = std_name_after(plain, keyword)
+        var j = i
+        sig = plain
+        if ends_with(trim(plain), r"{") {
+          while j + 1 < n and not starts_with(lines[j], r"}") {
+            j = j + 1
+            sig = sig + "\n" + lines[j]
+          }
+        }
+        i = j + 1
+      }
+      let doc = join(pending, "\n")
+      let item = StdItem(kind: kind, name: item_name, signature: sig, doc: doc)
+      let helper = kind == "fn" and std_called_in(code_only, item_name)
+        and len(regex_find_all("(?<![A-Za-z0-9_])" + item_name + "(?![A-Za-z0-9_])", spec)) == 0
+      if helper {
+        // internal: used by the module, not part of what the reference describes
+      } else if doc != "" or kind == "type" {
+        items = push(items, item)
+      } else {
+        also = push(also, item)
+      }
+      pending = []
+    } else {
+      pending = []
+      i = i + 1
+    }
+  }
+  return StdModule(name: name, intro: join(intro, "\n"), items: items, also: also)
+}
+
+// The built-in functions (no `use` needed), grouped as the prelude groups them.
+fn std_prelude(prelude_py: str) -> list[StdModule] {
+  let body = split(split(prelude_py, "PRELUDE = r'''")[1], "'''")[0]
+  var groups: list[StdModule] = []
+  var title = ""
+  var items: list[StdItem] = []
+  for line in split(body, "\n") {
+    if starts_with(line, "// ---- ") {
+      if len(items) > 0 {
+        groups = push(groups, StdModule(name: title, intro: "", items: items, also: []))
+      }
+      title = std_strip_comment(line)
+      title = trim(slice(title, 5, len(title)))
+      items = []
+    } else if starts_with(line, "fn ") {
+      let sig = trim(split(line, r" {")[0])
+      items = push(items, StdItem(kind: "fn", name: std_name_after(line, "fn "), signature: sig, doc: ""))
+    }
+  }
+  if len(items) > 0 {
+    groups = push(groups, StdModule(name: title, intro: "", items: items, also: []))
+  }
+  return groups
+}
+
+// A comment turned into Markdown: lines indented by two or more spaces are code examples.
+fn std_doc_markdown(doc: str) -> str {
+  var out: list[str] = []
+  var in_code = false
+  var in_list = false
+  for raw in split(doc, "\n") {
+    // "  * item" lines (and their deeper-indented continuations) are a list, not code
+    let item = starts_with(raw, "  * ") or starts_with(raw, "  - ")
+    in_list = item or (in_list and starts_with(raw, "    "))
+    let line = if item then slice(raw, 2, len(raw)) else if in_list then "  " + trim(raw) else raw
+    let code_line = starts_with(line, "  ") and not in_list
+    if code_line and not in_code {
+      out = push(push(out, ""), "```klar")
+      in_code = true
+    } else if not code_line and in_code {
+      out = push(push(out, "```"), "")
+      in_code = false
+    }
+    out = push(out, if code_line then slice(line, 2, len(line)) else line)
+  }
+  if in_code {
+    out = push(out, "```")
+  }
+  return join(out, "\n")
+}
+
+// The first sentence of a comment (for summaries and llms.txt).
+fn std_summary(doc: str) -> str {
+  let flat = join(filter(split(doc, "\n"), fn(l) => not starts_with(l, "  ")), " ")
+  let first = split(flat, ". ")[0]
+  return if ends_with(first, ".") or first == "" then first else first + "."
+}
+
+test "a module's intro, documented items and undocumented API are told apart" {
+  let src = r"""
+    // std.demo: a demo.
+    //   demo_add(1, 2)
+
+    // Adds two numbers.
+    fn demo_add(a: int, b: int) -> int { return demo_helper(a) + b }
+    fn demo_helper(a: int) -> int { return a }
+    fn demo_plain(a: int) -> int { return a }
+    extern "x.y" fn demo_ext(s: str) -> str uses io
+    extern type DemoHandle
+    enum DemoKind {
+      One,
+      Two,
+    }
+    """
+  let m = std_parse("demo", src, "")
+  assert m.intro == "std.demo: a demo.\n  demo_add(1, 2)"
+  assert map(m.items, fn(it) => it.name) == ["demo_add", "DemoHandle", "DemoKind"]
+  assert m.items[0].signature == "fn demo_add(a: int, b: int) -> int"
+  assert m.items[1].signature == "extern type DemoHandle"
+  assert m.items[2].signature == "enum DemoKind {{\n  One,\n  Two,\n}}"
+  assert map(m.also, fn(it) => it.signature) == ["fn demo_plain(a: int) -> int", "fn demo_ext(s: str) -> str uses io"]
+}
+
+test "comments become Markdown with code blocks" {
+  assert std_doc_markdown("Use it:\n  f(1)\nDone.") == "Use it:\n\n```klar\nf(1)\n```\n\nDone."
+  assert std_doc_markdown("Rules:\n  * one\n    more\n  * two") == "Rules:\n* one\n  more\n* two"
+  assert std_summary("Adds two numbers. Then more.") == "Adds two numbers."
+}

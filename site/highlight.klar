@@ -1,0 +1,84 @@
+// Syntax highlighting for Klar code blocks: a small scanner that wraps keywords, types, strings, numbers and
+// comments in <span class="tok-...">. It only colours; anything it does not recognise is plain text.
+
+use std.html { Html, text, span, class, html_render }
+
+fn hl_keywords() -> list[str] {
+  return ["fn", "let", "var", "if", "then", "else", "while", "for", "in", "return", "break", "continue", "match",
+    "struct", "enum", "uses", "true", "false", "and", "or", "not", "assert", "test", "with", "use", "extern", "type",
+    "trait", "impl", "io"]
+}
+
+fn hl_is_digit(c: str) -> bool { return c >= "0" and c <= "9" }
+fn hl_is_word(c: str) -> bool {
+  return (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or hl_is_digit(c) or c == "_"
+}
+
+fn hl_tok(kind: str, s: str) -> Html[unit] { return span([class("tok-" + kind)], [text(s)]) }
+
+// The highlighted pieces of `src`, ready to go inside a <pre><code>.
+fn highlight_klar(src: str) -> list[Html[unit]] {
+  let cs = chars(src)
+  let n = len(cs)
+  let kws = hl_keywords()
+  var out: list[Html[unit]] = []
+  var plain = ""
+  var i = 0
+  while i < n {
+    let c = cs[i]
+    var j = i + 1
+    var kind = ""
+    if c == "/" and j < n and cs[j] == "/" {
+      while j < n and cs[j] != "\n" { j = j + 1 }
+      kind = "com"
+    } else if c == "\"" or (c == "r" and j < n and cs[j] == "\"") {
+      if c == "r" { j = j + 1 }
+      let triple = j + 1 < n and cs[j] == "\"" and cs[j + 1] == "\""
+      if triple {
+        j = j + 2
+        while j < n and not (cs[j] == "\"" and j + 2 < n and cs[j + 1] == "\"" and cs[j + 2] == "\"") { j = j + 1 }
+        j = min(j + 3, n)
+      } else {
+        while j < n and cs[j] != "\"" and cs[j] != "\n" {
+          if cs[j] == "\\" { j = j + 1 }
+          j = j + 1
+        }
+        j = min(j + 1, n)
+      }
+      kind = "str"
+    } else if hl_is_digit(c) {
+      while j < n and (hl_is_word(cs[j]) or (cs[j] == "." and j + 1 < n and hl_is_digit(cs[j + 1]))) { j = j + 1 }
+      kind = "num"
+    } else if hl_is_word(c) {
+      while j < n and hl_is_word(cs[j]) { j = j + 1 }
+      let word = join(slice(cs, i, j), "")
+      if contains(kws, word) {
+        kind = "kw"
+      } else if c >= "A" and c <= "Z" {
+        kind = "type"
+      } else if j < n and (cs[j] == "(" or cs[j] == "[") and not (i > 0 and cs[i - 1] == ".") {
+        kind = "fn"
+      }
+    }
+    let piece = join(slice(cs, i, j), "")
+    if kind == "" {
+      plain = plain + piece
+    } else {
+      if plain != "" {
+        out = push(out, text(plain))
+        plain = ""
+      }
+      out = push(out, hl_tok(kind, piece))
+    }
+    i = j
+  }
+  if plain != "" {
+    out = push(out, text(plain))
+  }
+  return out
+}
+
+test "keywords, types, strings, numbers and comments get their own spans" {
+  let out = join(map(highlight_klar("let s: Shape = area(\"<a>\", 2.5) // done"), fn(h) => html_render(h)), "")
+  assert out == "<span class=\"tok-kw\">let</span> s: <span class=\"tok-type\">Shape</span> = <span class=\"tok-fn\">area</span>(<span class=\"tok-str\">&quot;&lt;a&gt;&quot;</span>, <span class=\"tok-num\">2.5</span>) <span class=\"tok-com\">// done</span>"
+}

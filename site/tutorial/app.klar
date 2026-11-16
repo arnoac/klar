@@ -1,0 +1,108 @@
+// The browser app: a model, the messages that change it, a pure update and a pure view (std.ui).
+
+use std.ui { Next, ui_run }
+use std.html { Html, h1, form, input, button, a, ul, li, text, nothing, class, href, value, placeholder, input_type,
+  attr, on_input, on_submit, on_click, html_render }
+use std.layout { Sm, container, stack, row, spread, gap }
+use std.kit { Warning, alert, icon_button, empty_state, field }
+use std.api { ApiError, Refused, api_call, api_error_text }
+use api { Bookmark, NewBookmark, list_bookmarks, add_bookmark, remove_bookmark, check_bookmark }
+
+// ---- model
+
+struct Model {
+  bookmarks: list[Bookmark],
+  title: str,       // what is typed in the form
+  url: str,
+  problem: str,     // shown above the list; "" when all is well
+}
+
+enum Msg {
+  Loaded(reply: Result[list[Bookmark], ApiError]),
+  TitleTyped(text: str),
+  UrlTyped(text: str),
+  Save,
+  Saved(reply: Result[Bookmark, ApiError]),
+  Remove(id: int),
+  Removed(reply: Result[unit, ApiError]),
+}
+
+fn init() -> Next[Model, Msg] {
+  return Next(Model([], "", "", ""), [api_call(list_bookmarks(), (), fn(r) => Loaded(r))])
+}
+
+// ---- update
+
+fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
+  return match msg {
+    Loaded(reply) => match reply {
+      Ok(bs) => Next(m with (bookmarks: bs), []),
+      Err(e) => Next(m with (problem: api_error_text(e)), []),
+    },
+    TitleTyped(t) => Next(m with (title: t), []),
+    UrlTyped(u) => Next(m with (url: u), []),
+    Save => match check_bookmark(NewBookmark(m.title, m.url)) {
+      Err(problem) => Next(m with (problem: problem), []),
+      Ok(b) => Next(m with (title: "", url: "", problem: ""), [api_call(add_bookmark(), b, fn(r) => Saved(r))]),
+    },
+    Saved(reply) => match reply {
+      Ok(b) => Next(m with (bookmarks: [b] + m.bookmarks), []),
+      Err(e) => Next(m with (problem: api_error_text(e)), []),
+    },
+    Remove(id) => Next(m with (bookmarks: filter(m.bookmarks, fn(b) => b.id != id)),
+      [api_call(remove_bookmark(), id, fn(r) => Removed(r))]),
+    Removed(reply) => Next(m with (problem: match reply { Ok(_) => "", Err(e) => api_error_text(e) }), []),
+  }
+}
+
+// ---- view
+
+fn view(m: Model) -> Html[Msg] {
+  return container([], [
+    spread([], [h1([], [text("Bookmarks")]), text("{len(m.bookmarks)} saved")]),
+    form([on_submit(Save)], [stack([gap(Sm)], [
+      field("Title", input([value(m.title), placeholder("Klar docs"), on_input(fn(s) => TitleTyped(s))])),
+      field("Address", input([value(m.url), placeholder("https://"), on_input(fn(s) => UrlTyped(s))])),
+      button([input_type("submit")], [text("Save")]),
+    ])]),
+    if m.problem == "" then nothing() else alert([], Warning, m.problem, []),
+    if len(m.bookmarks) == 0 then empty_state("No bookmarks yet", "Save your first link above.", [])
+      else ul([class("list")], map(m.bookmarks, fn(b) => bookmark_row(b))),
+  ])
+}
+
+fn bookmark_row(b: Bookmark) -> Html[Msg] {
+  return li([], [
+    a([href(b.url), class("grow"), attr("rel", "noopener")], [text(b.title)]),
+    icon_button([on_click(Remove(b.id))], "Delete {b.title}", "×"),
+  ])
+}
+
+fn main() uses io {
+  ui_run(init(), update, view)
+}
+
+// ---- tests
+
+fn sample() -> Model {
+  return Model([Bookmark(1, "Klar <docs>", "https://example.com")], "", "", "")
+}
+
+test "saving checks the form before calling the server" {
+  let bad = update(sample() with (title: "x", url: "ftp://nope"), Save)
+  assert bad.model.problem == "The address must start with https:// or http://."
+  assert len(bad.cmds) == 0
+  let good = update(sample() with (title: "Spec", url: "https://example.com/spec"), Save)
+  assert good.model.title == "" and good.model.problem == ""
+  assert len(good.cmds) == 1
+}
+
+test "a saved bookmark goes to the top, a refused one shows why" {
+  let m = update(sample(), Saved(Ok(Bookmark(2, "New", "https://example.org")))).model
+  assert map(m.bookmarks, fn(b) => b.id) == [2, 1]
+  assert update(m, Saved(Err(Refused(400, "Give the bookmark a title.")))).model.problem == "Give the bookmark a title."
+}
+
+test "titles are escaped in the page" {
+  assert contains(html_render(view(sample())), "Klar &lt;docs&gt;")
+}
