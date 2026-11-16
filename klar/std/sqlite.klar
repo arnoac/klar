@@ -51,3 +51,28 @@ fn sqlite_first[T](db: Database, query: str, params: list[SqlValue]) -> Result[O
   let rows: list[T] = sqlite_rows(db, query, params)?
   return Ok(get(rows, 0))
 }
+
+// Bring the tables up to date when the program starts: each step (one SQL statement) runs once, in order, in a
+// transaction of its own, and the database remembers how many have run (`pragma user_version`). Only ever add
+// steps at the end. Returns how many ran; refuses a database that has run more steps than the program knows.
+//   sqlite_migrate(db, ["create table todos (id integer primary key, title text not null)",
+//                       "alter table todos add column done integer not null default 0"])?
+fn sqlite_migrate(db: Database, steps: list[str]) -> Result[int, str] uses io {
+  let done: int = unwrap_or(sqlite_first(db, "pragma user_version", [])?, 0)
+  if done > len(steps) {
+    return Err("the database has run {done} migrations but this program knows {len(steps)}: is the program older than the database?")
+  }
+  for i in range(done, len(steps)) {
+    let _ = sqlite_exec(db, "begin", [])?
+    match sqlite_exec(db, steps[i], []) {
+      Ok(_) => {}
+      Err(e) => {
+        let _ = sqlite_exec(db, "rollback", [])
+        return Err("migration {i + 1}: {e}")
+      }
+    }
+    let _ = sqlite_exec(db, "pragma user_version = {i + 1}", [])?
+    let _ = sqlite_exec(db, "commit", [])?
+  }
+  return Ok(len(steps) - done)
+}

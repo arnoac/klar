@@ -368,6 +368,10 @@ def cmd_dev(files, port):
     if dev.backend() is not None and shutil.which("node") is None:
         print("klar dev: the backend needs Node.js (node was not found on PATH)", file=sys.stderr)
         return 1
+    def stop(*_):
+        raise KeyboardInterrupt                 # SIGTERM stops the backend too, like Ctrl-C
+    import signal
+    signal.signal(signal.SIGTERM, stop)
     threading.Thread(target=dev.watch, daemon=True).start()
     print(f"klar dev: http://127.0.0.1:{port}  (watching {len(dev.watched())} .klar files; Ctrl-C to stop)",
           file=sys.stderr, flush=True)

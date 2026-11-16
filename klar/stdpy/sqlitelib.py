@@ -22,7 +22,12 @@ def _klar(v):
 
 
 def open_db(path):
-    conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    # production defaults, the same in every backend: write-ahead logging, and waiting up to 5 s for a lock
+    conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False, timeout=5.0)
+    try:
+        conn.execute("pragma journal_mode = wal")
+    except sqlite3.DatabaseError:
+        pass
     return conn
 
 

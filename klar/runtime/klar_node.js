@@ -80,6 +80,18 @@ function $http_response(status, headers, body) {
   return new $structs.HttpResponse(status, headers, body);
 }
 let $sqlite = null;
+// prepared statements are kept per database and SQL text, as in the other backends
+const $stmts = new WeakMap();
+function $prepare(db, sql) {
+  let m = $stmts.get(db);
+  if (!m) $stmts.set(db, m = new Map());
+  let st = m.get(sql);
+  if (!st) {
+    if (m.size >= 64) m.delete(m.keys().next().value);
+    m.set(sql, st = db.prepare(sql));
+  }
+  return st;
+}
 const $PBKDF2_ITERS = 600000;
 
 Object.assign($std, {
@@ -136,25 +148,29 @@ Object.assign($std, {
         $sqlite = await import("node:sqlite");
         process.emitWarning = emit;
       }
-      return $Ok(new $sqlite.DatabaseSync(p));
+      const db = new $sqlite.DatabaseSync(p);
+      // production defaults, the same in every backend: write-ahead logging, and waiting up to 5 s for a lock
+      db.exec("pragma busy_timeout = 5000");
+      try { db.exec("pragma journal_mode = wal"); } catch {}
+      return $Ok(db);
     } catch (e) { return $Err(`OperationalError: ${e.message}`); }
   },
   "klar.stdpy.sqlitelib.execute": (db, sql, params) => {
     if ($sql_many(sql)) return $Err("ProgrammingError: You can only execute one statement at a time.");
-    try { const st = db.prepare(sql), r = st.run(...$arr(params).map($sql_in)); return $Ok(/^\s*(select|with|pragma)\b/i.test(sql) ? 0 : Number(r.changes)); }
+    try { const st = $prepare(db, sql), r = st.run(...$arr(params).map($sql_in)); return $Ok(/^\s*(select|with|pragma)\b/i.test(sql) ? 0 : Number(r.changes)); }
     catch (e) { return $Err($sql_err(e)); }
   },
   "klar.stdpy.sqlitelib.query": (db, sql, params) => {
     if ($sql_many(sql)) return $Err("ProgrammingError: You can only execute one statement at a time.");
     try {
-      const st = db.prepare(sql);
+      const st = $prepare(db, sql);
       const types = st.columns ? Object.fromEntries(st.columns().map(c => [c.name, (c.type || "").toUpperCase()])) : {};
       const rows = st.all(...$arr(params).map($sql_in));
       return $Ok($L(rows.map(r => $M(Object.entries(r).map(([k, v]) => [k, $sql_out(v, types[k])])))));
     } catch (e) { return $Err($sql_err(e)); }
   },
   "klar.stdpy.sqlitelib.last_insert_id": db => Number(db.prepare("select last_insert_rowid() as id").get().id),
-  "klar.stdpy.sqlitelib.close": db => { db.close(); },
+  "klar.stdpy.sqlitelib.close": db => { $stmts.delete(db); db.close(); },
 
   "klar.stdpy.httplib.request": async (method, url, headers, body) => {
     if (!/^https?:\/\//i.test(url)) return $Err(`ValueError: unknown url type: '${url}' (http_request only fetches http:// and https:// URLs)`);
@@ -221,12 +237,48 @@ function $refuse(res, status) {
   res.writeHead(status, { "content-type": "text/plain; charset=utf-8", "content-length": "0", "connection": "close" });
   res.end();
 }
+// Files built into the program by `klar build server.klar app.klar --target node` (see klar/ship.py).
+const $asset_cache = new Map();
+function $asset(p) {
+  const table = globalThis.$klar_assets;
+  if (!table || p.startsWith("/")) return null;
+  const parts = p.split("/").filter(s => s && s !== ".");
+  if (parts.includes("..")) return null;
+  const key = parts.join("/");
+  if (!$asset_cache.has(key)) {
+    const a = table.get(key);
+    $asset_cache.set(key, a && { data: Buffer.from(a.data, "base64"), gz: a.gz && Buffer.from(a.gz, "base64"), etag: a.etag });
+  }
+  return $asset_cache.get(key);
+}
+// One line per request on stderr (KLAR_LOG=off silences it), as the native server writes.
+const $log_on = !["off", "0", "false"].includes(process.env.KLAR_LOG || "");
+function $log(req, res, t0) {
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  const path = req.url.split("?")[0].slice(0, 1000).replace(/[\x00-\x1f]/g, "?");
+  $write(2, `${new Date().toISOString().slice(0, 19)}Z ${req.method.slice(0, 16)} ${path} ${res.statusCode} ${ms.toFixed(1)}ms\n`);
+}
+// Signals reach the main thread; the program runs in a worker, so the main thread passes them on.
+function $on_stop(f) {
+  if ($wt.isMainThread) {
+    let stopping = false;
+    for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => { if (stopping) process.exit(128 + (sig === "SIGINT" ? 2 : 15)); stopping = true; f(sig); });
+  } else if ($wt.parentPort) {
+    $wt.parentPort.on("message", m => { if (m && m.klar_stop) f(m.klar_stop); });
+    $wt.parentPort.unref();
+    $wt.parentPort.postMessage({ klar_serving: true });
+  }
+}
 // HTTP server: each request is handled as it arrives; handlers are async, so requests interleave at io calls.
 function $serve(port, handler, max) {
   $flush();
   return new Promise(resolve => {
     let served = 0;
     const server = $http.createServer({ requestTimeout: 30000, headersTimeout: 30000, maxHeaderSize: 65536 }, (req, res) => {
+      if ($log_on) {
+        const t0 = process.hrtime.bigint();
+        res.on("finish", () => $log(req, res, t0));
+      }
       if ("transfer-encoding" in req.headers) return $refuse(res, 501);
       const limit = $max_body();
       if (Number(req.headers["content-length"] || 0) > limit) return $refuse(res, 413);
@@ -269,8 +321,17 @@ function $serve(port, handler, max) {
         if ("x-klar-file" in hs) {
           const p = hs["x-klar-file"];
           delete hs["x-klar-file"];
-          try { payload = $fs.readFileSync(p); }
-          catch { status = 404; payload = Buffer.from("not found\n"); hs = { "content-type": "text/plain; charset=utf-8" }; }
+          const a = $asset(p);
+          if (a) {
+            payload = a.data;
+            Object.assign(hs, { "etag": a.etag, "vary": "accept-encoding" });
+            hs["cache-control"] ??= "no-cache";
+            if (a.gz && /\bgzip\b/.test(req.headers["accept-encoding"] || "")) { payload = a.gz; hs["content-encoding"] = "gzip"; }
+            if ((req.headers["if-none-match"] || "").includes(a.etag)) { status = 304; payload = Buffer.alloc(0); delete hs["content-encoding"]; }
+          } else {
+            try { payload = $fs.readFileSync(p); }
+            catch { status = 404; payload = Buffer.from("not found\n"); hs = { "content-type": "text/plain; charset=utf-8" }; }
+          }
         }
         const out = {};
         for (const [k, v] of Object.entries(hs)) {
@@ -293,6 +354,17 @@ function $serve(port, handler, max) {
     server.maxConnections = 1024;
     server.on("error", e => resolve($Err(`OSError: ${e.message}`)));
     server.listen(port, process.env.HOST || "127.0.0.1");
+    // SIGTERM / SIGINT: stop taking connections, let requests in flight finish (up to KLAR_SHUTDOWN_SECONDS,
+    // default 10), close event streams, and return from http_serve
+    $on_stop(sig => {
+      const secs = Number(process.env.KLAR_SHUTDOWN_SECONDS || 10);
+      if ($log_on) $write(2, `klar: ${sig} received, finishing open requests (up to ${secs} s)\n`);
+      for (const subs of $topics.values()) for (const res of subs) res.end();
+      const force = setTimeout(() => server.closeAllConnections(), secs * 1000);
+      force.unref();
+      server.close(() => { clearTimeout(force); resolve($Ok(undefined)); });
+      server.closeIdleConnections();
+    });
   });
 }
 
@@ -305,6 +377,15 @@ async function $start(main) {
       stdin: false, stdout: false, stderr: false,
     });
     w.on("exit", c => { process.exitCode = c; });
+    w.on("message", m => {             // a server asks for SIGTERM and SIGINT, to stop gracefully (see $on_stop)
+      if (!m || !m.klar_serving) return;
+      let stopping = false;
+      for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => {
+        if (stopping) process.exit(128 + (sig === "SIGINT" ? 2 : 15));
+        stopping = true;
+        w.postMessage({ klar_stop: sig });
+      });
+    });
     w.on("error", e => { $write(2, $render_error(e) + "\n"); process.exitCode = 1; });
     return;
   }

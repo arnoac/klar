@@ -257,17 +257,30 @@ static KStr *ksb_done(KSB *b) { return k_str_new(b->p, b->len); }
 
 static void ksb_int(KSB *b, int64_t v) { char t[32]; int n = snprintf(t, sizeof t, "%lld", (long long)v); ksb_add(b, t, n); }
 
+/* d in %e form with the fewest digits that read back as d (the caller drops trailing zeros). Two different
+ * 15-digit decimals never read back as the same double, so when 15 digits read back, those digits without their
+ * trailing zeros are the shortest form; otherwise it is 16 or 17 digits. */
+static void k_shortest_e(char *tmp, size_t size, double d) {
+    if (fabs(d) < 2.2250738585072014e-308) {          /* subnormal: fewer digits of precision, so search them all */
+        for (int p = 1; p < 17; p++) {
+            snprintf(tmp, size, "%.*e", p - 1, d);
+            if (strtod(tmp, NULL) == d) return;
+        }
+    }
+    for (int p = 15; p < 17; p++) {
+        snprintf(tmp, size, "%.*e", p - 1, d);
+        if (strtod(tmp, NULL) == d) return;
+    }
+    snprintf(tmp, size, "%.16e", d);
+}
+
 /* Python-compatible repr() of a float: shortest round-trip digits. */
 static void k_fmt_float(char *out, double d) {
     if (isnan(d)) { strcpy(out, "nan"); return; }
     if (isinf(d)) { strcpy(out, d > 0 ? "inf" : "-inf"); return; }
     if (d == 0) { strcpy(out, signbit(d) ? "-0.0" : "0.0"); return; }
     char tmp[64];
-    int p;
-    for (p = 1; p <= 17; p++) {
-        snprintf(tmp, sizeof tmp, "%.*e", p - 1, d);
-        if (strtod(tmp, NULL) == d) break;
-    }
+    k_shortest_e(tmp, sizeof tmp, d);
     char digits[32]; int nd = 0; int neg = 0; char *q = tmp;
     if (*q == '-') { neg = 1; q++; }
     for (; *q && *q != 'e'; q++) if (*q != '.') digits[nd++] = *q;

@@ -351,7 +351,7 @@ class DevServer(unittest.TestCase):
         proc = subprocess.Popen([sys.executable, "-m", "klar", "dev", "server.klar", "app.klar", "--port", str(port)],
                                 cwd=app_dir, env=dict(os.environ, PYTHONPATH=ROOT),
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.addCleanup(proc.kill)
+        self.addCleanup(lambda: (proc.terminate(), proc.wait(10)))     # SIGTERM also stops its backend
         base = f"http://127.0.0.1:{port}"
         page = wait_for(base + "/")
         self.assertIn('<div id="app">', page)

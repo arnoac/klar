@@ -61,6 +61,11 @@ Exit status 2 (for example, no network) is not "all clear": treat it as a failur
 - Servers in every backend listen on 127.0.0.1 unless `HOST` says otherwise, refuse request bodies over
   `KLAR_MAX_BODY` bytes (default 10 MiB), malformed `Content-Length`, chunked request bodies and oversized
   headers, give clients 30 seconds to send a request, and drop response headers that contain line breaks.
+- The request log (stderr; `KLAR_LOG=off` turns it off) holds the method, path, status and time, never query
+  strings, headers or bodies, and control characters in a path cannot forge log lines.
+- `klar build` of a server builds in only the browser apps it names and the files in `public/` and `static/`,
+  never hidden files, `.klar` sources or databases. The Dockerfile from `klar build --docker` pins the Klar
+  commit it builds with and runs the app as an unprivileged user.
 - `klar dev` only answers requests addressed to localhost and never serves hidden files.
 
 **Databases (`std.sqlite`)**: values go in `?` parameters. Passing SQL built from strings (interpolation or

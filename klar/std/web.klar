@@ -73,6 +73,10 @@ fn web_handle(routes: list[Route], req: HttpRequest) -> HttpResponse uses io {
       None => {}
     }
   }
+  if not path_matched and req.path == "/healthz" and method == "GET" {
+    // the health check for load balancers and containers, unless the app has its own route
+    return web_secure(req, HttpResponse(200, ["content-type": "text/plain; charset=utf-8", "cache-control": "no-store"], "ok\n"))
+  }
   let status = if path_matched then "405" else "404"
   match find(routes, fn(r) => r.method == "") {
     Some(r) => {

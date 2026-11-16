@@ -793,8 +793,8 @@ static KJ *kj_parse(KStr *text, KStr **err) {
 static void kx_js_num(KSB *b, double f) {
     if (f != f || isinf(f)) { ksb_c(b, "null"); return; }
     if (f == 0) { ksb_c(b, "0"); return; }
-    char tmp[64]; int p;
-    for (p = 1; p <= 17; p++) { snprintf(tmp, sizeof tmp, "%.*e", p - 1, f); if (strtod(tmp, NULL) == f) break; }
+    char tmp[64];
+    k_shortest_e(tmp, sizeof tmp, f);
     char ds[32]; int k = 0, neg = 0; char *q = tmp;
     if (*q == '-') { neg = 1; q++; }
     for (; *q && *q != 'e'; q++) if (*q != '.') ds[k++] = *q;
@@ -1348,17 +1348,50 @@ static KEnum *kx_sqlite_open_db(KStr *path) {
     sqlite3 *db = NULL;
     int rc = sqlite3_open(path->data, &db);
     if (rc != SQLITE_OK) { KEnum *e = kx_sql_err(NULL, rc); e = k_err(k_p2s(k_cstr("OperationalError: unable to open database file"))); sqlite3_close(db); return e; }
+    /* production defaults, the same in every backend: write-ahead logging (readers never wait for a writer, one
+       sync per commit) and waiting up to 5 s for a lock held by another process instead of failing at once */
+    sqlite3_busy_timeout(db, 5000);
+    sqlite3_exec(db, "pragma journal_mode = wal", NULL, NULL, NULL);
     return k_ok(k_p2s(db));
+}
+/* Prepared statements are kept and reused (per database and SQL text), as Python's sqlite3 does: parsing the SQL
+ * again for every query costs more than running most of them. */
+#define KX_STMTS 64
+typedef struct { sqlite3 *db; char *sql; int64_t len; sqlite3_stmt *st; uint64_t used; } KXStmt;
+static KXStmt kx_stmts[KX_STMTS]; static uint64_t kx_stmt_clock;
+static sqlite3_stmt *kx_stmt_take(sqlite3 *db, KStr *sql) {
+    for (int i = 0; i < KX_STMTS; i++)
+        if (kx_stmts[i].db == db && kx_stmts[i].len == sql->len && !memcmp(kx_stmts[i].sql, sql->data, sql->len)) {
+            sqlite3_stmt *st = kx_stmts[i].st;
+            free(kx_stmts[i].sql); memset(&kx_stmts[i], 0, sizeof kx_stmts[i]);
+            return st;
+        }
+    return NULL;
+}
+static void kx_stmt_give(sqlite3 *db, KStr *sql, sqlite3_stmt *st) {
+    sqlite3_reset(st); sqlite3_clear_bindings(st);
+    int slot = 0;
+    for (int i = 0; i < KX_STMTS; i++) {
+        if (!kx_stmts[i].db) { slot = i; break; }
+        if (kx_stmts[i].used < kx_stmts[slot].used) slot = i;
+    }
+    if (kx_stmts[slot].db) { sqlite3_finalize(kx_stmts[slot].st); free(kx_stmts[slot].sql); }
+    char *copy = (char *)malloc(sql->len + 1);
+    if (!copy) { sqlite3_finalize(st); memset(&kx_stmts[slot], 0, sizeof kx_stmts[slot]); return; }
+    memcpy(copy, sql->data, sql->len);
+    kx_stmts[slot] = (KXStmt){db, copy, sql->len, st, ++kx_stmt_clock};
 }
 static KEnum *kx_sql_prepare(sqlite3 *db, KStr *sql, KList *params, sqlite3_stmt **st) {
     const char *tail = NULL;
-    int rc = sqlite3_prepare_v2(db, sql->data, (int)sql->len, st, &tail);
-    if (rc != SQLITE_OK) return kx_sql_err(db, rc);
-    if (tail) { while (*tail == ' ' || *tail == '\n' || *tail == '\t' || *tail == '\r' || *tail == ';') tail++; }
-    if (tail && *tail) { sqlite3_finalize(*st); return k_err(k_p2s(k_cstr("ProgrammingError: You can only execute one statement at a time."))); }
+    if (!(*st = kx_stmt_take(db, sql))) {
+        int rc = sqlite3_prepare_v2(db, sql->data, (int)sql->len, st, &tail);
+        if (rc != SQLITE_OK) return kx_sql_err(db, rc);
+        if (tail) { while (*tail == ' ' || *tail == '\n' || *tail == '\t' || *tail == '\r' || *tail == ';') tail++; }
+        if (tail && *tail) { sqlite3_finalize(*st); return k_err(k_p2s(k_cstr("ProgrammingError: You can only execute one statement at a time."))); }
+    }
     int want = sqlite3_bind_parameter_count(*st);
     if (want != params->len) {
-        sqlite3_finalize(*st);
+        kx_stmt_give(db, sql, *st);
         return k_err(k_p2s(kx_fmt("ProgrammingError: Incorrect number of bindings supplied. The current statement uses %d, and there are %lld supplied.", want, (long long)params->len)));
     }
     for (int64_t i = 0; i < params->len; i++) {
@@ -1378,8 +1411,8 @@ static KEnum *kx_sqlite_execute(void *dbp, KStr *sql, KList *params) {
     int rc;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {}
     int ro = sqlite3_stmt_readonly(st);
-    sqlite3_finalize(st);
-    if (rc != SQLITE_DONE) return kx_sql_err(db, rc);
+    if (rc != SQLITE_DONE) { KEnum *err = kx_sql_err(db, rc); kx_stmt_give(db, sql, st); return err; }
+    kx_stmt_give(db, sql, st);
     return k_ok((KS)(int64_t)(ro ? 0 : sqlite3_changes(db)));
 }
 static KEnum *kx_sqlite_query(void *dbp, KStr *sql, KList *params) {
@@ -1402,12 +1435,17 @@ static KEnum *kx_sqlite_query(void *dbp, KStr *sql, KList *params) {
         }
         rows = k_list_push(rows, k_p2s(m));
     }
-    sqlite3_finalize(st);
-    if (rc != SQLITE_DONE) return kx_sql_err(db, rc);
+    if (rc != SQLITE_DONE) { KEnum *err = kx_sql_err(db, rc); kx_stmt_give(db, sql, st); return err; }
+    kx_stmt_give(db, sql, st);
     return k_ok(k_p2s(rows));
 }
 static int64_t kx_sqlite_last_insert_id(void *db) { return sqlite3_last_insert_rowid((sqlite3 *)db); }
-static int64_t kx_sqlite_close(void *db) { sqlite3_close((sqlite3 *)db); return 0; }
+static int64_t kx_sqlite_close(void *db) {
+    for (int i = 0; i < KX_STMTS; i++)
+        if (kx_stmts[i].db == db) { sqlite3_finalize(kx_stmts[i].st); free(kx_stmts[i].sql); memset(&kx_stmts[i], 0, sizeof kx_stmts[i]); }
+    sqlite3_close((sqlite3 *)db);
+    return 0;
+}
 
 /* Typed rows: `sql(value)` and `sql_read(rows)` (same rules as klar/sqlconv.py). */
 static int kx_sql_plain(KD *d) {
@@ -1880,136 +1918,290 @@ static void kx_recover_pop(void) {
     for (int i = kx_nrecover - 1; i >= 0; i--)
         if (pthread_equal(kx_recover[i].thread, me)) { kx_recover[i] = kx_recover[--kx_nrecover]; return; }
 }
-static void kx_serve_one(int fd, KClo *handler) {
+/* Files built into the executable (`klar build` of a server with browser apps or a public/ folder): web_file and
+ * web_static look here first. The table is filled in by the generated program; each file is also kept gzipped
+ * when that is smaller, and answered with an ETag so browsers revalidate with a cheap 304. */
+typedef struct { const char *path; const char *data; int64_t len; const char *gz; int64_t gzlen; const char *etag; } KXAsset;
+static const KXAsset *kx_assets; static int kx_nassets;
+static const KXAsset *kx_asset_find(KStr *path) {
+    if (!kx_nassets) return NULL;
+    char key[1024]; int n = 0;
+    const char *p = path->data, *e = p + path->len;
+    while (p < e) {                                /* "./app.html", ".//public/./a.css" -> "app.html", "public/a.css" */
+        const char *s = memchr(p, '/', e - p); if (!s) s = e;
+        int64_t l = s - p;
+        if (l == 0 || (l == 1 && p[0] == '.')) { p = s + 1; continue; }
+        if (l == 2 && p[0] == '.' && p[1] == '.') return NULL;
+        if (n + l + 1 >= (int64_t)sizeof key) return NULL;
+        if (n) key[n++] = '/';
+        memcpy(key + n, p, l); n += (int)l;
+        p = s + 1;
+    }
+    key[n] = 0;
+    if (path->len && path->data[0] == '/') return NULL;      /* an absolute path is a file on disk */
+    for (int i = 0; i < kx_nassets; i++) if (!strcmp(kx_assets[i].path, key)) return &kx_assets[i];
+    return NULL;
+}
+
+/* Production behaviour of the server: KLAR_LOG=off silences the one-line-per-request log on stderr; SIGTERM or
+ * SIGINT stops taking new connections, lets requests in flight finish (up to KLAR_SHUTDOWN_SECONDS, default 10)
+ * and returns from http_serve; a second signal exits at once. Idle keep-alive connections close after 5 s. */
+static volatile sig_atomic_t kx_stopping;
+static int kx_stop_pipe[2] = {-1, -1};
+static int kx_log_on = 1;
+static void kx_on_signal(int sig) {
+    if (kx_stopping) _exit(128 + sig);
+    kx_stopping = sig;
+    if (kx_stop_pipe[1] >= 0) { ssize_t w = write(kx_stop_pipe[1], "x", 1); (void)w; }
+}
+static void kx_log(KStr *method, KStr *path, int64_t status, struct timespec *t0) {
+    if (!kx_log_on) return;
+    struct timespec t1; clock_gettime(CLOCK_MONOTONIC, &t1);
+    double ms = (t1.tv_sec - t0->tv_sec) * 1e3 + (t1.tv_nsec - t0->tv_nsec) / 1e6;
+    time_t now = time(NULL); struct tm tm; gmtime_r(&now, &tm);
+    char line[1200], when[32];
+    strftime(when, sizeof when, "%Y-%m-%dT%H:%M:%SZ", &tm);
+    int pl = path->len > 1000 ? 1000 : (int)path->len;
+    int n = snprintf(line, sizeof line, "%s %.*s %.*s %lld %.1fms\n", when, (int)(method->len > 16 ? 16 : method->len),
+                     method->data, pl, path->data, (long long)status, ms);
+    for (int i = 0; i < n - 1; i++) if ((unsigned char)line[i] < ' ') line[i] = '?';   /* no forged log lines */
+    ssize_t w = write(2, line, n); (void)w;
+}
+static int kx_header_has(KMap *hs, const char *name, const char *token) {
+    int64_t f = k_map_find(hs, k_p2s(k_cstr(name)));
+    if (f < 0) return 0;
+    KStr *v = K_S2P(KStr *, hs->d->vals[f]);
+    int64_t tl = (int64_t)strlen(token);
+    for (int64_t i = 0; i + tl <= v->len; i++)
+        if (!strncasecmp(v->data + i, token, tl)) return 1;
+    return 0;
+}
+/* Wait until fd has data, a stop was asked for, or `ms` passed. 1: data. */
+static int kx_wait_readable(int fd, int ms) {
+    while (ms > 0) {
+        if (kx_stopping) return 0;
+        struct pollfd p = {fd, POLLIN, 0};
+        int slice = ms < 250 ? ms : 250;
+        int r = poll(&p, 1, slice);
+        if (r > 0) return 1;
+        if (r < 0 && errno != EINTR) return 0;
+        ms -= slice;
+    }
+    return 0;
+}
+/* The baton is not fair: under load a thread that has just read a request can take it again and again ahead of
+ * one that has waited, which left a few requests waiting seconds. Handing it over strictly in arrival order costs
+ * a third of the throughput (the next in line is usually asleep). So, as Go's mutex does, a request that has
+ * waited 50 ms draws a ticket, and while tickets are out every request draws one and they go in order. */
+typedef struct KXTurn { int64_t ticket; pthread_cond_t cv; struct KXTurn *next; } KXTurn;
+static int64_t kx_ticket_next, kx_ticket_now;
+static KXTurn *kx_turns;                  /* ticket holders waiting for their number, lowest first */
+static pthread_mutex_t kx_ticket_mu = PTHREAD_MUTEX_INITIALIZER;
+static int64_t kx_ticket(int draw) {      /* the next ticket number, drawing it if `draw` */
+    pthread_mutex_lock(&kx_ticket_mu);
+    int64_t n = draw ? kx_ticket_next++ : kx_ticket_next;
+    pthread_mutex_unlock(&kx_ticket_mu);
+    return n;
+}
+static int kx_lock_within(int ms) {       /* take the baton if that takes at most `ms`; 1 if taken */
+#ifdef __APPLE__
+    for (int waited = 0; waited < ms * 5; waited++) {         /* macOS has no pthread_mutex_timedlock */
+        if (pthread_mutex_trylock(&kt_mu) == 0) return 1;
+        struct timespec nap = {0, 200000}; nanosleep(&nap, NULL);
+    }
+    return 0;
+#else
+    struct timespec until; clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_nsec += (long)ms * 1000000;
+    if (until.tv_nsec >= 1000000000) { until.tv_sec++; until.tv_nsec -= 1000000000; }
+    return pthread_mutex_timedlock(&kt_mu, &until) == 0;
+#endif
+}
+static void kx_take_baton(void) {
+    int64_t my;
+    if (kx_lock_within(50)) {
+        if (kx_ticket(0) == kx_ticket_now) return;     /* nobody has waited long */
+        my = kx_ticket(1);                              /* get in line */
+    } else {
+        my = kx_ticket(1);
+        pthread_mutex_lock(&kt_mu);
+    }
+    if (my != kx_ticket_now) {
+        KXTurn t; t.ticket = my; pthread_cond_init(&t.cv, NULL);
+        KXTurn **p = &kx_turns;
+        while (*p && (*p)->ticket < my) p = &(*p)->next;
+        t.next = *p; *p = &t;
+        while (kx_ticket_now != my) pthread_cond_wait(&t.cv, &kt_mu);
+        for (p = &kx_turns; *p != &t; p = &(*p)->next) {}
+        *p = t.next;
+        pthread_cond_destroy(&t.cv);
+    }
+    kx_ticket_now++;                      /* the next ticket may go whenever this request gives up the baton */
+    if (kx_turns && kx_turns->ticket == kx_ticket_now) pthread_cond_signal(&kx_turns->cv);
+}
+/* One connection: requests are read and answered in turn (HTTP/1.1 keep-alive) until the client closes, sends
+ * `connection: close`, stays idle for 5 s, or the server stops. Returns after handing an event stream over. */
+static void kx_serve_conn(int fd, KClo *handler, int keep) {
     struct timeval tv = {30, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
     KSB in; ksb_init(&in);
     char buf[65536]; ssize_t n;
-    const char *hend = NULL;
-    while (!(hend = kx_find(in.p, in.len, "\r\n\r\n"))) {
-        if (in.len > KX_MAX_HEAD) { kx_refuse(fd, "431 Request Header Fields Too Large"); return; }
-        n = read(fd, buf, sizeof buf);
-        if (n <= 0) { close(fd); return; }
-        ksb_add(&in, buf, n);
-    }
-    int64_t hlen = hend - in.p + 4;
-    if (hlen > KX_MAX_HEAD) { kx_refuse(fd, "431 Request Header Fields Too Large"); return; }
-    const char *eol = kx_find(in.p, in.len, "\r\n");
-    const char *sp1 = memchr(in.p, ' ', eol - in.p);
-    const char *sp2 = sp1 ? memchr(sp1 + 1, ' ', eol - sp1 - 1) : NULL;
-    if (!sp1 || sp1 == in.p) { kx_refuse(fd, "400 Bad Request"); return; }
-    if (!sp2) sp2 = eol;
-    KStr *method = k_str_new(in.p, sp1 - in.p);
-    const char *target = sp1 + 1; int64_t tl = sp2 - target;
-    const char *qm = memchr(target, '?', tl);
-    KStr *path = k_str_new(target, (qm ? qm : target + tl) - target);
-    KMap *query = qm ? kx_query_decode(qm + 1, target + tl - qm - 1, 1) : k_map_empty(1);
-    KMap *hs = k_map_empty(1);
-    int64_t clen = 0;
-    const char *line = eol + 2;
-    while (line < hend) {
-        const char *le = kx_find(line, hend - line + 2, "\r\n");
-        const char *col = memchr(line, ':', le - line);
-        if (col) {
-            KStr *k = kx_lower(line, col - line);
-            const char *v = col + 1; while (v < le && *v == ' ') v++;
-            hs = k_map_put(hs, k_p2s(k), k_p2s(k_str_new(v, le - v)));
-            if (!strcmp(k->data, "content-length")) {
-                const char *d = v; clen = 0;
-                if (d == le) clen = -1;
-                for (; d < le && clen >= 0; d++) {
-                    if (*d < '0' || *d > '9' || clen > ((int64_t)1 << 50)) clen = -1;
-                    else clen = clen * 10 + (*d - '0');
+    for (;;) {
+        const char *hend = NULL;
+        while (!(hend = kx_find(in.p, in.len, "\r\n\r\n"))) {
+            if (in.len > KX_MAX_HEAD) { kx_refuse(fd, "431 Request Header Fields Too Large"); return; }
+            if (in.len == 0 && !kx_wait_readable(fd, 5000)) { close(fd); return; }    /* idle between requests */
+            n = read(fd, buf, sizeof buf);
+            if (n <= 0) { close(fd); return; }
+            ksb_add(&in, buf, n);
+        }
+        struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
+        int64_t hlen = hend - in.p + 4;
+        if (hlen > KX_MAX_HEAD) { kx_refuse(fd, "431 Request Header Fields Too Large"); return; }
+        const char *eol = kx_find(in.p, in.len, "\r\n");
+        const char *sp1 = memchr(in.p, ' ', eol - in.p);
+        const char *sp2 = sp1 ? memchr(sp1 + 1, ' ', eol - sp1 - 1) : NULL;
+        if (!sp1 || sp1 == in.p) { kx_refuse(fd, "400 Bad Request"); return; }
+        int http11 = sp2 && eol - sp2 - 1 == 8 && !memcmp(sp2 + 1, "HTTP/1.1", 8);
+        if (!sp2) sp2 = eol;
+        KStr *method = k_str_new(in.p, sp1 - in.p);
+        const char *target = sp1 + 1; int64_t tl = sp2 - target;
+        const char *qm = memchr(target, '?', tl);
+        KStr *path = k_str_new(target, (qm ? qm : target + tl) - target);
+        KMap *query = qm ? kx_query_decode(qm + 1, target + tl - qm - 1, 1) : k_map_empty(1);
+        KMap *hs = k_map_empty(1);
+        int64_t clen = 0;
+        const char *line = eol + 2;
+        while (line < hend) {
+            const char *le = kx_find(line, hend - line + 2, "\r\n");
+            const char *col = memchr(line, ':', le - line);
+            if (col) {
+                KStr *k = kx_lower(line, col - line);
+                const char *v = col + 1; while (v < le && *v == ' ') v++;
+                hs = k_map_put(hs, k_p2s(k), k_p2s(k_str_new(v, le - v)));
+                if (!strcmp(k->data, "content-length")) {
+                    const char *d = v; clen = 0;
+                    if (d == le) clen = -1;
+                    for (; d < le && clen >= 0; d++) {
+                        if (*d < '0' || *d > '9' || clen > ((int64_t)1 << 50)) clen = -1;
+                        else clen = clen * 10 + (*d - '0');
+                    }
+                    if (clen < 0) { kx_refuse(fd, "400 Bad Request"); return; }
                 }
-                if (clen < 0) { kx_refuse(fd, "400 Bad Request"); return; }
+                if (!strcmp(k->data, "transfer-encoding")) { kx_refuse(fd, "501 Not Implemented"); return; }
             }
-            if (!strcmp(k->data, "transfer-encoding")) { kx_refuse(fd, "501 Not Implemented"); return; }
+            line = le + 2;
         }
-        line = le + 2;
-    }
-    if (clen > kx_max_body()) { kx_refuse(fd, "413 Payload Too Large"); return; }
-    while (in.len - hlen < clen) {
-        n = read(fd, buf, sizeof buf);
-        if (n <= 0) break;
-        ksb_add(&in, buf, n);
-    }
-    int64_t bl = in.len - hlen < clen ? in.len - hlen : clen;
-    KStr *body = k_str_new(in.p + hlen, bl);
-    KS *req = k_struct_new(6, k_p2s(method), k_p2s(path), k_p2s(query), k_p2s(hs), k_p2s(body), k_p2s(k_map_empty(1)));
-    pthread_mutex_lock(&kt_mu);           /* the handler is Klar code: it runs holding the baton */
-    KS *resp;
-    jmp_buf back;
-    if (kx_nrecover >= (int)(sizeof kx_recover / sizeof kx_recover[0])) {
-        resp = K_S2P(KS *, K_CALL1(handler, k_p2s(req)));
-    } else if (setjmp(back) == 0) {
-        k_fail_hook = kx_fail_hook;
-        kx_recover[kx_nrecover].thread = pthread_self(); kx_recover[kx_nrecover++].back = &back;
-        resp = K_S2P(KS *, K_CALL1(handler, k_p2s(req)));
-        kx_recover_pop();
-    } else {
-        /* a runtime error in the handler (already printed): this request gets 500, the server goes on */
-        kx_recover_pop();
-        resp = k_struct_new(3, (KS)(int64_t)500,
-                            k_p2s(k_map_put(k_map_empty(1), k_p2s(k_cstr("content-type")), k_p2s(k_cstr("text/plain; charset=utf-8")))),
-                            k_p2s(k_cstr("internal error\n")));
-    }
-    fflush(stdout);
-    int64_t status = (int64_t)resp[0];
-    KMap *rh = K_S2P(KMap *, resp[1]);
-    KStr *payload = K_S2P(KStr *, resp[2]);
-    KS stream = 0, file = 0;
-    int64_t f;
-    if ((f = k_map_find(rh, k_p2s(k_cstr("x-klar-stream")))) >= 0) stream = rh->d->vals[f];
-    if ((f = k_map_find(rh, k_p2s(k_cstr("x-klar-file")))) >= 0) { file = rh->d->vals[f]; rh = k_map_remove(rh, k_p2s(k_cstr("x-klar-file"))); }
-    if (stream) {
-        const char *h = "HTTP/1.0 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\n\r\n: connected\n\n";
-        if (send(fd, h, strlen(h), MSG_NOSIGNAL) < 0) { close(fd); pthread_mutex_unlock(&kt_mu); return; }
-        if (kx_nstreams == kx_capstreams) {
-            kx_capstreams = kx_capstreams ? kx_capstreams * 2 : 8;
-            kx_streams = (KStream *)realloc(kx_streams, sizeof(KStream) * kx_capstreams);
+        if (clen > kx_max_body()) { kx_refuse(fd, "413 Payload Too Large"); return; }
+        while (in.len - hlen < clen) {
+            n = read(fd, buf, sizeof buf);
+            if (n <= 0) { close(fd); return; }                  /* the body never arrived */
+            ksb_add(&in, buf, n);
         }
-        kx_streams[kx_nstreams].fd = fd; kx_streams[kx_nstreams++].topic = K_S2P(KStr *, stream);
+        KStr *body = k_str_new(in.p + hlen, clen);
+        /* what follows this request (a pipelined next one) stays in the buffer */
+        int64_t used = hlen + clen;
+        memmove(in.p, in.p + used, in.len - used); in.len -= used;
+        int alive = keep && !kx_stopping && (http11 ? !kx_header_has(hs, "connection", "close")
+                                                    : kx_header_has(hs, "connection", "keep-alive"));
+        KS *req = k_struct_new(6, k_p2s(method), k_p2s(path), k_p2s(query), k_p2s(hs), k_p2s(body), k_p2s(k_map_empty(1)));
+        kx_take_baton();                      /* the handler is Klar code: it runs holding the baton */
+        KS *resp;
+        jmp_buf back;
+        if (kx_nrecover >= (int)(sizeof kx_recover / sizeof kx_recover[0])) {
+            resp = K_S2P(KS *, K_CALL1(handler, k_p2s(req)));
+        } else if (setjmp(back) == 0) {
+            k_fail_hook = kx_fail_hook;
+            kx_recover[kx_nrecover].thread = pthread_self(); kx_recover[kx_nrecover++].back = &back;
+            resp = K_S2P(KS *, K_CALL1(handler, k_p2s(req)));
+            kx_recover_pop();
+        } else {
+            /* a runtime error in the handler (already printed): this request gets 500, the server goes on */
+            kx_recover_pop();
+            resp = k_struct_new(3, (KS)(int64_t)500,
+                                k_p2s(k_map_put(k_map_empty(1), k_p2s(k_cstr("content-type")), k_p2s(k_cstr("text/plain; charset=utf-8")))),
+                                k_p2s(k_cstr("internal error\n")));
+        }
+        fflush(stdout);
+        int64_t status = (int64_t)resp[0];
+        KMap *rh = K_S2P(KMap *, resp[1]);
+        KStr *payload = K_S2P(KStr *, resp[2]);
+        KS stream = 0, file = 0;
+        int64_t f;
+        if ((f = k_map_find(rh, k_p2s(k_cstr("x-klar-stream")))) >= 0) stream = rh->d->vals[f];
+        if ((f = k_map_find(rh, k_p2s(k_cstr("x-klar-file")))) >= 0) { file = rh->d->vals[f]; rh = k_map_remove(rh, k_p2s(k_cstr("x-klar-file"))); }
+        if (stream) {
+            const char *h = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\nconnection: close\r\n\r\n: connected\n\n";
+            if (send(fd, h, strlen(h), MSG_NOSIGNAL) < 0) { close(fd); pthread_mutex_unlock(&kt_mu); return; }
+            if (kx_nstreams == kx_capstreams) {
+                kx_capstreams = kx_capstreams ? kx_capstreams * 2 : 8;
+                kx_streams = (KStream *)realloc(kx_streams, sizeof(KStream) * kx_capstreams);
+            }
+            kx_streams[kx_nstreams].fd = fd; kx_streams[kx_nstreams++].topic = K_S2P(KStr *, stream);
+            pthread_mutex_unlock(&kt_mu);
+            kx_log(method, path, 200, &t0);
+            return;
+        }
+        const char *data = payload->data; int64_t dlen = payload->len;
+        const char *gz = NULL, *etag = NULL;
+        if (file) {
+            const KXAsset *a = kx_asset_find(K_S2P(KStr *, file));
+            if (a) {
+                data = a->data; dlen = a->len; etag = a->etag;
+                if (a->gz && kx_header_has(hs, "accept-encoding", "gzip")) { gz = a->gz; dlen = a->gzlen; }
+                if (kx_header_has(hs, "if-none-match", a->etag)) status = 304;
+            } else {
+                KEnum *r = kx_fs_read(K_S2P(KStr *, file));
+                if (r->tag == K_TAG_OK) { payload = K_S2P(KStr *, r->f[0]); data = payload->data; dlen = payload->len; }
+                else { status = 404; data = "not found\n"; dlen = 10; rh = k_map_put(k_map_empty(1), k_p2s(k_cstr("content-type")), k_p2s(k_cstr("text/plain; charset=utf-8"))); }
+            }
+        }
+        KSB out; ksb_init(&out);
+        char t[160];
+        snprintf(t, sizeof t, "HTTP/1.1 %lld %s\r\n", (long long)status, kx_reason(status)); ksb_c(&out, t);
+        if (k_map_find(rh, k_p2s(k_cstr("content-type"))) < 0) ksb_c(&out, "content-type: text/plain; charset=utf-8\r\n");
+        KList *ks = k_map_keys(rh), *vs = k_map_values(rh);
+        for (int64_t i = 0; i < ks->len; i++) {
+            KStr *k = kx_list_str(ks, i), *v = kx_list_str(vs, i);
+            if (kx_bad_header(k, 1)) { fprintf(stderr, "klar: dropped a response header with an invalid name\n"); continue; }
+            if (!strcmp(k->data, "connection") || !strcmp(k->data, "content-length")) continue;   /* the server's own */
+            const char *p = v->data, *e = p + v->len;
+            for (;;) {
+                const char *nl = strcmp(k->data, "set-cookie") ? NULL : memchr(p, '\n', e - p);
+                KStr *one = k_str_new(p, (nl ? nl : e) - p);
+                if (kx_bad_header(one, 0)) fprintf(stderr, "klar: dropped response header `%s`: its value contains a line break\n", k->data);
+                else { ksb_str(&out, k); ksb_c(&out, ": "); ksb_str(&out, one); ksb_c(&out, "\r\n"); }
+                if (!nl) break;
+                p = nl + 1;
+            }
+        }
+        if (etag) {
+            snprintf(t, sizeof t, "etag: %s\r\nvary: accept-encoding\r\n", etag); ksb_c(&out, t);
+            if (k_map_find(rh, k_p2s(k_cstr("cache-control"))) < 0) ksb_c(&out, "cache-control: no-cache\r\n");
+            if (gz && status != 304) ksb_c(&out, "content-encoding: gzip\r\n");
+        }
+        if (status == 304 || status == 204) dlen = 0;
+        snprintf(t, sizeof t, "content-length: %lld\r\nconnection: %s\r\n\r\n", (long long)dlen, alive ? "keep-alive" : "close");
+        ksb_c(&out, t);
+        int head = !strcmp(method->data, "HEAD");
+        /* small bodies go out with the headers; big ones (files) are sent from where they are, without a copy */
+        if (!head && dlen <= 16384) ksb_add(&out, gz ? gz : data, dlen);
         pthread_mutex_unlock(&kt_mu);
-        return;
+        KConn c = {fd, NULL};
+        int bad = kx_conn_write(&c, out.p, out.len) < 0 || (!head && dlen > 16384 && kx_conn_write(&c, gz ? gz : data, dlen) < 0);
+        kx_log(method, path, status, &t0);
+        if (bad || !alive) break;
     }
-    if (file) {
-        KEnum *r = kx_fs_read(K_S2P(KStr *, file));
-        if (r->tag == K_TAG_OK) payload = K_S2P(KStr *, r->f[0]);
-        else { status = 404; payload = k_cstr("not found\n"); rh = k_map_put(k_map_empty(1), k_p2s(k_cstr("content-type")), k_p2s(k_cstr("text/plain; charset=utf-8"))); }
-    }
-    KSB out; ksb_init(&out);
-    char t[128];
-    snprintf(t, sizeof t, "HTTP/1.0 %lld %s\r\n", (long long)status, kx_reason(status)); ksb_c(&out, t);
-    if (k_map_find(rh, k_p2s(k_cstr("content-type"))) < 0) ksb_c(&out, "content-type: text/plain; charset=utf-8\r\n");
-    KList *ks = k_map_keys(rh), *vs = k_map_values(rh);
-    for (int64_t i = 0; i < ks->len; i++) {
-        KStr *k = kx_list_str(ks, i), *v = kx_list_str(vs, i);
-        if (kx_bad_header(k, 1)) { fprintf(stderr, "klar: dropped a response header with an invalid name\n"); continue; }
-        const char *p = v->data, *e = p + v->len;
-        for (;;) {
-            const char *nl = strcmp(k->data, "set-cookie") ? NULL : memchr(p, '\n', e - p);
-            KStr *one = k_str_new(p, (nl ? nl : e) - p);
-            if (kx_bad_header(one, 0)) fprintf(stderr, "klar: dropped response header `%s`: its value contains a line break\n", k->data);
-            else { ksb_str(&out, k); ksb_c(&out, ": "); ksb_str(&out, one); ksb_c(&out, "\r\n"); }
-            if (!nl) break;
-            p = nl + 1;
-        }
-    }
-    snprintf(t, sizeof t, "Content-Length: %lld\r\n\r\n", (long long)payload->len); ksb_c(&out, t);
-    if (strcmp(method->data, "HEAD")) ksb_str(&out, payload);
-    pthread_mutex_unlock(&kt_mu);
-    KConn c = {fd, NULL};
-    kx_conn_write(&c, out.p, out.len);
     shutdown(fd, SHUT_WR);
     close(fd);
 }
-typedef struct { int fd; KClo *handler; } KSrvConn;
+typedef struct { int fd; KClo *handler; int keep; } KSrvConn;
 static int64_t kx_conn_active;
 static void *kx_conn_main(void *p) {
     KSrvConn *a = (KSrvConn *)p;
-    stack_t ss, off; ss.ss_sp = malloc(65536); ss.ss_size = 65536; ss.ss_flags = 0; sigaltstack(&ss, NULL);
-    kx_serve_one(a->fd, a->handler);
+    stack_t ss; ss.ss_sp = malloc(65536); ss.ss_size = 65536; ss.ss_flags = 0; sigaltstack(&ss, NULL);
+    kx_serve_conn(a->fd, a->handler, a->keep);
     pthread_mutex_lock(&kt_mu);
     kx_conn_active--; kt_live--;
     pthread_cond_broadcast(&kt_cv);
@@ -2021,7 +2213,10 @@ static int kx_no_conns(void *p) { (void)p; return kx_conn_active == 0; }
  * so a slow client or a handler waiting on io does not hold up the others. */
 static KEnum *kx_http_serve(int64_t port, KClo *handler, int64_t max) {
     signal(SIGPIPE, SIG_IGN);
+    fflush(stdout);                       /* what main printed shows up in the logs now, not after a request */
     kt_enable();
+    const char *lg = getenv("KLAR_LOG");
+    kx_log_on = !(lg && (!strcmp(lg, "off") || !strcmp(lg, "0") || !strcmp(lg, "false")));
     const char *host = getenv("HOST");
     if (!host || !*host) host = "127.0.0.1";
     struct addrinfo hints, *res;
@@ -2030,18 +2225,24 @@ static KEnum *kx_http_serve(int64_t port, KClo *handler, int64_t max) {
     if (getaddrinfo(host, ps, &hints, &res) != 0) return k_err(k_p2s(kx_fmt("OSError: cannot resolve %s", host)));
     int fd = socket(res->ai_family, SOCK_STREAM, 0), one = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    if (bind(fd, res->ai_addr, res->ai_addrlen) != 0 || listen(fd, 128) != 0) {
+    if (bind(fd, res->ai_addr, res->ai_addrlen) != 0 || listen(fd, 511) != 0) {
         int e = errno; freeaddrinfo(res); close(fd); errno = e;
         return k_err(k_p2s(kx_fmt("OSError: [Errno %d] %s", e, strerror(e))));
     }
     freeaddrinfo(res);
+    if (kx_stop_pipe[0] < 0 && pipe(kx_stop_pipe) == 0) {
+        fcntl(kx_stop_pipe[0], F_SETFD, FD_CLOEXEC); fcntl(kx_stop_pipe[1], F_SETFD, FD_CLOEXEC);
+        struct sigaction sa; memset(&sa, 0, sizeof sa); sa.sa_handler = kx_on_signal; sigemptyset(&sa.sa_mask);
+        sigaction(SIGTERM, &sa, NULL); sigaction(SIGINT, &sa, NULL);
+    }
     int64_t served = 0;
-    while (max <= 0 || served < max) {
-        struct pollfd p = {fd, POLLIN, 0};
+    while ((max <= 0 || served < max) && !kx_stopping) {
+        struct pollfd p[2] = {{fd, POLLIN, 0}, {kx_stop_pipe[0], POLLIN, 0}};
         KX_IO_BEGIN;
-        int r = poll(&p, 1, 15000);
-        int c = r > 0 ? accept(fd, NULL, NULL) : -1;
+        int r = poll(p, kx_stop_pipe[0] >= 0 ? 2 : 1, 15000);
+        int c = r > 0 && (p[0].revents & POLLIN) ? accept(fd, NULL, NULL) : -1;
         KX_IO_END;
+        if (kx_stopping) { if (c >= 0) close(c); break; }
         if (r == 0) {          /* keep event streams alive through proxies */
             for (int i = 0; i < kx_nstreams; i++)
                 if (send(kx_streams[i].fd, ": ping\n\n", 8, MSG_NOSIGNAL | MSG_DONTWAIT) < 0) {
@@ -2053,13 +2254,28 @@ static KEnum *kx_http_serve(int64_t port, KClo *handler, int64_t max) {
         if (kx_conn_active >= 1024) { kx_refuse(c, "503 Service Unavailable"); continue; }   /* bounded threads */
         setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
         KSrvConn *a = (KSrvConn *)K_ALLOC(sizeof(KSrvConn));
-        a->fd = c; a->handler = handler;
+        /* tests serve a counted number of requests, one per connection; past 512 open connections new ones
+           are answered once, so idle keep-alive clients cannot use up the threads */
+        a->fd = c; a->handler = handler; a->keep = max <= 0 && kx_conn_active < 512;
         kx_conn_active++; kt_live++;
         kt_thread(kx_conn_main, a);
         served++;
     }
-    while (!kx_no_conns(NULL)) pthread_cond_wait(&kt_cv, &kt_mu);    /* the last replies go out first */
     close(fd);
+    if (kx_stopping) {
+        const char *sv = getenv("KLAR_SHUTDOWN_SECONDS");
+        int secs = sv && *sv ? atoi(sv) : 10;
+        if (kx_log_on) fprintf(stderr, "klar: %s received, finishing %lld open connection(s) (up to %d s)\n",
+                               kx_stopping == SIGINT ? "SIGINT" : "SIGTERM", (long long)kx_conn_active, secs);
+        for (int i = 0; i < kx_nstreams; i++) { shutdown(kx_streams[i].fd, SHUT_RDWR); close(kx_streams[i].fd); }
+        kx_nstreams = 0;
+        struct timespec until; clock_gettime(CLOCK_REALTIME, &until); until.tv_sec += secs;
+        while (!kx_no_conns(NULL)) {
+            if (pthread_cond_timedwait(&kt_cv, &kt_mu, &until) == ETIMEDOUT) break;
+        }
+        return k_ok(0);
+    }
+    while (!kx_no_conns(NULL)) pthread_cond_wait(&kt_cv, &kt_mu);    /* the last replies go out first */
     return k_ok(0);
 }
 #endif

@@ -196,7 +196,7 @@ def has_gc():
     return any(os.path.exists(p) for p in ("/usr/include/gc.h", "/usr/local/include/gc.h", "/opt/homebrew/include/gc.h"))
 
 
-def cmd_build(path, out, release, emit_c, as_json, quiet=False):
+def cmd_build(path, out, release, emit_c, as_json, quiet=False, assets=None):
     import time
     from .compiler import compile_to_c
     t0 = time.perf_counter()
@@ -217,6 +217,13 @@ def cmd_build(path, out, release, emit_c, as_json, quiet=False):
         return 1
     t1 = time.perf_counter()
     out = out or os.path.splitext(os.path.basename(path))[0]
+    serves = c_src.count("kx_http_serve(") > 1                 # the runtime defines it; the program calls it
+    if serves:
+        from .ship import collect_assets, with_assets
+        if assets is None:
+            assets = collect_assets(path, [])                    # public/ and static/ next to a server
+        if assets:
+            c_src = with_assets(c_src, assets)
     c_path = out + ".c"
     with open(c_path, "w", encoding="utf-8") as f:
         f.write(c_src)
@@ -228,6 +235,9 @@ def cmd_build(path, out, release, emit_c, as_json, quiet=False):
         print("error: no C compiler found (install tcc, gcc or clang)", file=sys.stderr)
         return 1
     gc = ["-DKLAR_GC"] if has_gc() else []
+    if serves and not gc and not quiet:
+        say("warning: no garbage collector found, so this server's memory grows with every request",
+            "install it (Debian/Ubuntu: apt install libgc-dev, macOS: brew install bdw-gc) and build again")
     extra = os.environ.get("KLAR_CFLAGS", "").split()      # e.g. sanitizers in CI: -fsanitize=address,undefined
     cmd = cc + gc + extra + ["-o", out, c_path, "-lm"] + info.get("libs", []) + (["-lgc"] if gc else [])
     status = os.spawnvp(os.P_WAIT, cmd[0], cmd)
@@ -239,7 +249,11 @@ def cmd_build(path, out, release, emit_c, as_json, quiet=False):
     os.remove(c_path)
     if not quiet:
         mode = "release" if release else "debug"
-        print(f"built {out} ({mode}, {cc[0]}): klar {1000 * (t1 - t0):.0f} ms + C {1000 * (t2 - t1):.0f} ms",
+        note = ""
+        if serves:
+            from .ship import asset_note
+            note = asset_note(assets)
+        print(f"built {out} ({mode}, {cc[0]}): klar {1000 * (t1 - t0):.0f} ms + C {1000 * (t2 - t1):.0f} ms{note}",
               file=sys.stderr)
     return 0
 
@@ -261,7 +275,7 @@ WEB_PAGE = """<!doctype html>
 """
 
 
-def cmd_build_js(path, out, target, as_json, quiet=False):
+def cmd_build_js(path, out, target, as_json, quiet=False, assets=None):
     import time
     from .jscompiler import compile_to_js
     t0 = time.perf_counter()
@@ -283,6 +297,10 @@ def cmd_build_js(path, out, target, as_json, quiet=False):
         return 1
     with open(out, "w", encoding="utf-8") as f:
         if target == "node":
+            if assets:
+                from .ship import js_assets
+                head, nl, rest = js.partition("\n") if js.startswith("#!") else ("", "", js)
+                js = head + nl + js_assets(assets) + rest
             f.write(js)
         else:
             f.write(WEB_PAGE.format(title=stem, head=getattr(js, "head", ""), js=js.replace("</script", "<\\/script")))
@@ -357,7 +375,7 @@ Check and ship
   klar check [FILE]         type-check without running (--fix: apply the sure fixes)
   klar debug [FILE] --break LINE   run; show the stack and variables at each breakpoint and on an error
   klar fmt [PATH...]        format .klar files in place (--check: only report)
-  klar build [FILE]         compile: native executable, or a web page for std.ui apps
+  klar build [FILE...]      compile: an executable, a web page, or a server with its app built in
 
 Packages
   klar add SOURCE           add a dependency: npm:NAME, py:NAME==VERSION, a git URL or ./folder
@@ -390,7 +408,11 @@ EXAMPLES = {
              "  klar check main.klar --at 12:7   type, docs and definition of the name there",
     "fmt": "klar fmt                  the whole project\n  klar fmt --check src/      list unformatted files, change nothing",
     "build": "klar build                main.klar: an executable named after the package (a .html page for std.ui apps)\n"
-             "  klar build --release      optimised (gcc/clang -O2)\n"
+             "  klar build --release      optimised (gcc/clang -O2); with server.klar and app.klar: one executable\n"
+             "                            for production, the app built in (DEPLOY.md)\n"
+             "  klar build --release server.klar admin.klar shop.klar   a server and the browser apps it serves\n"
+             "  klar build --static       a folder (dist/) of plain files for any static host\n"
+             "  klar build --docker       write a Dockerfile that builds and runs the executable\n"
              "  klar build --target node server.klar   a Node.js module: node server.mjs\n"
              "  klar build --target web app.klar -o public/index.html\n"
              "  klar build --target wasm prog.klar  prog.wasm + prog.mjs loader",
@@ -416,7 +438,9 @@ DESCRIPTIONS = {
     "check": "Type-check without running. Reports every error with a code, a hint and a fix.",
     "test": "Run every `test` block. With no FILE, every .klar file in the project that has tests.",
     "build": "Compile a program. The target is chosen for you: a std.ui app becomes a self-contained web page,\n"
-             "anything else a native executable (via C). --target picks one explicitly.",
+             "anything else a native executable (via C). --target picks one explicitly. Given a server and browser\n"
+             "apps (server.klar and app.klar by default), it makes one executable that serves the apps, gzipped,\n"
+             "with a health check, request log and clean shutdown: what DEPLOY.md puts in production.",
     "fmt": "Rewrite .klar files in the one canonical layout. Only whitespace changes; the tokens are verified.",
     "dev": "Serve browser apps and run a backend, rebuilding and reloading the browser on every save.",
     "new": "Create a project folder with klar.toml and main.klar (a test included).",
@@ -642,9 +666,20 @@ COMMANDS = ["new", "run", "dev", "test", "check", "fmt", "build", "add", "remove
             "audit", "spec", "explain", "help", "lsp", "debug"]
 
 
+def app_files(arg):
+    """What `klar build` of a folder (or of this project) works on, as `klar dev` picks it: main.klar, server.klar
+    and app.klar, whichever exist."""
+    folder = arg if arg is not None else project_dir()
+    found = [os.path.join(folder, f) for f in ("main.klar", "server.klar", "app.klar")
+             if os.path.isfile(os.path.join(folder, f))]
+    return [os.path.relpath(f) for f in found] if arg is None else found
+
+
 def build_main(rest):
     """`klar build`, parsed by hand: building must start fast, and argparse alone costs milliseconds."""
-    opts = {"out": None, "release": False, "emit_c": False, "json": False, "file": None, "target": None}
+    opts = {"out": None, "release": False, "emit_c": False, "json": False, "target": None, "static": False,
+            "docker": False}
+    files = []
     i = 0
     while i < len(rest):
         a = rest[i]
@@ -654,19 +689,37 @@ def build_main(rest):
             opts["target"] = rest[i + 1]; i += 2; continue
         if a.startswith("--target="):
             opts["target"] = a.split("=", 1)[1]
-        elif a == "--release":
-            opts["release"] = True
+        elif a in ("--release", "--static", "--docker"):
+            opts[a[2:]] = True
         elif a == "--emit-c":
             opts["emit_c"] = True
         elif a == "--json":
             opts["json"] = True
-        elif opts["file"] is None and not a.startswith("-"):
-            opts["file"] = a
+        elif not a.startswith("-"):
+            files.append(a)
         else:
             say(f"klar build: unexpected argument {a!r}", "klar help build")
             return 2
         i += 1
-    path = entry(opts["file"], "build")
+    if len(files) <= 1 and (not files or os.path.isdir(files[0])):
+        found = app_files(files[0] if files else None)
+        if found and (len(found) > 1 or opts["static"] or opts["docker"] or os.path.basename(found[0]) != "main.klar"):
+            files = found                          # server.klar + app.klar, as `klar dev` picks them
+    if len(files) > 1 or opts["static"] or opts["docker"]:
+        for f in files:
+            if not os.path.isfile(f):
+                entry(f, "build")                  # prints what to type instead
+                return 2
+        if not files:
+            entry(None, "build")
+            return 2
+        from . import ship
+        if opts["docker"]:
+            return ship.cmd_docker(files)
+        if opts["static"]:
+            return ship.cmd_static(files, opts["out"], opts["json"])
+        return ship.cmd_build_app(files, opts["out"], opts["release"], opts["target"], opts["json"])
+    path = entry(files[0] if files else None, "build")
     if path is None:
         return 2
     target = opts["target"]
@@ -715,14 +768,18 @@ def parser():
     t.add_argument("files", nargs="*", help="files or folders (default: the whole project)")
     t.add_argument("--json", action="store_true", help="results as JSON")
     b = cmd("build", "compile a program")
-    b.add_argument("file", nargs="?", help="a .klar file or a folder with main.klar (default: this project's)")
-    b.add_argument("-o", "--output", help="where to write (default: the file name with the target's extension)")
+    b.add_argument("file", nargs="*", help="a .klar file, a server and its browser apps, or a folder (default: "
+                                           "main.klar, server.klar and app.klar of this project)")
+    b.add_argument("-o", "--output", help="where to write (default: the file name with the target's extension; "
+                                          "dist/ for --static)")
     b.add_argument("--target", choices=["native", "node", "web", "wasm"],
                    help="native executable, Node.js module (servers, tools), web page (browser apps) or "
                         "WebAssembly (.wasm + .mjs loader, for browsers and Node); default: web for std.ui apps, "
                         "else native")
     b.add_argument("--release", action="store_true", help="optimise with gcc/clang -O2 (default: fastest compile)")
     b.add_argument("--emit-c", action="store_true", help="write the generated C file and stop")
+    b.add_argument("--static", action="store_true", help="a folder of plain files for a static host")
+    b.add_argument("--docker", action="store_true", help="write a Dockerfile and .dockerignore next to the server")
     b.add_argument("--json", action="store_true", help="errors as JSON")
     fm = cmd("fmt", "format .klar files in place")
     fm.add_argument("paths", nargs="*", help="files or folders (default: the whole project)")

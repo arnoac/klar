@@ -592,7 +592,7 @@ def cmd_new(name, web=False):
     files = {
         MANIFEST: f'[package]\nname = "{pkg}"\nversion = "0.1.0"\n\n[dependencies]\n',
         "main.klar": WEB_MAIN if web else CONSOLE_MAIN,
-        ".gitignore": f".klar/\nnode_modules/\n/{pkg}\n/*.html\n/*.mjs\n",
+        ".gitignore": f".klar/\nnode_modules/\n/{pkg}\n/*.html\n/*.mjs\n/dist/\n*.db\n*.db-*\n",
     }
     for f, text in files.items():
         with open(os.path.join(name, f), "w", encoding="utf-8") as fh:

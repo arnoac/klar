@@ -1,11 +1,11 @@
 // Klar Board: everything stored in SQLite. Every query passes values as `?` parameters, and rows come back as
 // the shared types by column name (sqlite_rows / sqlite_first).
 
-use std.sqlite { Database, sqlite_open, sqlite_exec, sqlite_rows, sqlite_first, sqlite_last_id, sql }
+use std.sqlite { Database, sqlite_open, sqlite_exec, sqlite_migrate, sqlite_rows, sqlite_first, sqlite_last_id, sql }
 use std.time { time_now }
 use shared { Column, Todo, Doing, Done, User, Board, Card, Event, BoardPage, move_card, cards_in }
 
-// Each migration runs once, in order; `pragma user_version` remembers how many have run.
+// Each migration runs once, in order (sqlite_migrate); add new ones at the end.
 fn migrations() -> list[str] {
   return [
     "create table users (id integer primary key, name text not null unique, password text not null)",
@@ -23,12 +23,7 @@ fn migrations() -> list[str] {
 fn store_open(path: str) -> Result[Database, str] uses io {
   let db = sqlite_open(path)?
   let _ = sqlite_exec(db, "pragma foreign_keys = on", [])?
-  let done: int = unwrap_or(sqlite_first(db, "pragma user_version", [])?, 0)
-  let all = migrations()
-  for i in range(done, len(all)) {
-    let _ = sqlite_exec(db, all[i], [])?
-    let _ = sqlite_exec(db, "pragma user_version = {i + 1}", [])?
-  }
+  let _ = sqlite_migrate(db, migrations())?
   return Ok(db)
 }
 

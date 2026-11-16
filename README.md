@@ -76,6 +76,11 @@ klar build && ./hello       # a native executable
 For a browser app, `klar new shop --web`, then `klar dev` in that folder and open http://127.0.0.1:8000: the page
 reloads every time you save. `klar build` turns it into one self-contained `shop.html`.
 
+To put a full-stack app (`server.klar` and `app.klar`) in production, `klar build --release` makes **one
+executable** with the browser app built in, a health check, a request log and a clean shutdown; copy it to a
+server and run it. `klar build --static` makes a folder for any static host, and `klar build --docker` a
+Dockerfile. [DEPLOY.md](DEPLOY.md) covers configuration, TLS, SQLite and a few kinds of host.
+
 Every command works on the project you are in, so you rarely name a file. `klar help` lists them all and
 `klar help COMMAND` shows the options with examples:
 
@@ -86,7 +91,7 @@ klar dev [FILE...]          serve, reload on save          klar install         
 klar test [FILE]            run test blocks                klar update [NAME]     move git dependencies forward
 klar check [FILE]           type-check (--json, --fix)     klar spec              the language reference
 klar fmt [PATH]             format in place                klar explain E306      explain an error code
-klar build [FILE]           compile                        klar lsp               language server for editors
+klar build [FILE...]        compile (--static, --docker)   klar lsp               language server for editors
 klar debug [FILE]           run with breakpoints           klar debug --dap       debugger for editors
 ```
 
@@ -118,6 +123,7 @@ building it taught us about the language.
 
 ```sh
 klar dev examples/apps/board               # open http://127.0.0.1:8000 (serves server.klar and app.klar)
+klar build --release examples/apps/board   # one 380 KB executable with the app built in: ./board
 ```
 
 The full-stack example (`examples/apps/todo_web`) has a browser app and a JSON backend, both in Klar:
