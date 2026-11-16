@@ -14,11 +14,11 @@ import sys
 import threading
 import urllib.parse
 
-from . import loader
+from . import fixes, loader
 from .checker import check_source
 from .errors import CATALOG, KlarError
 from .prelude import PRELUDE
-from .syntax import Node, parse
+from .syntax import Node, parse, is_tuple_name
 from .types import TCon, TFn, prune, show
 
 KEYWORDS = ["fn", "let", "var", "if", "else", "then", "while", "for", "in", "return", "break", "continue", "match",
@@ -260,7 +260,8 @@ class Analysis:
         io = " uses io" if "io" in sig.effects else ""
         return f"fn {name}{tps}({params}){ret}{io}"
 
-    def hover(self, span):
+    def hover_parts(self, span):
+        """(code, where, doc) describing a name: a declaration in Klar syntax, where it comes from, its docs."""
         c = self.checker
         name, kind, info = span.name, span.kind, span.info
         doc = ""
@@ -284,6 +285,15 @@ class Analysis:
                     where = f"method of trait {sig.trait}"
                 if sig is not None and sig.builtin:
                     where = "built-in"
+                node = getattr(sig, "node", None)
+                if node is not None and node.kind == "Extern" and \
+                        not (getattr(node, "module", None) or "").startswith(loader.STD_DIR + os.sep):
+                    tgt = getattr(node, "target", "") or ""
+                    code = f'extern "{tgt}" {code}'
+                    where = ("JavaScript function" + (" (npm package)" if not tgt.startswith(("js:globalThis", "js:node:"))
+                                                      else "") if tgt.startswith("js:") else
+                             "WebAssembly function" if tgt.startswith("wasm:") else
+                             "built into Klar" if tgt.startswith("klar:") else "Python function")
         elif kind == "type":
             if name in c.structs:
                 tps = c.tparams_of.get(name)
@@ -305,19 +315,12 @@ class Analysis:
             code = name + (f"({', '.join(f'{f}: {show(t)}' for f, t in vi.fields)})" if vi.fields else "")
             where = f"variant of enum {vi.enum}"
         elif kind == "module":
-            text = self.text(os.path.abspath(info))
-            first = []
-            for line in text.lines:
-                if not line.startswith("//"):
-                    break
-                first.append(line[2:].strip())
-            out = f"```klar\nuse {name}\n```\n*{short_path(os.path.abspath(info))}*"
-            return out + ("\n\n" + "\n".join(first) if first else "")
+            return None
         elif kind == "field":
             struct = info[0]
             ft = dict(c.structs.get(struct, [])).get(name) if info[1] is None else info[1]
             code = f"{name}: {show(ft) if ft is not None else '?'}"
-            where = f"field of struct {struct}"
+            where = f"element {name} of a tuple" if is_tuple_name(struct) else f"field of struct {struct}"
         else:
             return None
         tgt = span.target
@@ -329,6 +332,22 @@ class Analysis:
                 where = (where + ", " if where else "") + f"from {mod}"
         elif kind == "fn" and c.fns.get(name) is not None and c.fns[name].builtin:
             doc = PRELUDE_DOCS.get(name, "")
+        return code, where, doc
+
+    def hover(self, span):
+        if span.kind == "module":
+            text = self.text(os.path.abspath(span.info))
+            first = []
+            for line in text.lines:
+                if not line.startswith("//"):
+                    break
+                first.append(line[2:].strip())
+            out = f"```klar\nuse {span.name}\n```\n*{short_path(os.path.abspath(span.info))}*"
+            return out + ("\n\n" + "\n".join(first) if first else "")
+        parts = self.hover_parts(span)
+        if parts is None:
+            return None
+        code, where, doc = parts
         out = f"```klar\n{code}\n```"
         if where:
             out += f"\n*{where}*"
@@ -511,7 +530,7 @@ class Server:
         end = w[1] if w and w[0] == start else min(start + 1, len(t.src))
         msg = e.message + (f"\nhint: {e.hint}" if e.hint else "")
         return {"range": t.range(start, end), "severity": SEV_ERROR, "code": e.code, "source": "klar",
-                "message": msg, "data": {"hint": e.hint}}
+                "message": msg, "data": {"hint": e.hint, "line": e.line, "col": e.col, "text": e.message}}
 
     # ----------------------------------------------------------------- requests
     def dispatch(self, method, p):
@@ -525,6 +544,8 @@ class Server:
                 "completionProvider": {"triggerCharacters": [".", "{", " "]},
                 "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
                 "codeActionProvider": {"codeActionKinds": ["quickfix"]},
+                "inlayHintProvider": True, "codeLensProvider": {"resolveProvider": False},
+                "workspaceSymbolProvider": True,
             }, "serverInfo": {"name": "klar", "version": "0.10"}}
         if method == "initialized":
             return None
@@ -576,7 +597,11 @@ class Server:
             "textDocument/prepareRename": self.on_prepare_rename,
             "textDocument/rename": self.on_rename,
             "textDocument/codeAction": self.on_code_action,
+            "textDocument/inlayHint": self.on_inlay_hints,
+            "textDocument/codeLens": self.on_code_lens,
         }.get(method)
+        if method == "workspace/symbol":
+            return self.on_workspace_symbols(p)
         if handler is None:
             if method.startswith("$/"):
                 return None
@@ -754,9 +779,194 @@ class Server:
         if a is None:
             return [{"label": k, "kind": K_KEYWORD} for k in KEYWORDS]
         m = re.search(r"\.(\w*)$", before)
-        if m:
+        if m and not re.search(r"\d\.\w*$", before):
             return self.complete_after_dot(a, path, off - len(m.group(1)) - 1)
-        return self.complete_names(a, path, off)
+        prefix = re.search(r"\w*$", before).group(0)
+        items = self.complete_names(a, path, off)
+        arms = self.complete_match_arms(a, t, off - len(prefix))
+        if arms is not None:
+            return {"isIncomplete": False, "items": arms + items}
+        want = self.expected_type(a, t, off - len(prefix))
+        if want is not None:
+            self.rank_for(a, path, items, want)
+        if len(prefix) >= 2 or want is not None:
+            items += self.complete_imports(a, path, t, prefix, want)
+        return {"isIncomplete": len(prefix) < 2, "items": items}
+
+    # what goes here: the parameter type of the enclosing call (inside a list literal: its element type)
+    def expected_type(self, a, t, off):
+        src = t.src
+        depth, commas, i, in_list = 0, 0, off - 1, False
+        named = re.search(r"(\w+)\s*:\s*$", src[max(0, off - 80):off])
+        while i >= 0 and off - i < 3000:
+            ch = src[i]
+            if ch in ")]}":
+                depth += 1
+            elif ch in "([{":
+                if depth == 0:
+                    if ch == "[" and not in_list:
+                        in_list = True
+                        commas = 0
+                        i -= 1
+                        continue
+                    if ch != "(":
+                        return None
+                    break
+                depth -= 1
+            elif ch == "," and depth == 0:
+                commas += 1
+            i -= 1
+        else:
+            return None
+        w = t.word_at(i)
+        if w is None or w[1] != i:
+            return None
+        name = src[w[0]:w[1]]
+        c = a.checker
+        if name in c.fns:
+            params = c.fns[name].params
+            if w[0] > 0 and src[w[0] - 1] == ".":
+                commas += 1
+        elif name in c.structs:
+            params = c.structs[name]
+        elif name in c.variants:
+            params = c.variants[name].fields
+        else:
+            return None
+        ty = None
+        if named and not in_list:
+            ty = dict(params).get(named.group(1))
+        elif commas < len(params):
+            ty = params[commas][1]
+        ty = prune(ty) if ty is not None else None
+        if in_list:
+            if not (isinstance(ty, TCon) and ty.name == "list" and ty.args):
+                return None
+            ty = prune(ty.args[0])
+        return ty if isinstance(ty, TCon) else None
+
+    def rank_for(self, a, path, items, want):
+        """Put what fits the expected type first: its variants, and functions that return it."""
+        c = a.checker
+        for it in items:
+            label = it["label"]
+            fits = False
+            if it["kind"] == K_ENUM_MEMBER and label in c.variants:
+                fits = c.variants[label].enum == want.name
+            elif it["kind"] == K_FUNCTION and label in c.fns:
+                r = prune(c.fns[label].ret)
+                fits = isinstance(r, TCon) and r.name == want.name
+            elif it["kind"] == K_VARIABLE:
+                fits = it.get("detail", "").split("[")[0] == want.name
+            if fits:
+                it["sortText"] = "0" + label
+                it["preselect"] = True
+
+    def complete_imports(self, a, path, t, prefix, want):
+        """Names from modules this file does not import yet (the standard library and the project's own files),
+        with the `use` added when one is picked. With an expected type, only names that fit it."""
+        c = a.checker
+        items = []
+        try:
+            exports = fixes.all_exports(path)
+        except Exception:
+            return items
+        src = Text(self.docs[path])
+        for name, (mod, kind, node) in exports.items():
+            if prefix and not name.lower().startswith(prefix.lower()):
+                continue
+            if name in c.fns or name in c.structs or name in c.enums or name in c.variants or name in c.extern_types:
+                if self.visible(a, path, name) or c.def_module.get(name) is None:
+                    continue
+            if want is not None:
+                if kind == "Variant":
+                    if node.name != want.name:
+                        continue
+                elif kind in ("Fn", "Extern"):
+                    r = node.ret
+                    if not (r is not None and r.kind == "TName" and r.name == want.name):
+                        continue
+                else:
+                    continue
+            elif "__" in name:
+                continue
+            use = f"use {mod} {{ {name} }}"
+            e = fixes.import_edit(fixes.Src(self.docs[path]), use)
+            if e is None:
+                continue
+            edit = {"range": src.range(src.offset(e["line"], e["col"]), src.offset(e["end_line"], e["end_col"])),
+                    "newText": e["text"]}
+            kindc = {"Fn": K_FUNCTION, "Extern": K_FUNCTION, "Struct": K_STRUCT, "Enum": K_ENUM,
+                     "Variant": K_ENUM_MEMBER}.get(kind, K_INTERFACE)
+            detail = mod if kind != "Variant" else f"{node.name} from {mod}"
+            if kind in ("Fn", "Extern"):
+                detail = self.decl_line(node) + "  (" + mod + ")"
+            items.append({"label": name, "kind": kindc, "detail": detail,
+                          "labelDetails": {"description": mod},
+                          "sortText": ("0" if want is not None else "4") + name,
+                          "additionalTextEdits": [edit]})
+            if len(items) >= 200:
+                break
+        return items
+
+    def decl_line(self, node):
+        """`fn name(...) -> T` as written, from the module's source."""
+        try:
+            text = self.text_of(node.module) if getattr(node, "module", None) else None
+        except Exception:
+            text = None
+        if text is None:
+            return f"fn {node.name}(...)"
+        line = text.split("\n")[node.line - 1].strip()
+        return line[:line.index("{")].strip() if "{" in line else line
+
+    def text_of(self, module):
+        if module in self.docs:
+            return self.docs[module]
+        with open(module, encoding="utf-8") as f:
+            return f.read()
+
+    def complete_match_arms(self, a, t, off):
+        """At the start of a match arm: the variants of the matched enum, the ones not covered yet first."""
+        src = t.src
+        line_start = src.rfind("\n", 0, off) + 1
+        if src[line_start:off].strip():
+            return None
+        depth, i = 0, off - 1
+        while i >= 0 and off - i < 4000:
+            ch = src[i]
+            if ch == "}":
+                depth += 1
+            elif ch == "{":
+                if depth == 0:
+                    break
+                depth -= 1
+            i -= 1
+        else:
+            return None
+        head = src[src.rfind("\n", 0, i) + 1:i]
+        m = re.search(r"\bmatch\s+(\w+)\s*$", head)
+        if not m:
+            return None
+        sp = a.span_at(self.path_of(a), i - len(head) + head.rindex(m.group(1)))
+        if sp is None or sp.kind not in ("decl", "local"):
+            return None
+        ty = prune(sp.info[0])
+        c = a.checker
+        if not isinstance(ty, TCon) or ty.name not in c.enums:
+            return None
+        body = src[i:off]
+        out = []
+        for v in c.enums[ty.name]:
+            vi = c.variants[v]
+            used = re.search(r"(?<![\w.])" + re.escape(v) + r"\b", body) is not None
+            pat = v + ("(" + ", ".join(f for f, _ in vi.fields) + ")" if vi.fields else "")
+            out.append({"label": pat + " =>", "kind": K_ENUM_MEMBER, "detail": ty.name, "filterText": v,
+                        "insertText": pat + " => ", "sortText": ("!1" if used else "!0") + v})
+        return out
+
+    def path_of(self, a):
+        return a.path
 
     def complete_module_path(self, path, typed):
         parts = typed.split(".")
@@ -912,62 +1122,131 @@ class Server:
 
     # ----------------------------------------------------------------- quick fixes
     def on_code_action(self, path, p):
+        """The fixes `klar check --json` lists for each diagnostic (klar/fixes.py), as quick fixes."""
         t = Text(self.docs[path])
         actions = []
         for d in (p.get("context") or {}).get("diagnostics", []):
-            hint = (d.get("data") or {}).get("hint") or ""
-            m = re.search(r"did you mean `([^`]+)`\?", hint)
-            if m:
-                actions.append({"title": f"Change to `{m.group(1)}`", "kind": "quickfix", "diagnostics": [d],
-                                "isPreferred": True,
-                                "edit": {"changes": {path_to_uri(path): [{"range": d["range"], "newText": m.group(1)}]}}})
-            m = re.search(r"add `(use [^`]+)` at the top of this file", hint)
-            if m:
-                actions.append({"title": f"Add `{m.group(1)}`", "kind": "quickfix", "diagnostics": [d],
-                                "isPreferred": True, "edit": {"changes": {path_to_uri(path): [self.import_edit(t, m.group(1))]}}})
-            m = re.search(r"add `uses io` to the signature", hint)
-            if m:
-                e = self.uses_io_edit(t, t.from_lsp(d["range"]["start"]))
-                if e:
-                    actions.append({"title": "Add `uses io` to the function", "kind": "quickfix", "diagnostics": [d],
-                                    "edit": {"changes": {path_to_uri(path): [e]}}})
+            data = d.get("data") or {}
+            if d.get("source") != "klar" or "text" not in data:
+                continue
+            e = KlarError(d.get("code") or "E000", data["text"], data.get("line", 0), data.get("col", 0), data.get("hint"))
+            if re.match(r"in \S+:\d+:\d+: ", e.message):
+                continue            # an error inside an imported module, shown on its `use` line
+            for f in fixes.fixes(e, self.docs[path], path, self.overlay()):
+                edits = [{"range": t.range(t.offset(x["line"], x["col"]), t.offset(x["end_line"], x["end_col"])),
+                          "newText": x["text"]} for x in f["edits"]]
+                actions.append({"title": f["title"], "kind": "quickfix", "diagnostics": [d],
+                                "isPreferred": bool(f.get("preferred")),
+                                "edit": {"changes": {path_to_uri(path): edits}}})
         return actions
 
-    def import_edit(self, t, use):
-        """Merge into an existing `use` of the same module, or add a line after the last `use`."""
-        m = re.match(r"use ([\w.]+) \{ (\w+) \}", use)
-        mod, name = (m.group(1), m.group(2)) if m else (None, None)
-        last = -1
-        for i, line in enumerate(t.lines):
-            lm = re.match(r"\s*use\s+([\w.]+)\s*\{([^}]*)\}", line)
-            if lm and mod and lm.group(1) == mod:
-                names = [n.strip() for n in lm.group(2).split(",") if n.strip()] + [name]
-                start = t.starts[i]
-                return {"range": t.range(start, start + len(line)), "newText": f"use {mod} {{ {', '.join(names)} }}"}
-            if re.match(r"\s*use\s", line):
-                last = i
-        pos = t.starts[last + 1] if last + 1 < len(t.starts) else len(t.src)
-        return {"range": t.range(pos, pos), "newText": use + "\n" + ("" if last >= 0 else "\n")}
+    # ----------------------------------------------------------------- inlay hints, lenses, workspace symbols
+    def on_inlay_hints(self, path, p):
+        """`: type` after every `let`/`var`/pattern name the checker inferred."""
+        a, t = self.current(path), Text(self.docs[path])
+        if a is None:
+            return []
+        lo, hi = t.from_lsp(p["range"]["start"]), t.from_lsp(p["range"]["end"])
+        src = a.texts[path].src
+        if src != t.src:
+            return []
+        out = []
+        for s in a.spans.get(path, ()):
+            if s.kind != "decl" or not (lo <= s.start <= hi) or s.name == "_":
+                continue
+            node = s.info[1] if len(s.info) > 1 else None
+            if node is not None and getattr(node, "kind", "") == "Let" and getattr(node, "ann", None) is not None:
+                continue
+            j = s.end
+            while j < len(src) and src[j] in " \t":
+                j += 1
+            if j < len(src) and src[j] == ":":
+                continue            # annotated (a parameter or `let x: T`)
+            ty = show(s.info[0])
+            if ty in ("_", "never"):
+                continue
+            out.append({"position": t.lsp(s.end), "label": f": {ty}", "kind": 1, "paddingLeft": False})
+        return out
 
-    def uses_io_edit(self, t, off):
-        """Insert ` uses io` before the `{` of the function enclosing `off`."""
-        src = t.src
-        starts = [m.start() for m in re.finditer(r"(?m)^fn\s+\w+", src) if m.start() <= off]
-        if not starts:
-            return None
-        s = starts[-1]
-        depth = 0
-        for i in range(s, len(src)):
-            if src[i] in "([":
-                depth += 1
-            elif src[i] in ")]":
-                depth -= 1
-            elif src[i] == "{" and depth == 0:
-                j = i
-                while j > s and src[j - 1] in " \t":
-                    j -= 1
-                return {"range": t.range(j, j), "newText": " uses io"}
-        return None
+    def on_code_lens(self, path, p):
+        """Run (and Debug) above `fn main`, and above each `test`."""
+        t = Text(self.docs[path])
+        try:
+            prog = parse(self.docs[path], path)
+        except KlarError:
+            return []
+        uri = path_to_uri(path)
+        out = []
+        for d in prog.decls:
+            r = t.range(t.offset(d.line, d.col), t.offset(d.line, d.col))
+            if d.kind == "Fn" and d.name == "main" and not d.params:
+                out.append({"range": r, "command": {"title": "Run", "command": "klar.run", "arguments": [uri]}})
+                out.append({"range": r, "command": {"title": "Debug", "command": "klar.debug", "arguments": [uri]}})
+            elif d.kind == "Test":
+                out.append({"range": r, "command": {"title": "Run tests", "command": "klar.test", "arguments": [uri]}})
+                break
+        return out
+
+    def on_workspace_symbols(self, p):
+        q = (p.get("query") or "").lower()
+        seen, out = set(), []
+        roots = list(self.docs) or [os.path.join(os.getcwd(), "main.klar")]
+        for dotted, f in fixes.module_files(roots[0]) + [(None, d) for d in self.docs]:
+            if f in seen or (dotted or "").startswith("std.") and not q:
+                continue
+            seen.add(f)
+            for name, (mod, kind, node) in fixes._exports_of(f, dotted or "").items():
+                if q and q not in name.lower():
+                    continue
+                if kind == "Variant":
+                    node = next((v for v in node.variants if v.name == name), node)
+                t = self.docs.get(f)
+                line = max(node.line - 1, 0)
+                out.append({"name": name, "kind": {"Fn": S_FUNCTION, "Extern": S_FUNCTION, "Struct": S_STRUCT,
+                                                   "Enum": S_ENUM, "Variant": S_ENUM_MEMBER}.get(kind, S_INTERFACE),
+                            "containerName": dotted or short_path(f),
+                            "location": {"uri": path_to_uri(f), "range": {"start": {"line": line, "character": max(node.col - 1, 0)},
+                                                                         "end": {"line": line, "character": max(node.col - 1, 0)}}}})
+                if len(out) >= 500:
+                    return out
+        return out
+
+
+def describe_at(path, src, line, col):
+    """What the editor shows for the name at (line, col): for `klar check FILE --at LINE:COL`."""
+    path = os.path.abspath(path)
+    server = Server(None, None)
+    server.docs[path] = src
+    a = Analysis(server, path, src)
+    if a.checker is None:
+        e = a.errors[0] if a.errors else None
+        return {"error": e.render(src) if e else "the file could not be checked"}
+    t = a.texts[path]
+    off = t.offset(line, col)
+    sp = a.span_at(path, off)
+    if sp is None:
+        return {"error": f"no name at {path}:{line}:{col}"}
+    out = {"name": sp.name, "kind": {"decl": "variable", "local": "variable"}.get(sp.kind, sp.kind)}
+    if sp.kind == "module":
+        out["signature"] = f"use {sp.name}"
+        out["where"] = short_path(os.path.abspath(sp.info))
+    else:
+        parts = a.hover_parts(sp)
+        if parts is None:
+            return {"error": f"nothing known about `{sp.name}`"}
+        out["signature"], out["where"], out["doc"] = parts
+    if sp.target is not None:
+        tt = a.text(sp.target[0])
+        p = tt.lsp(sp.target[1])
+        out["definition"] = {"file": sp.target[0], "line": p["line"] + 1,
+                             "col": sp.target[1] - tt.starts[p["line"]] + 1}
+        refs = []
+        for m, r in server.references(a, sp.target):
+            rt = a.text(m)
+            rp = rt.lsp(r.start)
+            refs.append({"file": m, "line": rp["line"] + 1, "col": r.start - rt.starts[rp["line"]] + 1})
+        out["references"] = refs
+    return {k: v for k, v in out.items() if v not in ("", None)}
 
 
 def cmd_lsp():

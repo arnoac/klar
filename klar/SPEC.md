@@ -438,7 +438,7 @@ back/forward.
 
 Every error has a stable code, an exact `line:col`, a message, and usually a `hint` with the fix. The
 checker reports all independent errors in one run. `klar check --json` emits `{"ok": false, "errors": [...]}`,
-each with `code, phase, title, message, file, line, col, hint`.
+each with `code, phase, title, message, file, line, col, hint` and exact `fixes` (`klar check --fix` applies them).
 
 | Code | Meaning | Code | Meaning |
 |---|---|---|---|
@@ -469,7 +469,7 @@ klar build [FILE] [--release]    native executable; std.ui apps become a web pag
 klar dev [FILE...]               serve app and/or backend; rebuild and reload on save
 klar add|remove|install|update   packages (see Packages)
 klar audit [--json]              check dependencies for known vulnerabilities
-klar lsp | spec | explain CODE   language server | this reference | explain an error code
+klar lsp | debug | spec | explain CODE   language server | debugger (--break LINE) | this reference | explain an error code
 FILE defaults to the project's main.klar; test, check and fmt cover the whole project.
 ```
 

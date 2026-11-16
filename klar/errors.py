@@ -80,6 +80,8 @@ class KlarError(Exception):
         }
         if self.trace:
             d["trace"] = self.trace
+        if getattr(self, "fixes", None):
+            d["fixes"] = self.fixes
         return d
 
     def render(self, source=None):
@@ -93,6 +95,10 @@ class KlarError(Exception):
                 out.append("       | " + " " * max(self.col - 1, 0) + "^")
         if self.hint:
             out.append(f"  hint: {self.hint}")
+        for f in getattr(self, "fixes", None) or ():
+            if f.get("preferred"):
+                out.append(f"  fix: {f['title'][0].lower() + f['title'][1:]} (klar check --fix applies it)")
+                break
         for fr in self.trace:
             out.append(f"  at {fr}")
         return "\n".join(out)

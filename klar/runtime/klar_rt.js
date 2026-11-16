@@ -12,12 +12,59 @@ class KlarError extends Error {
 }
 let $file = "<input>";
 function $fail(code, l, c, msg, hint) { throw new KlarError(code, l, c, msg, hint); }
+
+// Klar stack traces. The compiler appends a table: [[file names], [generated line, file, Klar line], ...].
+// Generated lines are counted from the start of the program text; `probe` (a stack taken on a known line)
+// gives the offset, so traces also work when the code sits inside an HTML page.
+let $klar_map = null, $klar_off = 0;
+function $klar_lines(table, line, probe) {
+  $klar_map = table;
+  const m = /:(\d+):\d+\)?\s*$/m.exec(String(probe || "").split("\n").find(l => /:\d+:\d+\)?\s*$/.test(l)) || "");
+  $klar_off = m ? +m[1] - line : 0;
+}
+function $klar_at(line) {
+  const t = $klar_map;
+  if (!t) return null;
+  let lo = 1, hi = t.length - 1, best = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (t[mid][0] <= line) { best = t[mid]; lo = mid + 1; } else hi = mid - 1;
+  }
+  return best && best[1] >= 0 ? [t[0][best[1]], best[2]] : null;
+}
+// The Klar frames of a JS error's stack: [{fn, file, line}], innermost first.
+function $klar_frames(e) {
+  const out = [];
+  if (!e || typeof e.stack !== "string" || !$klar_map) return out;
+  for (const l of e.stack.split("\n")) {
+    let m = /^\s*at (?:async )?(?:(.*?) \()?(.*):(\d+):(\d+)\)?$/.exec(l) || /^\s*(.*?)@(.*):(\d+):(\d+)$/.exec(l);
+    if (!m) continue;
+    // with source maps on (node --enable-source-maps, devtools), frames may already name the Klar file
+    const named = /\.klar$/.test(m[2]) && $klar_map[0].find(f => m[2] === f || m[2].endsWith("/" + f));
+    const at = named ? [named, +m[3]] : /\.klar$/.test(m[2]) ? null : $klar_at(+m[3] - $klar_off);
+    const name = (m[1] || "").replace(/^.*[ .]/, "");
+    if (!at || !/^f_|^$|^v_/.test(name)) continue;
+    const fn = /^f_/.test(name) ? name.slice(2).replace(/\$\d+$/, "") : "fn";
+    const prev = out[out.length - 1];
+    if (prev && prev.fn === fn && prev.file === at[0] && prev.line === at[1]) continue;
+    out.push({ fn, file: at[0], line: at[1] });
+    if (out.length >= 12) break;
+  }
+  return out;
+}
 function $render_error(e) {
+  const frames = $klar_frames(e);
+  const trace = frames.map(f => `\n  at ${f.fn} (${f.file}:${f.line})`).join("");
   if (e instanceof KlarError) {
-    return `error[${e.code}] ${$file}:${e.line}:${e.col}: ${e.message}` + (e.hint ? `\n  hint: ${e.hint}` : "");
+    const file = frames.length ? frames[0].file : $file;
+    return `error[${e.code}] ${file}:${e.line}:${e.col}: ${e.message}` + (e.hint ? `\n  hint: ${e.hint}` : "") + trace;
   }
   if (e instanceof RangeError && /call stack/i.test(e.message)) {
-    return "error[E406] stack overflow (recursion too deep)";
+    return "error[E406] stack overflow (recursion too deep)" + trace;
+  }
+  if (frames.length) {
+    const where = `${frames[0].file}:${frames[0].line}`;
+    return `error[E407] ${where}: ${e && e.name ? e.name + ": " : ""}${e && e.message}` + trace;
   }
   return "error[E407] " + (e && e.stack ? e.stack : String(e));
 }

@@ -155,6 +155,10 @@ class LanguageServer(unittest.TestCase):
     def at(self, method, path, position, **extra):
         return self.c.request(method, {"textDocument": {"uri": uri(path)}, "position": position, **extra})
 
+    def complete(self, path, position):
+        r = self.at("textDocument/completion", path, position)
+        return r["items"] if isinstance(r, dict) else r
+
     def test_diagnostics_follow_edits(self):
         self.assertEqual(self.open(self.main, MAIN), [])
         bad = MAIN.replace("area(s)", "aera(s)")
@@ -211,21 +215,21 @@ class LanguageServer(unittest.TestCase):
         text = MAIN.replace("  print(p.x)\n", "  print(p.)\n  let q = de\n")
         self.open(self.main, MAIN)
         self.change(self.main, text, 2)
-        labels = [i["label"] for i in self.at("textDocument/completion", self.main, pos(text, "p.)", delta=2))]
+        labels = [i["label"] for i in self.complete(self.main, pos(text, "p.)", delta=2))]
         self.assertEqual(labels[:2], ["x", "y"])
-        labels = [i["label"] for i in self.at("textDocument/completion", self.main, pos(text, "de\n", delta=2))]
+        labels = [i["label"] for i in self.complete(self.main, pos(text, "de\n", delta=2))]
         self.assertIn("describe", labels)
         self.assertIn("p", labels)
         self.assertIn("area", labels)
         self.assertNotIn("json_parse", labels)                       # not imported
         u = "use std.\n"
         self.change(self.main, u + MAIN, 3)
-        labels = [i["label"] for i in self.at("textDocument/completion", self.main, pos(u, "\n"))]
+        labels = [i["label"] for i in self.complete(self.main, pos(u, "\n"))]
         self.assertIn("json", labels)
         self.assertIn("task", labels)
         u = "use std.json { Json, js\n"
         self.change(self.main, u + MAIN, 4)
-        labels = [i["label"] for i in self.at("textDocument/completion", self.main, pos(u, "\n"))]
+        labels = [i["label"] for i in self.complete(self.main, pos(u, "\n"))]
         self.assertIn("json_parse", labels)
 
     def test_signature_help(self):
@@ -268,6 +272,104 @@ class LanguageServer(unittest.TestCase):
         [d] = self.open(self.main, MAIN)
         self.assertIn("in shapes.klar:", d["message"])
         self.assertEqual(d["range"]["start"]["line"], 0)
+
+    def fixes_for(self, path, text, diag):
+        return self.c.request("textDocument/codeAction", {"textDocument": {"uri": uri(path)}, "range": diag["range"],
+                                                          "context": {"diagnostics": [diag]}})
+
+    def test_quick_fixes_for_common_mistakes(self):
+        text = (MAIN.replace("  print(p.x)\n", "  let n = 1\n  n = 2\n  let j = json_parse(\"1\")\n")
+                .replace("fn describe(s: Shape) -> str {\n  let a = area(s)\n  return \"area {a}\"\n}",
+                         "fn describe(s: Shape) -> str {\n  return match s {\n    Circle(c, r) => \"circle\"\n  }\n}"))
+        diags = self.open(self.main, text)
+        by_code = {d["code"]: d for d in diags}
+        [fix] = self.fixes_for(self.main, text, by_code["E306"])
+        self.assertEqual(fix["title"], "Add the missing arm")
+        new = [e["newText"] for e in fix["edit"]["changes"][uri(self.main)]]
+        self.assertEqual(new, [",", '    Square(_, _) => panic("not handled yet"),\n'])
+        [fix] = self.fixes_for(self.main, text, by_code["E203"])
+        self.assertEqual(fix["title"], "Declare `n` with `var`")
+        self.assertEqual(fix["edit"]["changes"][uri(self.main)][0]["range"]["start"], pos(text, "let n"))
+
+    def test_missing_std_import_is_a_quick_fix_and_a_completion(self):
+        text = MAIN.replace("  print(p.x)\n", "  let j = json_parse(\"1\")\n")
+        [d] = self.open(self.main, text)
+        [fix] = self.fixes_for(self.main, text, d)
+        self.assertEqual(fix["title"], "Add `use std.json { json_parse }`")
+        self.assertEqual(fix["edit"]["changes"][uri(self.main)][0]["newText"], "use std.json { json_parse }\n")
+        typed = MAIN.replace("  print(p.x)\n", "  let j = json_pa\n")
+        self.change(self.main, typed, 2)
+        [item] = [i for i in self.complete(self.main, pos(typed, "json_pa", delta=7)) if i["label"] == "json_parse"]
+        self.assertEqual(item["additionalTextEdits"][0]["newText"], "use std.json { json_parse }\n")
+
+    def test_completion_knows_the_expected_type(self):
+        app = ('use std.html { Html, Attr, button, text }\nuse std.kit { variant, Outline }\n\nenum Msg { Go }\n\n'
+               'fn view() -> Html[Msg] {\n  return button([variant(Outline), ], [text("x")])\n}\n')
+        path = os.path.join(self.dir, "app.klar")
+        self.open(path, app)
+        items = self.complete(path, pos(app, "), ]", delta=3))
+        size = [i for i in items if i["label"] == "size"]
+        self.assertTrue(size and size[0]["sortText"].startswith("0"))           # std.kit option, not imported yet
+        self.assertEqual(size[0]["additionalTextEdits"][0]["newText"], "use std.kit { variant, Outline, size }")
+        typed = app.replace("variant(Outline)", "variant()")
+        self.change(path, typed, 2)
+        first = sorted(self.complete(path, pos(typed, "variant()", delta=8)), key=lambda i: i["sortText"])[:6]
+        self.assertEqual({i["label"] for i in first}, {"Primary", "Secondary", "Outline", "Ghost", "Destructive", "Link"})
+
+    def test_match_arm_completion(self):
+        text = MAIN.replace("fn describe(s: Shape) -> str {\n  let a = area(s)\n  return \"area {a}\"\n}",
+                            "fn describe(s: Shape) -> str {\n  return match s {\n    Circle(c, r) => \"c\",\n    \n  }\n}")
+        self.open(self.main, text)
+        items = sorted(self.complete(self.main, pos(text, "    \n", delta=4)), key=lambda i: i["sortText"])
+        self.assertEqual([i["insertText"] for i in items[:2]], ["Square(corner, side) => ", "Circle(center, radius) => "])
+
+    def test_hovers_for_tuples_and_externs(self):
+        text = ('extern "js:marked.parse" fn md(text: str) -> str\n\nfn pair() -> (int, str) {\n  return (1, "a")\n}\n\n'
+                'fn main() uses io {\n  let t = pair()\n  print(t.1)\n  print(md("x"))\n}\n')
+        self.open(self.main, text)
+        h = self.at("textDocument/hover", self.main, pos(text, "t.1", delta=2))["contents"]["value"]
+        self.assertIn("1: str", h)
+        self.assertIn("element 1 of a tuple", h)
+        h = self.at("textDocument/hover", self.main, pos(text, "md(\"x"))["contents"]["value"]
+        self.assertIn('extern "js:marked.parse" fn md(text: str) -> str', h)
+        self.assertIn("JavaScript function (npm package)", h)
+        hints = self.c.request("textDocument/inlayHint", {"textDocument": {"uri": uri(self.main)},
+                                                          "range": {"start": pos(text, "fn main"), "end": pos(text, "}\n", nth=1)}})
+        self.assertEqual([h["label"] for h in hints], [": (int, str)"])
+        lenses = self.c.request("textDocument/codeLens", {"textDocument": {"uri": uri(self.main)}})
+        self.assertEqual([x["command"]["title"] for x in lenses], ["Run", "Debug"])
+        syms = self.c.request("workspace/symbol", {"query": "area"})
+        self.assertIn("area", [s["name"] for s in syms])
+
+
+class CheckForAgents(unittest.TestCase):
+    """The same information without an editor: `klar check --json` fixes, `--fix` and `--at`."""
+
+    def run_klar(self, *args, cwd):
+        return subprocess.run([sys.executable, "-m", "klar", *args], cwd=cwd, capture_output=True, text=True,
+                              env=dict(os.environ, PYTHONPATH=ROOT))
+
+    def test_json_fixes_fix_and_at(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "shapes.klar"), "w") as f:
+            f.write(SHAPES)
+        bad = MAIN.replace("area(s)", "aera(s)").replace("  print(p.x)\n", "  print(p.x)\n  let ok = True\n")
+        with open(os.path.join(d, "main.klar"), "w") as f:
+            f.write(bad)
+        r = self.run_klar("check", "main.klar", "--json", cwd=d)
+        errs = json.loads(r.stdout)["errors"]
+        self.assertEqual(errs[0]["fixes"][0]["edits"][0]["text"], "area")
+        self.assertEqual(errs[0]["fixes"][0]["edits"][0]["col"], bad.splitlines()[3].index("aera") + 1)
+        r = self.run_klar("check", "--fix", "main.klar", cwd=d)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        with open(os.path.join(d, "main.klar")) as f:
+            self.assertEqual(f.read(), MAIN.replace("  print(p.x)\n", "  print(p.x)\n  let ok = true\n"))
+        r = self.run_klar("check", "main.klar", "--at", "4:12", "--json", cwd=d)
+        info = json.loads(r.stdout)
+        self.assertEqual(info["signature"], "fn area(s: Shape) -> float")
+        self.assertEqual(info["doc"], "The area of a shape.")
+        self.assertEqual((os.path.basename(info["definition"]["file"]), info["definition"]["line"]), ("shapes.klar", 10))
 
 
 if __name__ == "__main__":

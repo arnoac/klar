@@ -41,15 +41,88 @@ def check_main_signature(prog, path):
     return KlarError("E201", "no `main` function to run", 1, 1, "add: fn main() uses io { ... }", path)
 
 
-def cmd_check(path, as_json):
+def attach_fixes(errors, src, path):
+    """Give each error the machine-applicable fixes for it (shown by --json and `klar check --fix`)."""
+    from .fixes import fixes
+    texts = {os.path.abspath(path): src}
+    for e in errors:
+        f = os.path.abspath(e.file) if e.file else os.path.abspath(path)
+        if f not in texts:
+            try:
+                texts[f] = load(f)
+            except OSError:
+                continue
+        try:
+            e.fixes = fixes(e, texts[f], f)
+        except Exception:        # a fix is a convenience; never let it hide the error
+            e.fixes = []
+
+
+def cmd_fix(path):
+    """Apply every preferred fix, re-checking until nothing more can be fixed. Prints what changed."""
+    from .fixes import fix_all
+    src = load(path)
+    applied = []
+    for _ in range(10):
+        _, errors = check_source(src, path)
+        new, titles = fix_all(path, src, errors)
+        if not titles or new == src:
+            break
+        src, applied = new, applied + titles
+    if applied:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(src)
+        for t in applied:
+            print(f"fixed {path}:{t}")
+    return src
+
+
+def cmd_check(path, as_json, fix=False):
+    if fix:
+        cmd_fix(path)
     src = load(path)
     _, errors = check_source(src, path)
+    attach_fixes(errors, src, path)
     report(errors, src, as_json)
     if as_json and not errors:
         pass
     elif not errors:
         print("ok")
     return 1 if errors else 0
+
+
+def cmd_check_at(path, at, as_json):
+    """What an editor shows on hover, for one position: `klar check main.klar --at 12:7`."""
+    import json
+    from .lsp import describe_at
+    try:
+        line, col = (int(x) for x in at.split(":"))
+    except ValueError:
+        say(f"klar check: --at takes LINE:COL, got `{at}`", "klar check main.klar --at 12:7")
+        return 2
+    info = describe_at(path, load(path), line, col)
+    if as_json:
+        print(json.dumps(info, indent=2))
+        return 0 if info.get("name") else 1
+    if not info.get("name"):
+        print(info.get("error") or f"nothing known at {path}:{line}:{col}")
+        return 1
+    print(info["signature"])
+    if info.get("where"):
+        print(f"  ({info['where']})")
+    if info.get("doc"):
+        print("\n" + info["doc"])
+    if info.get("definition"):
+        d = info["definition"]
+        print(f"\ndefined at {d['file']}:{d['line']}:{d['col']}")
+    refs = info.get("references") or []
+    if refs:
+        def short(f):
+            rel = os.path.relpath(f)
+            return f if rel.startswith("..") else rel
+        print(f"{len(refs)} reference(s): " + ", ".join(f"{short(r['file'])}:{r['line']}" for r in refs[:20])
+              + (" ..." if len(refs) > 20 else ""))
+    return 0
 
 
 def cmd_run(path, as_json, argv):
@@ -210,7 +283,7 @@ def cmd_build_js(path, out, target, as_json, quiet=False):
         return 1
     with open(out, "w", encoding="utf-8") as f:
         if target == "node":
-            f.write("#!/usr/bin/env node\n" + js)
+            f.write(js)
         else:
             f.write(WEB_PAGE.format(title=stem, head=getattr(js, "head", ""), js=js.replace("</script", "<\\/script")))
     if target == "node":
@@ -281,7 +354,8 @@ Start
 
 Check and ship
   klar test [FILE]          run `test` blocks
-  klar check [FILE]         type-check without running
+  klar check [FILE]         type-check without running (--fix: apply the sure fixes)
+  klar debug [FILE] --break LINE   run; show the stack and variables at each breakpoint and on an error
   klar fmt [PATH...]        format .klar files in place (--check: only report)
   klar build [FILE]         compile: native executable, or a web page for std.ui apps
 
@@ -297,7 +371,7 @@ Learn
   klar spec                 print the complete language reference
   klar explain CODE         explain an error code, e.g. klar explain E306
   klar help COMMAND         options and examples for one command
-  klar lsp                  language server for editors
+  klar lsp                  language server for editors (klar debug --dap: their debugger)
 
 FILE defaults to main.klar of the project you are in (a folder works too: klar run examples/apps/todo_api).
 With no FILE, `klar test`, `klar check` and `klar fmt` cover every .klar file in the project.
@@ -311,7 +385,9 @@ EXAMPLES = {
     "dev": "klar dev                  main.klar, app.klar and server.klar of this project\n"
            "  klar dev server.klar app.klar --port 3000",
     "test": "klar test                 every file in the project\n  klar test bank.klar --json",
-    "check": "klar check                every file in the project\n  klar check main.klar --json",
+    "check": "klar check                every file in the project\n  klar check main.klar --json\n"
+             "  klar check --fix          apply the fixes Klar is sure of\n"
+             "  klar check main.klar --at 12:7   type, docs and definition of the name there",
     "fmt": "klar fmt                  the whole project\n  klar fmt --check src/      list unformatted files, change nothing",
     "build": "klar build                main.klar: an executable named after the package (a .html page for std.ui apps)\n"
              "  klar build --release      optimised (gcc/clang -O2)\n"
@@ -329,6 +405,9 @@ EXAMPLES = {
     "update": "klar update                all git dependencies\n  klar update textkit",
     "bind": "klar bind marked          writes npm/marked.klar",
     "explain": "klar explain E306",
+    "debug": "klar debug main.klar --break 12          stack and variables each time line 12 runs\n"
+             "  klar debug --break store.klar:40,41 --json   any file of the program; JSON lines on stderr\n"
+             "  klar debug main.klar                     on an error, the variables of every frame",
     "audit": "klar audit\n  klar audit --json",
 }
 
@@ -349,6 +428,9 @@ DESCRIPTIONS = {
     "audit": "Check every dependency (git, Python, npm) and this Klar itself against known vulnerabilities.\n"
              "Exit status: 0 clean, 1 findings, 2 the check could not complete.",
     "bind": "Write Klar extern declarations for an installed npm package from its TypeScript types.",
+    "debug": "Run a program in the interpreter and show where it is: at each --break line, the call stack and\n"
+             "every variable; on an error, the variables of each frame it passed through. Editors use\n"
+             "`klar debug --dap` (the Debug Adapter Protocol) for breakpoints, stepping and watching values.",
     "lsp": "Run the language server over stdin/stdout (diagnostics, hover, go to definition, rename, completion).",
     "spec": "Print the complete language reference (about 4,000 words). Read it once before writing Klar.",
     "explain": "Explain an error code in detail.",
@@ -437,15 +519,18 @@ def project_files(paths, cmd):
     return files
 
 
-def cmd_check_all(files, as_json):
+def cmd_check_all(files, as_json, fix=False):
     if len(files) == 1:
-        return cmd_check(files[0], as_json)
+        return cmd_check(files[0], as_json, fix)
     all_errors = []
     for f in files:
+        if fix:
+            cmd_fix(f)
         src = load(f)
         _, errors = check_source(src, f)
         for e in errors:
             e.file = e.file or f
+        attach_fixes(errors, src, f)
         if not as_json:
             report(errors, src, False)
         all_errors += errors
@@ -554,7 +639,7 @@ def unknown_command(word):
 
 
 COMMANDS = ["new", "run", "dev", "test", "check", "fmt", "build", "add", "remove", "install", "update", "bind",
-            "audit", "spec", "explain", "help", "lsp"]
+            "audit", "spec", "explain", "help", "lsp", "debug"]
 
 
 def build_main(rest):
@@ -622,7 +707,10 @@ def parser():
     r.add_argument("args", nargs=argparse.REMAINDER, help="arguments for the program (see args())")
     c = cmd("check", "type-check without running")
     c.add_argument("files", nargs="*", help="files or folders (default: the whole project)")
-    c.add_argument("--json", action="store_true", help="errors as JSON")
+    c.add_argument("--json", action="store_true", help="errors as JSON, each with exact fixes where Klar knows one")
+    c.add_argument("--fix", action="store_true", help="apply the fixes Klar is sure of, then report what is left")
+    c.add_argument("--at", metavar="LINE:COL", help="describe the name at this position of FILE: type, docs, "
+                                                     "definition and references (what an editor shows on hover)")
     t = cmd("test", "run all `test` blocks")
     t.add_argument("files", nargs="*", help="files or folders (default: the whole project)")
     t.add_argument("--json", action="store_true", help="results as JSON")
@@ -669,6 +757,13 @@ def parser():
     au = cmd("audit", "check for known vulnerabilities")
     au.add_argument("--json", action="store_true", help="machine-readable report")
     cmd("lsp", "language server")
+    dg = cmd("debug", "run with breakpoints; show the stack and variables")
+    dg.add_argument("file", nargs="?", help="a .klar file or a folder with main.klar (default: this project's)")
+    dg.add_argument("--break", dest="breaks", action="append", default=[], metavar="[FILE:]LINE[,LINE]",
+                    help="stop here and print the stack and variables (repeatable)")
+    dg.add_argument("--json", action="store_true", help="one JSON object per stop, on stderr")
+    dg.add_argument("--dap", action="store_true", help="speak the Debug Adapter Protocol on stdin/stdout (editors)")
+    dg.add_argument("args", nargs=argparse.REMAINDER, help="arguments for the program (see args())")
     cmd("spec", "the language reference")
     x = cmd("explain", "explain an error code")
     x.add_argument("code")
@@ -708,8 +803,13 @@ def main(argv=None):
         path = entry(a.file, "run")
         return 2 if path is None else cmd_run(path, a.json, args)
     if a.cmd == "check":
+        if a.at:
+            if len(a.files) != 1 or not a.files[0].endswith(".klar"):
+                say("klar check: --at needs one .klar file", "klar check main.klar --at 12:7")
+                return 2
+            return cmd_check_at(a.files[0], a.at, a.json)
         files = project_files(a.files, "check")
-        return 2 if files is None else cmd_check_all(files, a.json)
+        return 2 if files is None else cmd_check_all(files, a.json, a.fix)
     if a.cmd == "test":
         files = project_files(a.files, "test")
         return 2 if files is None else cmd_test_all(files, a.json, bool(a.files))
@@ -718,6 +818,12 @@ def main(argv=None):
     if a.cmd == "audit":
         from .audit import cmd_audit
         return cmd_audit(a.json)
+    if a.cmd == "debug":
+        from .debug import cmd_dap, cmd_debug
+        if a.dap:
+            return cmd_dap()
+        path = entry(a.file, "debug")
+        return 2 if path is None else cmd_debug(path, a.breaks, a.json, a.args)
     if a.cmd == "lsp":
         from .lsp import cmd_lsp
         return cmd_lsp()

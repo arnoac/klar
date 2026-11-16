@@ -1,15 +1,19 @@
 {
   "name": "klar",
   "displayName": "Klar",
-  "description": "Klar language support: diagnostics with fixes, hover types, go to definition, rename, completion and formatting",
-  "version": "0.10.0",
+  "description": "Klar language support: errors as you type with one-click fixes, types on hover, completion that adds imports, go to definition, rename, formatting, and a debugger",
+  "version": "0.11.0",
   "publisher": "klar-lang",
   "license": "MIT",
   "icon": "icon.png",
-  "engines": { "vscode": "^1.82.0" },
-  "categories": ["Programming Languages", "Linters", "Formatters"],
+  "repository": { "type": "git", "url": "https://github.com/arnoac/klar" },
+  "homepage": "https://github.com/arnoac/klar/tree/main/editors",
+  "bugs": { "url": "https://github.com/arnoac/klar/issues" },
+  "engines": { "vscode": "^1.91.0" },
+  "categories": ["Programming Languages", "Linters", "Formatters", "Debuggers"],
+  "keywords": ["klar", "language server", "debugger"],
   "main": "./extension.js",
-  "activationEvents": ["onLanguage:klar"],
+  "activationEvents": ["onLanguage:klar", "onDebugResolve:klar", "onDebugDynamicConfigurations:klar"],
   "contributes": {
     "languages": [{
       "id": "klar",
@@ -19,17 +23,59 @@
       "configuration": "./language-configuration.json"
     }],
     "grammars": [{ "language": "klar", "scopeName": "source.klar", "path": "./syntaxes/klar.tmLanguage.json" }],
+    "configurationDefaults": {
+      "[klar]": { "editor.formatOnSave": true, "editor.tabSize": 2, "editor.insertSpaces": true }
+    },
     "configuration": {
       "title": "Klar",
       "properties": {
         "klar.command": {
           "type": "array",
           "items": { "type": "string" },
-          "default": ["klar", "lsp"],
-          "description": "Command that starts the Klar language server, e.g. [\"/path/to/klar/klarc\", \"lsp\"] or [\"python3\", \"-m\", \"klar\", \"lsp\"]."
+          "default": ["klar"],
+          "description": "How to start Klar, e.g. [\"/path/to/klar/klarc\"] or [\"python3\", \"-m\", \"klar\"]. The extension adds `lsp` for the language server and `debug --dap` for the debugger."
         }
       }
-    }
+    },
+    "commands": [
+      { "command": "klar.run", "title": "Run File", "category": "Klar" },
+      { "command": "klar.test", "title": "Run Tests in File", "category": "Klar" },
+      { "command": "klar.debug", "title": "Debug File", "category": "Klar" },
+      { "command": "klar.restart", "title": "Restart Language Server", "category": "Klar" }
+    ],
+    "menus": {
+      "commandPalette": [
+        { "command": "klar.run", "when": "editorLangId == klar" },
+        { "command": "klar.test", "when": "editorLangId == klar" },
+        { "command": "klar.debug", "when": "editorLangId == klar" }
+      ]
+    },
+    "breakpoints": [{ "language": "klar" }],
+    "debuggers": [{
+      "type": "klar",
+      "label": "Klar",
+      "languages": ["klar"],
+      "configurationAttributes": {
+        "launch": {
+          "properties": {
+            "program": { "type": "string", "description": "The .klar file whose main() runs.", "default": "${file}" },
+            "args": { "type": "array", "items": { "type": "string" }, "description": "Arguments for the program (see args()).", "default": [] },
+            "cwd": { "type": "string", "description": "Working directory.", "default": "${workspaceFolder}" },
+            "stopOnEntry": { "type": "boolean", "description": "Stop at the first line of main().", "default": false }
+          }
+        }
+      },
+      "initialConfigurations": [
+        { "type": "klar", "request": "launch", "name": "Debug Klar file", "program": "${file}" }
+      ],
+      "configurationSnippets": [
+        {
+          "label": "Klar: debug a file",
+          "description": "Run a Klar program's main() under the debugger",
+          "body": { "type": "klar", "request": "launch", "name": "Debug Klar file", "program": "^\"\\${file}\"" }
+        }
+      ]
+    }]
   },
-  "dependencies": { "vscode-languageclient": "9.0.1" }
+  "dependencies": { "vscode-languageclient": "11.0.0" }
 }

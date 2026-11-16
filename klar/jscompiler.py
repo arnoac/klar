@@ -10,6 +10,7 @@ expression and may first append statements to the current block. `seq()` keeps l
 when a later operand hoists statements.
 """
 
+import base64
 import json
 import os
 import re
@@ -22,6 +23,8 @@ from .types import TCon, TFn, TVar, INT, prune, resolve, substitute, show
 RT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime")
 MAX_SAFE = 2 ** 53 - 1
 TRIVIAL = re.compile(r"^(?:[A-Za-z_$][\w$]*|-?\d+(?:\.\d+)?(?:e[+-]?\d+)?|\"(?:[^\"\\]|\\.)*\"|true|false|undefined)$")
+MARK = re.compile("\x01(\\d+):(\\d+):(\\d+)\x02")   # a Klar position on a generated line: file index, line, column
+B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 NODE_ONLY = ("klar.stdpy.fslib.", "klar.stdpy.processlib.", "klar.stdpy.sqlitelib.", "klar.stdpy.cryptolib.", "klar.stdpy.httplib.serve", "klar:web.publish")
 
 
@@ -56,6 +59,8 @@ class JSCompiler:
         self.ctx = None
         self.out = None
         self.wasm = {}           # WebAssembly module path -> (JS variable, compiled export kinds)
+        self.src_files = []      # Klar files that generated code maps back to
+        self.cur_file = 0
 
     # ------------------------------------------------------------------ errors and types
     def unsupported(self, node, what, hint=None):
@@ -126,8 +131,62 @@ class JSCompiler:
         parts += self.desc_fills
         parts += self.defs
         main_call = f"await {main}()" if self.fn_is_io("main") else f"{main}()"
-        parts.append(f"$start(async () => {{ {main_call}; }});")
-        return JSOutput("\n".join(parts) + "\n", self.bundler.head() if self.bundler else "")
+        if self.target == "node":
+            parts.insert(0, "#!/usr/bin/env node")
+        text, table, smap = self.source_map("\n".join(parts))
+        n = text.count("\n") + 2
+        text += f"\n$klar_lines({json.dumps(table, separators=(',', ':'))}, {n}, new Error().stack);"
+        text += f"\n$start(async function $main() {{ {main_call}; }});\n"
+        text += "//# sourceMappingURL=data:application/json;base64," + \
+            base64.b64encode(json.dumps(smap, separators=(",", ":")).encode()).decode() + "\n"
+        return JSOutput(text, self.bundler.head() if self.bundler else "")
+
+    # ------------------------------------------------------------------ source positions
+    def file_index(self, path):
+        path = os.path.abspath(path) if path else os.path.abspath(self.file)
+        if path not in self.src_files:
+            self.src_files.append(path)
+        return self.src_files.index(path)
+
+    def display_name(self, path):
+        """How a Klar file is named in stack traces and source maps: relative to the entry file's folder."""
+        from .loader import STD_DIR
+        if path.startswith(STD_DIR + os.sep):
+            return "std/" + os.path.relpath(path, STD_DIR).replace(os.sep, "/")
+        base = os.path.dirname(os.path.abspath(self.file))
+        rel = os.path.relpath(path, base)
+        return (os.path.basename(path) if rel.startswith("..") else rel).replace(os.sep, "/")
+
+    def source_map(self, text):
+        """Strip the position marks from the generated code. Returns the code, the line table the runtime uses
+        to show Klar stack traces ([files, [generated line, file, line], ...]) and a standard source map."""
+        lines = text.split("\n")
+        table, segs = [], []
+        for i, ln in enumerate(lines):
+            m = MARK.search(ln) if "\x01" in ln else None
+            if m is None:
+                segs.append(None)
+                continue
+            col = m.start()
+            lines[i] = MARK.sub("", ln)
+            fi, kl, kc = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            segs.append((col, fi, kl - 1, max(kc - 1, 0)))
+            if not table or table[-1][1:] != [fi, kl]:
+                table.append([i + 1, fi, kl])
+        table.append([len(lines) + 1, -1, 0])          # what follows the generated functions is not Klar code
+        names = [self.display_name(f) for f in self.src_files]
+        mappings, prev = [], [0, 0, 0]
+        for seg in segs:
+            if seg is None:
+                mappings.append("")
+                continue
+            col, fi, kl, kc = seg
+            mappings.append(vlq(col) + vlq(fi - prev[0]) + vlq(kl - prev[1]) + vlq(kc - prev[2]))
+            prev = [fi, kl, kc]
+        mappings += ["A", "A"]          # the two lines added after this (the line table and the start) map to nothing
+        smap = {"version": 3, "file": os.path.splitext(os.path.basename(self.file))[0] + ".js",
+                "sources": names, "names": [], "mappings": ";".join(mappings)}
+        return "\n".join(lines), [names] + table, smap
 
     def struct_classes(self):
         out = []
@@ -157,6 +216,7 @@ class JSCompiler:
         return self.instances[key]
 
     def gen_fn(self, d, targs, jsname):
+        self.cur_file = self.file_index(getattr(d, "module", None))
         self.sub = dict(zip(d.tparams, targs))
         sig = self.c.fns[d.name]
         is_async = "io" in sig.effects
@@ -168,7 +228,8 @@ class JSCompiler:
         lines = []
         self.block_into(d.body, lines)
         body = "\n".join("  " + l for l in lines)
-        self.defs.append(f"{'async ' if is_async else ''}function {jsname}({', '.join(params)}) {{\n{body}\n}}")
+        self.defs.append(f"\x01{self.cur_file}:{d.line}:{d.col}\x02{'async ' if is_async else ''}function {jsname}"
+                         f"({', '.join(params)}) {{\n{body}\n}}")
 
     # ------------------------------------------------------------------ statements
     def block_into(self, b, lines):
@@ -192,6 +253,12 @@ class JSCompiler:
         self.out.append(tail)
 
     def stmt(self, s):
+        start = len(self.out)
+        self.stmt_code(s)
+        if len(self.out) > start and getattr(s, "line", 0):
+            self.out[start] = f"\x01{self.cur_file}:{s.line}:{s.col}\x02" + self.out[start]
+
+    def stmt_code(self, s):
         k = s.kind
         if k == "Let":
             code = self.ex(s.value)
@@ -974,6 +1041,18 @@ class JSCompiler:
         if name == "ends_with":
             return f"{a[0]}.endsWith({a[1]})"
         self.unsupported(e, f"built-in `{name}`")
+
+
+def vlq(n):
+    """Base64 VLQ, as source maps encode numbers."""
+    n = (-n << 1) | 1 if n < 0 else n << 1
+    out = ""
+    while True:
+        d = n & 31
+        n >>= 5
+        out += B64[d | (32 if n else 0)]
+        if not n:
+            return out
 
 
 class JSOutput(str):

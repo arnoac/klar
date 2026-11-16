@@ -82,9 +82,10 @@ klar new NAME [--web]       create a project               klar add SOURCE      
 klar run [FILE] [ARGS]      check and run                  klar remove NAME       remove one
 klar dev [FILE...]          serve, reload on save          klar install           fetch the pinned dependencies
 klar test [FILE]            run test blocks                klar update [NAME]     move git dependencies forward
-klar check [FILE]           type-check (--json)            klar spec              the language reference
+klar check [FILE]           type-check (--json, --fix)     klar spec              the language reference
 klar fmt [PATH]             format in place                klar explain E306      explain an error code
 klar build [FILE]           compile                        klar lsp               language server for editors
+klar debug [FILE]           run with breakpoints           klar debug --dap       debugger for editors
 ```
 
 `klar add` takes one source and says what it is: `npm:marked`, `py:requests==2.32.3`,
@@ -147,8 +148,12 @@ klar add npm:marked                    # pins the exact version in klar.toml [np
 extern "js:marked.parse" fn markdown_to_html(markdown: str) -> str
 ```
 
-For editors, `klar lsp` is a language server: errors as you type with quick fixes, hover types, go to
-definition, rename and completion. Setup for VS Code, Neovim and Helix is in [editors/README.md](editors/README.md).
+For editors, `klar lsp` is a language server (errors as you type with one-click fixes, hover and inline types,
+completion that adds imports, go to definition, rename) and `klar debug --dap` a debugger (breakpoints, stepping,
+variables). The VS Code extension, Neovim and Helix setup are in [editors/README.md](editors/README.md). Without an
+editor, `klar check --fix` applies the fixes, `klar check FILE --at LINE:COL` shows what hover would, and
+`klar debug FILE --break LINE` prints the stack and variables at a line. JavaScript builds report runtime errors
+with Klar files and lines, and carry source maps for browser devtools.
 
 ## Security
 
@@ -178,6 +183,8 @@ reach you, and the known limits.
 | `klar/dev.py` | `klar dev`: rebuild on save, reload the browser, run the backend |
 | `klar/tasks.py` | tasks and channels in the interpreter (`std.task`) |
 | `klar/lsp.py` | `klar lsp`: the language server (diagnostics, hover, definitions, rename, completion) |
+| `klar/fixes.py` | exact fixes for errors, shared by the editor's quick fixes, `klar check --json` and `--fix` |
+| `klar/debug.py` | `klar debug`: breakpoints, stepping and variables (`--break` for the terminal, `--dap` for editors) |
 | `klar/pkg.py` | packages: `klar.toml`, `klar.lock`, `klar new/add/install/update`, npm packages via `[npm]` |
 | `klar/npm.py` | npm packages in JavaScript builds: resolving, Node imports, embedding ES modules in web pages, `klar bind` |
 | `klar/tools/dts2klar.mjs` | `klar bind`: TypeScript declarations to Klar externs (uses the TypeScript compiler) |
@@ -190,7 +197,7 @@ reach you, and the known limits.
 | `klar/SPEC.md` | the complete language reference |
 | `examples/` | 7 small programs with expected output |
 | `examples/apps/` | component showcase (`showcase`), Klar Board (multi-user task board with logins and live updates, ~1,400 lines), full-stack todo app, Game of Life on WebAssembly (`life`), server-rendered guestbook, todo JSON API, notes CLI, Python interop demo, Markdown notes (npm packages `marked` and `dompurify` in the browser and on Node) |
-| `editors/` | VS Code extension (highlighting + language server) and Neovim / Helix setup |
+| `editors/` | VS Code extension (highlighting, language server, debugger) and Neovim / Helix setup |
 | `bench/` | benchmarks against C, Go and Python (`python3 bench/run.py`), the Benchmarks Game programs (`bench/benchmarksgame`), and WebAssembly vs JavaScript in the browser (`bench/wasm`) |
 | `tests/` | 172 tests: `python3 -m unittest discover tests` |
 
