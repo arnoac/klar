@@ -1,0 +1,60 @@
+// Error handling with Result and the `?` operator. No exceptions, no null.
+
+struct Account { owner: str, balance: int }
+
+enum BankError {
+  Insufficient(needed: int, available: int),
+  InvalidAmount(amount: int),
+}
+
+fn withdraw(acct: Account, amount: int) -> Result[Account, BankError] {
+  if amount <= 0 {
+    return Err(InvalidAmount(amount))
+  }
+  if amount > acct.balance {
+    return Err(Insufficient(needed: amount, available: acct.balance))
+  }
+  return Ok(acct with (balance: acct.balance - amount))
+}
+
+fn deposit(acct: Account, amount: int) -> Result[Account, BankError] {
+  if amount <= 0 {
+    return Err(InvalidAmount(amount))
+  }
+  return Ok(acct with (balance: acct.balance + amount))
+}
+
+fn transfer(from: Account, to: Account, amount: int) -> Result[list[Account], BankError] {
+  let new_from = withdraw(from, amount)?
+  let new_to = deposit(to, amount)?
+  return Ok([new_from, new_to])
+}
+
+fn explain(e: BankError) -> str {
+  return match e {
+    Insufficient(need, have) => "insufficient funds: needed {need}, had {have}",
+    InvalidAmount(a) => "invalid amount {a}",
+  }
+}
+
+fn main() uses io {
+  let alice = Account(owner: "alice", balance: 100)
+  let bob = Account(owner: "bob", balance: 20)
+  for amount in [30, 500, -5] {
+    match transfer(alice, bob, amount) {
+      Ok(accts) => { print("moved {amount}: alice={accts[0].balance} bob={accts[1].balance}") }
+      Err(e) => { print("transfer of {amount} failed: {explain(e)}") }
+    }
+  }
+}
+
+test "withdraw too much" {
+  let r = withdraw(Account(owner: "x", balance: 10), 50)
+  assert r == Err(Insufficient(needed: 50, available: 10))
+}
+
+test "transfer moves money" {
+  let accts = unwrap(transfer(Account(owner: "a", balance: 10), Account(owner: "b", balance: 0), 4))
+  assert accts[0].balance == 6
+  assert accts[1].balance == 4
+}

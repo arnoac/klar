@@ -1,0 +1,53 @@
+// fannkuch-redux (Computer Language Benchmarks Game): pancake flips over all permutations of 1..n.
+// Same loops as the C version: set_at on the newest version of a list updates it in place.
+fn main() uses io {
+  let args_ = args()
+  let n = if len(args_) > 0 then unwrap_or(parse_int(args_[0]), 7) else 7
+  var perm1 = range(0, n)
+  var count = map(range(0, n), fn(_i) => 0)
+  var max_flips = 0
+  var checksum = 0
+  var perm_count = 0
+  var r = n
+  while true {
+    while r != 1 {
+      count = set_at(count, r - 1, r)
+      r = r - 1
+    }
+    var perm = perm1
+    var flips = 0
+    var k = perm[0]
+    while k != 0 {
+      var i = 0
+      var j = k
+      while i < j {
+        let t = perm[i]
+        perm = set_at(perm, i, perm[j])
+        perm = set_at(perm, j, t)
+        i = i + 1
+        j = j - 1
+      }
+      flips = flips + 1
+      k = perm[0]
+    }
+    max_flips = max(max_flips, flips)
+    checksum = if perm_count % 2 == 0 then checksum + flips else checksum - flips
+    // next permutation
+    while true {
+      if r == n {
+        print(checksum)
+        print("Pfannkuchen({n}) = {max_flips}")
+        return
+      }
+      let perm0 = perm1[0]
+      for i in range(0, r) {
+        perm1 = set_at(perm1, i, perm1[i + 1])
+      }
+      perm1 = set_at(perm1, r, perm0)
+      count = set_at(count, r, count[r] - 1)
+      if count[r] > 0 { break }
+      r = r + 1
+    }
+    perm_count = perm_count + 1
+  }
+}

@@ -1,0 +1,18 @@
+// std.crypto: hashing, secure random tokens and password storage (servers and tools; not in the browser).
+//
+//   let stored = crypto_password_hash(password)          // save this, never the password
+//   if crypto_password_verify(attempt, stored) { ... }
+//   let session = crypto_token(32)                      // 64 hex characters from the OS's secure random source
+
+// SHA-256 of the text's UTF-8 bytes, as 64 lowercase hex characters.
+extern "klar.stdpy.cryptolib.sha256" fn crypto_sha256(text: str) -> str
+// HMAC-SHA-256 (for signing cookies or webhooks), as hex.
+extern "klar.stdpy.cryptolib.hmac_sha256" fn crypto_hmac(key: str, text: str) -> str
+// `bytes` secure random bytes, as hex (twice as many characters).
+extern "klar.stdpy.cryptolib.token" fn crypto_token(bytes: int) -> str uses io
+// A salted, slow hash for storing a password: "pbkdf2_sha256$ITERATIONS$SALT$HASH".
+extern "klar.stdpy.cryptolib.password_hash" fn crypto_password_hash(password: str) -> str uses io
+// Whether `password` matches a value made by crypto_password_hash (compared in constant time).
+extern "klar.stdpy.cryptolib.password_verify" fn crypto_password_verify(password: str, stored: str) -> bool
+// Compare two secrets without leaking where they differ through timing.
+extern "klar.stdpy.cryptolib.equal" fn crypto_equal(a: str, b: str) -> bool

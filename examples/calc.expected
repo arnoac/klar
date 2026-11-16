@@ -1,0 +1,4 @@
+2 * (3 + 4) = 14
+10 / (5 - 5) -> error: division by zero
+7 - 2 - 1 = 4
+3 $ 4 -> error: unexpected character '$' at column 3

@@ -1,0 +1,48 @@
+// std.http: HTTP client and a simple HTTP server.
+
+use std.json { Json, json_stringify }
+
+struct HttpRequest {
+  method: str,               // "GET", "POST", ...
+  path: str,                 // "/todos/3" (no query string)
+  query: map[str, str],      // ?a=1&b=2  ->  ["a": "1", "b": "2"]
+  headers: map[str, str],    // lowercase names
+  body: str,
+  params: map[str, str],     // path parameters filled in by std.web routes, e.g. "/todos/:id" -> ["id": "3"]
+}
+
+struct HttpResponse {
+  status: int,
+  headers: map[str, str],    // lowercase names
+  body: str,
+}
+
+extern "klar.stdpy.httplib.request" fn http_request(method: str, url: str, headers: map[str, str], body: str) -> Result[HttpResponse, str] uses io
+extern "klar.stdpy.httplib.serve" fn http_serve_count(port: int, handler: fn(HttpRequest) -> HttpResponse uses io, max_requests: int) -> Result[unit, str] uses io
+
+fn http_get(url: str) -> Result[HttpResponse, str] uses io {
+  return http_request("GET", url, [:], "")
+}
+
+fn http_post_json(url: str, body: Json) -> Result[HttpResponse, str] uses io {
+  return http_request("POST", url, ["content-type": "application/json"], json_stringify(body))
+}
+
+// Serve on port forever, calling `handler` for each request. Listens on 127.0.0.1, or on the address in the
+// HOST environment variable (HOST=0.0.0.0 to accept outside connections, e.g. in a container).
+// Most apps use std.web's web_serve, which adds routing.
+fn http_serve(port: int, handler: fn(HttpRequest) -> HttpResponse uses io) -> Result[unit, str] uses io {
+  return http_serve_count(port, handler, 0)
+}
+
+fn http_text(status: int, body: str) -> HttpResponse {
+  return HttpResponse(status: status, headers: ["content-type": "text/plain; charset=utf-8"], body: body)
+}
+
+fn http_html(status: int, body: str) -> HttpResponse {
+  return HttpResponse(status: status, headers: ["content-type": "text/html; charset=utf-8"], body: body)
+}
+
+fn http_json(status: int, body: Json) -> HttpResponse {
+  return HttpResponse(status: status, headers: ["content-type": "application/json"], body: json_stringify(body))
+}

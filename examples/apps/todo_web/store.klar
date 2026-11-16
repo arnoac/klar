@@ -1,0 +1,44 @@
+// Data access for todos, backed by SQLite.
+
+use std.sqlite { Database, SqlValue, SqlInt, SqlText, sqlite_open, sqlite_exec, sqlite_query, sqlite_last_id, sql_int, sql_text }
+use api { Todo }
+
+fn store_open(path: str) -> Result[Database, str] uses io {
+  let db = sqlite_open(path)?
+  let _ = sqlite_exec(db, "create table if not exists todos (id integer primary key, title text not null, done integer not null default 0)", [])?
+  return Ok(db)
+}
+
+fn row_to_todo(row: map[str, SqlValue]) -> Todo {
+  return Todo(
+    id: unwrap_or(sql_int(row["id"]), 0),
+    title: unwrap_or(sql_text(row["title"]), ""),
+    done: unwrap_or(sql_int(row["done"]), 0) == 1,
+  )
+}
+
+fn store_list(db: Database) -> Result[list[Todo], str] uses io {
+  let rows = sqlite_query(db, "select id, title, done from todos order by id", [])?
+  return Ok(map(rows, fn(r) => row_to_todo(r)))
+}
+
+fn store_find(db: Database, id: int) -> Result[Option[Todo], str] uses io {
+  let rows = sqlite_query(db, "select id, title, done from todos where id = ?", [SqlInt(id)])?
+  return Ok(match get(rows, 0) { Some(r) => Some(row_to_todo(r)), None => None })
+}
+
+fn store_add(db: Database, title: str) -> Result[Todo, str] uses io {
+  let _ = sqlite_exec(db, "insert into todos (title) values (?)", [SqlText(title)])?
+  return Ok(Todo(id: sqlite_last_id(db), title: title, done: false))
+}
+
+fn store_set_done(db: Database, id: int, done: bool) -> Result[bool, str] uses io {
+  let flag = if done then 1 else 0
+  let changed = sqlite_exec(db, "update todos set done = ? where id = ?", [SqlInt(flag), SqlInt(id)])?
+  return Ok(changed > 0)
+}
+
+fn store_delete(db: Database, id: int) -> Result[bool, str] uses io {
+  let changed = sqlite_exec(db, "delete from todos where id = ?", [SqlInt(id)])?
+  return Ok(changed > 0)
+}

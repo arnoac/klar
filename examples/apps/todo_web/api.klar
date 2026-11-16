@@ -1,0 +1,11 @@
+// Types shared by the browser app (app.klar) and the server (server.klar). They cross the network as JSON
+// with no hand-written conversion: json_encode / json_decode (and web_json / web_body) derive it from the type.
+
+struct Todo { id: int, title: str, done: bool }
+
+// Request bodies.
+struct NewTodo { title: str }
+struct DoneChange { done: bool }
+
+// Error replies look like {"error": "title is required"}.
+struct ApiError { error: str }

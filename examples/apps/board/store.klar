@@ -1,0 +1,224 @@
+// Klar Board: everything stored in SQLite. Every query passes values as `?` parameters.
+
+use std.sqlite { Database, SqlValue, SqlNull, SqlInt, SqlFloat, SqlText, sqlite_open, sqlite_exec, sqlite_query,
+  sqlite_last_id, sql_int, sql_text, sql_float }
+use std.time { time_now }
+use shared { Column, Todo, Doing, Done, User, Board, Card, Event, BoardPage, move_card, cards_in }
+
+// Each migration runs once, in order; `pragma user_version` remembers how many have run.
+fn migrations() -> list[str] {
+  return [
+    "create table users (id integer primary key, name text not null unique, password text not null)",
+    "create table sessions (token_hash text primary key, user_id integer not null references users(id), created real not null)",
+    "create table boards (id integer primary key, name text not null, owner_id integer not null references users(id))",
+    "create table members (board_id integer not null references boards(id), user_id integer not null references users(id), primary key (board_id, user_id))",
+    "create table cards (id integer primary key, board_id integer not null references boards(id), title text not null, notes text not null default '', col text not null, position integer not null, assignee integer references users(id))",
+    "create table events (id integer primary key, board_id integer not null references boards(id), user text not null, text text not null, at real not null)",
+    "create index cards_by_board on cards (board_id, col, position)",
+    "create index events_by_board on events (board_id, id)",
+  ]
+}
+
+fn store_open(path: str) -> Result[Database, str] uses io {
+  let db = sqlite_open(path)?
+  let _ = sqlite_exec(db, "pragma foreign_keys = on", [])?
+  let rows = sqlite_query(db, "pragma user_version", [])?
+  let done = match get(rows, 0) { Some(r) => unwrap_or(sql_int(r["user_version"]), 0), None => 0 }
+  let all = migrations()
+  for i in range(done, len(all)) {
+    let _ = sqlite_exec(db, all[i], [])?
+    let _ = sqlite_exec(db, "pragma user_version = {i + 1}", [])?
+  }
+  return Ok(db)
+}
+
+// ---- conversions
+
+fn column_key(c: Column) -> str {
+  return match c { Todo => "todo", Doing => "doing", Done => "done" }
+}
+
+fn column_of(key: str) -> Column {
+  return if key == "doing" then Doing else if key == "done" then Done else Todo
+}
+
+fn int_of(row: map[str, SqlValue], key: str) -> int {
+  return unwrap_or(sql_int(row[key]), 0)
+}
+
+fn text_of(row: map[str, SqlValue], key: str) -> str {
+  return unwrap_or(sql_text(row[key]), "")
+}
+
+fn optional(id: Option[int]) -> SqlValue {
+  return match id { Some(n) => SqlInt(n), None => SqlNull }
+}
+
+fn row_user(r: map[str, SqlValue]) -> User {
+  return User(id: int_of(r, "id"), name: text_of(r, "name"))
+}
+
+fn row_board(r: map[str, SqlValue]) -> Board {
+  return Board(id: int_of(r, "id"), name: text_of(r, "name"), owner_id: int_of(r, "owner_id"))
+}
+
+fn row_card(r: map[str, SqlValue]) -> Card {
+  return Card(id: int_of(r, "id"), board_id: int_of(r, "board_id"), title: text_of(r, "title"), notes: text_of(r, "notes"),
+    column: column_of(text_of(r, "col")), position: int_of(r, "position"), assignee: sql_int(r["assignee"]))
+}
+
+fn row_event(r: map[str, SqlValue]) -> Event {
+  return Event(id: int_of(r, "id"), board_id: int_of(r, "board_id"), user: text_of(r, "user"), text: text_of(r, "text"),
+    at: unwrap_or(sql_float(r["at"]), 0.0))
+}
+
+// ---- users and sessions
+
+fn user_add(db: Database, name: str, password_hash: str) -> Result[User, str] uses io {
+  let _ = sqlite_exec(db, "insert into users (name, password) values (?, ?)", [SqlText(name), SqlText(password_hash)])?
+  return Ok(User(id: sqlite_last_id(db), name: name))
+}
+
+// A user with their stored password hash (kept on the server; never sent anywhere).
+struct Account { user: User, password_hash: str }
+
+fn user_by_name(db: Database, name: str) -> Result[Option[Account], str] uses io {
+  let rows = sqlite_query(db, "select id, name, password from users where name = ?", [SqlText(name)])?
+  return Ok(match get(rows, 0) { Some(r) => Some(Account(row_user(r), text_of(r, "password"))), None => None })
+}
+
+fn session_add(db: Database, token_hash: str, user_id: int) -> Result[unit, str] uses io {
+  let _ = sqlite_exec(db, "insert into sessions (token_hash, user_id, created) values (?, ?, ?)",
+    [SqlText(token_hash), SqlInt(user_id), SqlFloat(time_now())])?
+  return Ok(())
+}
+
+fn session_user(db: Database, token_hash: str) -> Result[Option[User], str] uses io {
+  let rows = sqlite_query(db, "select u.id, u.name from sessions s join users u on u.id = s.user_id where s.token_hash = ?",
+    [SqlText(token_hash)])?
+  return Ok(match get(rows, 0) { Some(r) => Some(row_user(r)), None => None })
+}
+
+fn session_delete(db: Database, token_hash: str) -> Result[unit, str] uses io {
+  let _ = sqlite_exec(db, "delete from sessions where token_hash = ?", [SqlText(token_hash)])?
+  return Ok(())
+}
+
+// ---- boards and members
+
+fn board_add(db: Database, name: str, owner: User) -> Result[Board, str] uses io {
+  let _ = sqlite_exec(db, "insert into boards (name, owner_id) values (?, ?)", [SqlText(name), SqlInt(owner.id)])?
+  let board = Board(id: sqlite_last_id(db), name: name, owner_id: owner.id)
+  member_add(db, board.id, owner.id)?
+  return Ok(board)
+}
+
+fn boards_of(db: Database, user_id: int) -> Result[list[Board], str] uses io {
+  let rows = sqlite_query(db, "select b.id, b.name, b.owner_id from boards b join members m on m.board_id = b.id where m.user_id = ? order by b.id",
+    [SqlInt(user_id)])?
+  return Ok(map(rows, fn(r) => row_board(r)))
+}
+
+fn board_find(db: Database, board_id: int) -> Result[Option[Board], str] uses io {
+  let rows = sqlite_query(db, "select id, name, owner_id from boards where id = ?", [SqlInt(board_id)])?
+  return Ok(match get(rows, 0) { Some(r) => Some(row_board(r)), None => None })
+}
+
+fn member_add(db: Database, board_id: int, user_id: int) -> Result[unit, str] uses io {
+  let _ = sqlite_exec(db, "insert or ignore into members (board_id, user_id) values (?, ?)", [SqlInt(board_id), SqlInt(user_id)])?
+  return Ok(())
+}
+
+fn members_of(db: Database, board_id: int) -> Result[list[User], str] uses io {
+  let rows = sqlite_query(db, "select u.id, u.name from users u join members m on m.user_id = u.id where m.board_id = ? order by u.name",
+    [SqlInt(board_id)])?
+  return Ok(map(rows, fn(r) => row_user(r)))
+}
+
+fn is_member(db: Database, board_id: int, user_id: int) -> Result[bool, str] uses io {
+  let rows = sqlite_query(db, "select 1 as yes from members where board_id = ? and user_id = ?", [SqlInt(board_id), SqlInt(user_id)])?
+  return Ok(len(rows) > 0)
+}
+
+// ---- cards
+
+fn cards_of(db: Database, board_id: int) -> Result[list[Card], str] uses io {
+  let rows = sqlite_query(db, "select id, board_id, title, notes, col, position, assignee from cards where board_id = ? order by col, position",
+    [SqlInt(board_id)])?
+  return Ok(map(rows, fn(r) => row_card(r)))
+}
+
+fn card_find(db: Database, card_id: int) -> Result[Option[Card], str] uses io {
+  let rows = sqlite_query(db, "select id, board_id, title, notes, col, position, assignee from cards where id = ?", [SqlInt(card_id)])?
+  return Ok(match get(rows, 0) { Some(r) => Some(row_card(r)), None => None })
+}
+
+// A new card goes to the end of its column.
+fn card_add(db: Database, board_id: int, title: str, column: Column) -> Result[Card, str] uses io {
+  let cards = cards_of(db, board_id)?
+  let position = len(cards_in(cards, column))
+  let _ = sqlite_exec(db, "insert into cards (board_id, title, col, position) values (?, ?, ?, ?)",
+    [SqlInt(board_id), SqlText(title), SqlText(column_key(column)), SqlInt(position)])?
+  return Ok(Card(id: sqlite_last_id(db), board_id: board_id, title: title, notes: "", column: column, position: position,
+    assignee: None))
+}
+
+fn card_edit(db: Database, card: Card) -> Result[unit, str] uses io {
+  let _ = sqlite_exec(db, "update cards set title = ?, notes = ?, assignee = ? where id = ?",
+    [SqlText(card.title), SqlText(card.notes), optional(card.assignee), SqlInt(card.id)])?
+  return Ok(())
+}
+
+// Move with the shared rule, then write every card whose column or position changed, in one transaction.
+fn card_move(db: Database, card: Card, to: Column, position: int) -> Result[unit, str] uses io {
+  let before = cards_of(db, card.board_id)?
+  let after = move_card(before, card.id, to, position)
+  let _ = sqlite_exec(db, "begin", [])?
+  for c in after {
+    let old = find(before, fn(b) => b.id == c.id)
+    if old != Some(c) {
+      match sqlite_exec(db, "update cards set col = ?, position = ? where id = ?",
+        [SqlText(column_key(c.column)), SqlInt(c.position), SqlInt(c.id)]) {
+        Ok(_) => {}
+        Err(e) => {
+          let _ = sqlite_exec(db, "rollback", [])
+          return Err(e)
+        }
+      }
+    }
+  }
+  let _ = sqlite_exec(db, "commit", [])?
+  return Ok(())
+}
+
+fn card_delete(db: Database, card: Card) -> Result[unit, str] uses io {
+  let _ = sqlite_exec(db, "delete from cards where id = ?", [SqlInt(card.id)])?
+  let rest = filter(cards_of(db, card.board_id)?, fn(c) => c.column == card.column)
+  var i = 0
+  for c in cards_in(rest, card.column) {
+    if c.position != i {
+      let _ = sqlite_exec(db, "update cards set position = ? where id = ?", [SqlInt(i), SqlInt(c.id)])?
+    }
+    i = i + 1
+  }
+  return Ok(())
+}
+
+// ---- activity
+
+fn event_add(db: Database, board_id: int, user: User, text: str) -> Result[unit, str] uses io {
+  let _ = sqlite_exec(db, "insert into events (board_id, user, text, at) values (?, ?, ?, ?)",
+    [SqlInt(board_id), SqlText(user.name), SqlText(text), SqlFloat(time_now())])?
+  return Ok(())
+}
+
+fn events_of(db: Database, board_id: int, limit: int) -> Result[list[Event], str] uses io {
+  let rows = sqlite_query(db, "select id, board_id, user, text, at from events where board_id = ? order by id desc limit ?",
+    [SqlInt(board_id), SqlInt(limit)])?
+  return Ok(map(rows, fn(r) => row_event(r)))
+}
+
+fn board_page(db: Database, board: Board) -> Result[BoardPage, str] uses io {
+  return Ok(BoardPage(board: board, members: members_of(db, board.id)?, cards: cards_of(db, board.id)?,
+    events: events_of(db, board.id, 30)?))
+}

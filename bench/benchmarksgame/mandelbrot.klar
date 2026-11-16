@@ -1,0 +1,44 @@
+// mandelbrot (Computer Language Benchmarks Game). The official program writes a binary PBM bitmap;
+// Klar strings are UTF-8 text, so every version here prints the PBM header plus a checksum of the
+// exact same bitmap bytes instead.
+fn main() uses io {
+  let args_ = args()
+  let size = if len(args_) > 0 then unwrap_or(parse_int(args_[0]), 200) else 200
+  let w = size
+  let h = size
+  var hash = 0
+  var bits = 0
+  var nbits = 0
+  for y in range(0, h) {
+    let ci = 2.0 * to_float(y) / to_float(h) - 1.0
+    for x in range(0, w) {
+      let cr = 2.0 * to_float(x) / to_float(w) - 1.5
+      var zr = 0.0
+      var zi = 0.0
+      var tr = 0.0
+      var ti = 0.0
+      var i = 0
+      while i < 50 and tr + ti <= 4.0 {
+        zi = 2.0 * zr * zi + ci
+        zr = tr - ti + cr
+        tr = zr * zr
+        ti = zi * zi
+        i = i + 1
+      }
+      bits = bits * 2 + (if tr + ti <= 4.0 then 1 else 0)
+      nbits = nbits + 1
+      if nbits == 8 or x == w - 1 {
+        while nbits < 8 {
+          bits = bits * 2
+          nbits = nbits + 1
+        }
+        hash = (hash * 31 + bits) % 1000000007
+        bits = 0
+        nbits = 0
+      }
+    }
+  }
+  print("P4")
+  print("{w} {h}")
+  print(hash)
+}

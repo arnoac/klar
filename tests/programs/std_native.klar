@@ -1,0 +1,74 @@
+// The standard library must behave the same natively, on Node and in the interpreter.
+// Run with one argument: an empty temporary directory.
+use std.fs { fs_read, fs_write, fs_append, fs_exists, fs_is_dir, fs_list, fs_mkdir, fs_remove, fs_join }
+use std.math { math_pi, math_sin, math_pow, math_atan2 }
+use std.time { time_format, time_iso, time_millis }
+use std.process { ProcessResult, process_run, process_run_input, env_get }
+use std.json { Json, JObj, JStr, json_parse, json_stringify, json_pretty, json_get }
+use std.regex { regex_matches, regex_find_all, regex_groups, regex_replace, regex_split }
+use std.random { random_seed, random_int, random_float }
+use std.sqlite { Database, SqlValue, SqlNull, SqlInt, SqlFloat, SqlText, sqlite_open, sqlite_exec, sqlite_query, sqlite_last_id, sqlite_close }
+
+fn main() uses io {
+  let d = fs_join([args()[0], "a", "b"])
+  print(fs_mkdir(d))
+  print(fs_write(fs_join([d, "x.txt"]), "hello"))
+  print(fs_append(fs_join([d, "x.txt"]), " world"))
+  print(fs_read(fs_join([d, "x.txt"])))
+  print(fs_read("/nonexistent/file"))
+  print(fs_read(args()[0]))
+  print(fs_list(d))
+  print([fs_exists(d), fs_is_dir(d), fs_exists(d + "/nope")])
+  print(fs_remove(fs_join([d, "x.txt"])))
+  print(fs_join(["a", "b/", "/c", "d"]))
+  print([math_pi(), math_sin(0.5), math_pow(2.0, 10.0), math_atan2(1.0, 1.0)])
+  print(time_format(1700000000.25, "%Y-%m-%d %H:%M:%S %A %b %f %%"))
+  print([time_iso(1700000000.0), time_iso(1700000000.5)])
+  print(time_millis() > 0)
+  print(process_run(["echo", "hi there"]))
+  print(process_run_input(["tr", "a-z", "A-Z"], "shout"))
+  print(process_run(["no-such-command-xyz"]))
+  print([is_some(env_get("PATH")), is_some(env_get("NO_SUCH_VAR_XYZ"))])
+  let j = json_parse(r"{\"a\": [1, 2.5, true, null, \"x\\u00e9\"], \"b\": {\"c\": 1e21, \"d\": -0.000001}}")
+  print(j)
+  match j {
+    Ok(v) => {
+      print(json_stringify(v))
+      print(json_pretty(v))
+      print(json_get(v, "b"))
+    }
+    Err(e) => print(e)
+  }
+  print(is_err(json_parse("[1, 2")))
+  print(regex_matches(r"\d+", "abc 123"))
+  print(regex_find_all(r"\w+", "héllo wörld, 42"))
+  print(regex_find_all("a*", "baaab"))
+  print(regex_groups(r"(\w+)@(\w+)\.com(x)?", "mail bob@example.com now"))
+  print(regex_groups(r"(\d+)", "none"))
+  print(regex_replace(r"(\w+)@(\w+)", "a@b c@d", r"\2 at \1"))
+  print(regex_replace(r"(?P<user>\w+)@", "x@y", r"[\g<user>]"))
+  print(regex_replace("", "abc", "-"))
+  print(regex_split(r",\s*", "a, b,c,,d"))
+  print(regex_split(r"(-)", "1-2-3"))
+  print(regex_split(r"\b", "hi there"))
+  random_seed(42)
+  let a = random_int(1, 100)
+  let f = random_float()
+  print(a >= 1 and a <= 100 and f >= 0.0 and f < 1.0)
+  match sqlite_open(":memory:") {
+    Ok(db) => {
+      print(sqlite_exec(db, "create table t (id integer primary key, name text unique, score real, note text)", []))
+      print(sqlite_exec(db, "insert into t (name, score, note) values (?, ?, ?)", [SqlText("ann"), SqlFloat(2.5), SqlNull]))
+      print(sqlite_exec(db, "insert into t (name, score) values (?, ?)", [SqlText("bob"), SqlInt(3)]))
+      print(sqlite_last_id(db))
+      print(sqlite_query(db, "select * from t order by id", []))
+      print(sqlite_exec(db, "insert into t (name) values (?)", [SqlText("ann")]))
+      print(sqlite_query(db, "select * from nope", []))
+      print(sqlite_exec(db, "update t set score = score + 1", []))
+      print(sqlite_exec(db, "select 1; select 2", []))
+      print(sqlite_query(db, "select count(*) as n from t where score > ?", [SqlFloat(3.0)]))
+      sqlite_close(db)
+    }
+    Err(e) => print(e)
+  }
+}

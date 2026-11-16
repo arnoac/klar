@@ -1,0 +1,170 @@
+struct P { x: int, y: float }
+struct Box[T] { item: T }
+enum Tree[T] { Leaf, Node(left: Tree[T], value: T, right: Tree[T]) }
+enum Shape { Circle(r: float), Sq(side: float), Dot }
+
+fn ins[T](t: Tree[T], v: T, lt: fn(T, T) -> bool) -> Tree[T] {
+  return match t {
+    Leaf => Node(Leaf, v, Leaf),
+    Node(l, x, r) => if lt(v, x) then Node(ins(l, v, lt), x, r) else Node(l, x, ins(r, v, lt)),
+  }
+}
+fn items[T](t: Tree[T]) -> list[T] {
+  return match t { Leaf => [], Node(l, x, r) => items(l) + [x] + items(r) }
+}
+fn first[T](xs: list[T]) -> Option[T] { return get(xs, 0) }
+fn second(xs: list[int]) -> Option[int] {
+  let v = get(xs, 1)?
+  return Some(v * 10)
+}
+fn safe_div(a: int, b: int) -> Result[int, str] {
+  if b == 0 { return Err("div by zero") }
+  return Ok(a / b)
+}
+fn calc(a: int, b: int) -> Result[int, str] {
+  let q = safe_div(a, b)?
+  return Ok(q + 1)
+}
+fn adder(n: int) -> fn(int) -> int { return fn(x) => x + n }
+fn area(s: Shape) -> float {
+  return match s { Circle(r) => 3.14 * r * r, Sq(a) => a * a, Dot => 0.0 }
+}
+fn classify(n: int) -> str {
+  match n {
+    0 => { return "zero" }
+    _ => {}
+  }
+  return if n > 0 then "pos" else "neg"
+}
+
+fn main() uses io {
+  print("{7 / 2} {-7 / 2} {7 % 3} {-7 % 3}")
+  print(1.5 * 2.0)
+  print([0.1, 1e20, 1.0e-7, 123456.789, -0.0, 1.0 / 3.0, 2.0 / 0.0])
+  let p = P(x: 1, y: 2.5)
+  let q = p with (y: 9.0)
+  print("{p} {q} {p == q} {p == P(x: 1, y: 2.5)}")
+  print(Box(item: [1, 2]))
+  var t: Tree[str] = Leaf
+  for w in ["m", "c", "x", "a"] { t = ins(t, w, fn(a, b) => a < b) }
+  print(items(t))
+  print(t)
+  print(first([5, 6]))
+  let e: list[int] = []
+  print(first(e))
+  print(second([1, 2]))
+  print(second([1]))
+  print(calc(10, 2))
+  print(calc(1, 0))
+  let add5 = adder(5)
+  print(add5(10))
+  print(map([1, 2, 3], fn(x) => x * x))
+  print(filter(range(0, 10), fn(x) => x % 3 == 0))
+  print(fold([1, 2, 3, 4], 0, fn(acc, x) => acc + x))
+  print(any([1, 2], fn(x) => x > 1))
+  print(all([1, 2], fn(x) => x > 1))
+  print(find(["a", "bb"], fn(s) => len(s) == 2))
+  print(index_of([3, 4, 5], 5))
+  print(sort([3, 1, 2]))
+  print(sort(["b", "a"]))
+  print(sort_by(["ccc", "a", "bb"], fn(s) => len(s)))
+  print(sum([1, 2, 3]))
+  print(sum([0.5, 0.25]))
+  print(reverse([1, 2, 3]))
+  print(reverse("héllo"))
+  print(len("héllo"))
+  print("héllo"[1])
+  print(slice("héllo", 1, 3))
+  print(slice([1, 2, 3, 4], 1, 3))
+  print(contains([1, 2], 2))
+  print(contains("hello", "ell"))
+  print("a,b,c".split(",").reverse().join("-"))
+  print(chars("abc"))
+  print(trim("  x  "))
+  print(upper("abc") + lower("DEF"))
+  print(starts_with("hello", "he"))
+  print(ends_with("hello", "lo"))
+  print(replace("aaa", "a", "bb"))
+  print(repeat("ab", 3))
+  print(parse_int(" -42 "))
+  print(parse_int("x"))
+  print(parse_float("2.5"))
+  print(to_float(3))
+  print(floor(2.7))
+  print(round(2.5))
+  print(sqrt(16.0))
+  print(abs(-3))
+  print(abs(-2.5))
+  print(min(3, 4))
+  print(max("a", "b"))
+  let m = put(["a": 1], "b", 2)
+  print(m)
+  print(get(m, "z"))
+  print(has(m, "a"))
+  print(keys(m))
+  print(values(m))
+  print(remove(m, "a"))
+  print(m["b"])
+  let m2 = put(m, "a", 100)
+  print("{m} {m2} {m == m2}")
+  var counts: map[str, int] = [:]
+  var snapshots: list[map[str, int]] = []
+  for w in split("a b a c b a d", " ") {
+    counts = put(counts, w, unwrap_or(get(counts, w), 0) + 1)
+    snapshots = push(snapshots, counts)
+  }
+  print(counts)
+  print(snapshots)
+  print(len(counts))
+  print(remove(snapshots[3], "a"))
+  print(put(snapshots[2], "z", 0))
+  print(snapshots[2] == ["a": 2, "b": 1])
+  var big: map[int, int] = [:]
+  for i in range(0, 2000) { big = put(big, i % 50, i) }
+  print("{len(big)} {big[7]} {sum(values(big))}")
+  let empty_map: map[int, str] = [:]
+  print(empty_map)
+  print([Some(1)] == [Some(1)])
+  print([Some(1)] == [Some(2)])
+  print(unwrap(Some(3)))
+  print(unwrap_or(None, 9))
+  print(is_some(Some(1)))
+  print(is_err(Ok(1)))
+  print(map([Circle(1.0), Sq(2.0), Dot], fn(s) => area(s)))
+  print(Circle(r: 2.0))
+  print(classify(0))
+  print(classify(-5))
+  var xs: list[int] = []
+  for i in range(0, 5) { xs = push(xs, i) }
+  let ys = push(xs, 99)
+  let zs = push(xs, 77)
+  print("{xs} {ys} {zs}")
+  print(set_at(xs, 0, 42))
+  var n = 0
+  while true {
+    n = n + 1
+    if n == 3 { continue }
+    if n > 5 { break }
+  }
+  print(n)
+  let grid = [[1, 2], [3, 4]]
+  print(grid[1][0])
+  print("{{x}} = {n * 2} {m["a"]} {upper("q")}")
+  let s = """
+    multi
+      line {n}
+    """
+  print(s)
+  print(r"{raw}")
+  print(str(3.0) + str(true) + str(()))
+  let f = fn(x: int) -> int {
+    if x > 0 { return x }
+    return 0 - x
+  }
+  print(map([-2, 3], f))
+  print(map(["a", "b"], upper))
+  let label = match Sq(1.0) { Circle(_) => "c", Sq(a) => if a > 0.5 then "big" else "small", Dot => "d" }
+  print(label)
+  print(match 3 { 1 => "one", 3 => "three", _ => "other" })
+  print(match "hi" { "hi" => true, _ => false })
+}

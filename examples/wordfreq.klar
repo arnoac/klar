@@ -1,0 +1,45 @@
+// Count word frequencies: maps, string functions, sorting, lambdas.
+
+fn normalize(word: str) -> str {
+  var out = ""
+  for ch in chars(lower(word)) {
+    if contains("abcdefghijklmnopqrstuvwxyz'", ch) {
+      out = out + ch
+    }
+  }
+  return out
+}
+
+fn count_words(text: str) -> map[str, int] {
+  var counts: map[str, int] = [:]
+  for raw in split(text, " ") {
+    let w = normalize(raw)
+    if w == "" { continue }
+    counts = put(counts, w, unwrap_or(get(counts, w), 0) + 1)
+  }
+  return counts
+}
+
+fn top(counts: map[str, int], n: int) -> list[str] {
+  let ranked = sort_by(keys(counts), fn(w) => 0 - counts[w])
+  return slice(ranked, 0, n)
+}
+
+fn main() uses io {
+  let text = "The quick brown fox jumps over the lazy dog. The dog sleeps; the fox runs!"
+  let counts = count_words(text)
+  for w in top(counts, 3) {
+    print("{w}: {counts[w]}")
+  }
+  print("distinct words: {len(counts)}")
+}
+
+test "counts repeated words case-insensitively" {
+  let c = count_words("A a A b")
+  assert c["a"] == 3
+  assert c["b"] == 1
+}
+
+test "punctuation is stripped" {
+  assert normalize("Dog.") == "dog"
+}

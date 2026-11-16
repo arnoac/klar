@@ -1,0 +1,34 @@
+{
+  "name": "klar",
+  "displayName": "Klar",
+  "description": "Klar language support: diagnostics with fixes, hover types, go to definition, rename, completion and formatting",
+  "version": "0.10.0",
+  "publisher": "klar-lang",
+  "icon": "icon.png",
+  "engines": { "vscode": "^1.82.0" },
+  "categories": ["Programming Languages", "Linters", "Formatters"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:klar"],
+  "contributes": {
+    "languages": [{
+      "id": "klar",
+      "aliases": ["Klar"],
+      "extensions": [".klar"],
+      "icon": { "light": "./icons/klar-file.svg", "dark": "./icons/klar-file.svg" },
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{ "language": "klar", "scopeName": "source.klar", "path": "./syntaxes/klar.tmLanguage.json" }],
+    "configuration": {
+      "title": "Klar",
+      "properties": {
+        "klar.command": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["klarc", "lsp"],
+          "description": "Command that starts the Klar language server, e.g. [\"/path/to/klar/klarc\", \"lsp\"] or [\"python3\", \"-m\", \"klar\", \"lsp\"]."
+        }
+      }
+    }
+  },
+  "dependencies": { "vscode-languageclient": "9.0.1" }
+}

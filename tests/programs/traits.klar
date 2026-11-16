@@ -1,0 +1,87 @@
+// Traits: shared behaviour with explicit impls, generic functions with bounds.
+trait Show {
+  fn show(self: Self) -> str
+}
+
+trait Shape {
+  fn area(self: Self) -> float
+  fn name(self: Self) -> str
+}
+
+struct Circle { r: float }
+struct Rect { w: float, h: float }
+struct Pair[A, B] { first: A, second: B }
+enum Color { Red, Green, Custom(hex: str) }
+
+impl Shape for Circle {
+  fn area(self: Circle) -> float { return 3.0 * self.r * self.r }
+  fn name(self: Circle) -> str { return "circle" }
+}
+
+impl Shape for Rect {
+  fn area(self: Rect) -> float { return self.w * self.h }
+  fn name(self: Rect) -> str { return "rect" }
+}
+
+impl Show for int {
+  fn show(self: int) -> str { return "#{self}" }
+}
+
+impl Show for str {
+  fn show(self: str) -> str { return "'{self}'" }
+}
+
+impl Show for Color {
+  fn show(self: Color) -> str {
+    return match self { Red => "red", Green => "green", Custom(h) => "custom {h}" }
+  }
+}
+
+impl[A: Show, B: Show] Show for Pair[A, B] {
+  fn show(self: Pair[A, B]) -> str { return "<{show(self.first)}, {self.second.show()}>" }
+}
+
+impl[T: Show] Show for list[T] {
+  fn show(self: list[T]) -> str { return "[" + join(map(self, fn(x) => show(x)), " ") + "]" }
+}
+
+fn describe[T: Shape](s: T) -> str {
+  return "{name(s)} with area {area(s)}"
+}
+
+fn total_area[T: Shape](shapes: list[T]) -> float {
+  var t = 0.0
+  for s in shapes { t = t + area(s) }
+  return t
+}
+
+fn show_all[T: Show](xs: list[T]) -> list[str] {
+  return map(xs, show)
+}
+
+fn loud[T: Show + Shape](x: T) -> str {
+  return "{show(x)}!"
+}
+
+impl Show for Circle {
+  fn show(self: Circle) -> str { return "circle r={self.r}" }
+}
+
+fn main() uses io {
+  print(describe(Circle(r: 1.0)))
+  print(describe(Rect(w: 2.0, h: 3.0)))
+  print(total_area([Rect(w: 1.0, h: 1.0), Rect(w: 2.0, h: 2.0)]))
+  print(show(42))
+  print("hi".show())
+  print(show(Pair(first: 1, second: "x")))
+  print(show(Pair(first: Pair(first: Green, second: 2), second: [1, 2, 3])))
+  print(show_all([Red, Custom("#fff")]))
+  print(loud(Circle(r: 2.0)))
+  let f = show
+  print(f(7))
+}
+
+test "traits in tests" {
+  assert show([1, 2]) == "[#1 #2]"
+  assert area(Rect(w: 2.0, h: 2.5)) == 5.0
+}

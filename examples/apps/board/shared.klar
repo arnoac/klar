@@ -1,0 +1,200 @@
+// Klar Board: types and rules shared by the server (server.klar), the browser app (app.klar) and the report tool.
+// Everything here is pure, so the same code decides where a moved card lands on the server and in the browser.
+
+enum Column { Todo, Doing, Done }
+
+struct User { id: int, name: str }
+
+struct Board { id: int, name: str, owner_id: int }
+
+struct Card {
+  id: int,
+  board_id: int,
+  title: str,
+  notes: str,
+  column: Column,
+  position: int,            // order inside its column, from 0
+  assignee: Option[int],    // a member's user id
+}
+
+// One line in a board's activity feed.
+struct Event { id: int, board_id: int, user: str, text: str, at: float }
+
+// Everything the board page needs, in one reply (and in every live update).
+struct BoardPage { board: Board, members: list[User], cards: list[Card], events: list[Event] }
+
+// Request bodies.
+struct Credentials { name: str, password: str }
+struct NewBoard { name: str }
+struct NewCard { title: str, column: Column }
+struct CardEdit { title: str, notes: str, assignee: Option[int] }
+struct CardMove { column: Column, position: int }
+struct Invite { name: str }
+
+// Error replies look like {"error": "title is required"}.
+struct ApiError { error: str }
+
+// ---- columns
+
+fn columns() -> list[Column] {
+  return [Todo, Doing, Done]
+}
+
+fn column_title(c: Column) -> str {
+  return match c { Todo => "To do", Doing => "Doing", Done => "Done" }
+}
+
+fn column_left(c: Column) -> Option[Column] {
+  return match c { Todo => None, Doing => Some(Todo), Done => Some(Doing) }
+}
+
+fn column_right(c: Column) -> Option[Column] {
+  return match c { Todo => Some(Doing), Doing => Some(Done), Done => None }
+}
+
+// ---- validation (the server enforces it; the browser uses it to explain before sending)
+
+fn check_title(title: str) -> Result[str, str] {
+  let t = trim(title)
+  if t == "" {
+    return Err("a title is required")
+  }
+  if len(t) > 200 {
+    return Err("titles are at most 200 characters")
+  }
+  return Ok(t)
+}
+
+fn check_user_name(name: str) -> Result[str, str] {
+  let n = lower(trim(name))
+  if len(n) < 2 or len(n) > 30 {
+    return Err("names are 2 to 30 characters")
+  }
+  for ch in chars(n) {
+    if not contains("abcdefghijklmnopqrstuvwxyz0123456789_-.", ch) {
+      return Err("names use letters, digits, `_`, `-` and `.` only")
+    }
+  }
+  return Ok(n)
+}
+
+fn check_password(password: str) -> Result[str, str] {
+  if len(password) < 8 {
+    return Err("passwords are at least 8 characters")
+  }
+  return Ok(password)
+}
+
+// ---- cards
+
+// The cards of one column, in order.
+fn cards_in(cards: list[Card], c: Column) -> list[Card] {
+  return sort_by(filter(cards, fn(x) => x.column == c), fn(x) => x.position)
+}
+
+// Move a card to `position` in column `to` (clamped to the column's length). Positions in the columns it left
+// and joined are renumbered 0, 1, 2, ... so they never have gaps or ties. Unknown ids leave the list as it is.
+fn move_card(cards: list[Card], card_id: int, to: Column, position: int) -> list[Card] {
+  let moving = match find(cards, fn(x) => x.id == card_id) { Some(c) => c, None => { return cards } }
+  let others = filter(cards_in(cards, to), fn(x) => x.id != card_id)
+  let at = max(0, min(position, len(others)))
+  let target = slice(others, 0, at) + [moving with (column: to)] + slice(others, at, len(others))
+  var out: list[Card] = []
+  for c in cards {
+    if c.column != to and c.id != card_id {
+      out = push(out, c)
+    }
+  }
+  var i = 0
+  for c in target {
+    out = push(out, c with (position: i))
+    i = i + 1
+  }
+  return renumber(out, moving.column)
+}
+
+// Give the cards of column `c` positions 0..n-1 in their current order.
+fn renumber(cards: list[Card], c: Column) -> list[Card] {
+  let ordered = cards_in(cards, c)
+  var out = filter(cards, fn(x) => x.column != c)
+  var i = 0
+  for x in ordered {
+    out = push(out, x with (position: i))
+    i = i + 1
+  }
+  return out
+}
+
+// Cards whose title or notes contain every word of the query (any case). An empty query matches everything.
+fn search(cards: list[Card], query: str) -> list[Card] {
+  let words = filter(split(lower(query), " "), fn(w) => w != "")
+  return filter(cards, fn(c) => all(words, fn(w) => contains(lower(c.title + " " + c.notes), w)))
+}
+
+fn member_name(members: list[User], id: Option[int]) -> str {
+  return match id {
+    None => "",
+    Some(uid) => match find(members, fn(u) => u.id == uid) { Some(u) => u.name, None => "" },
+  }
+}
+
+// "3 to do, 1 doing, 4 done"
+fn summary(cards: list[Card]) -> str {
+  let parts = map(columns(), fn(c) => "{len(cards_in(cards, c))} {lower(column_title(c))}")
+  return join(parts, ", ")
+}
+
+// ---- tests
+
+fn card(id: int, column: Column, position: int) -> Card {
+  return Card(id: id, board_id: 1, title: "card {id}", notes: "", column: column, position: position, assignee: None)
+}
+
+fn ids(cards: list[Card], c: Column) -> list[int] {
+  return map(cards_in(cards, c), fn(x) => x.id)
+}
+
+fn sample_cards() -> list[Card] {
+  return [card(1, Todo, 0), card(2, Todo, 1), card(3, Todo, 2), card(4, Doing, 0), card(5, Done, 0)]
+}
+
+test "moving a card to another column closes the gap it leaves" {
+  let moved = move_card(sample_cards(), 2, Doing, 0)
+  assert ids(moved, Todo) == [1, 3]
+  assert ids(moved, Doing) == [2, 4]
+  assert map(cards_in(moved, Todo), fn(c) => c.position) == [0, 1]
+  assert len(moved) == 5
+}
+
+test "moving inside a column reorders it" {
+  assert ids(move_card(sample_cards(), 1, Todo, 2), Todo) == [2, 3, 1]
+  assert ids(move_card(sample_cards(), 3, Todo, 0), Todo) == [3, 1, 2]
+}
+
+test "positions are clamped and unknown cards are ignored" {
+  assert ids(move_card(sample_cards(), 1, Done, 99), Done) == [5, 1]
+  assert ids(move_card(sample_cards(), 1, Done, -4), Done) == [1, 5]
+  assert move_card(sample_cards(), 42, Done, 0) == sample_cards()
+}
+
+test "validation" {
+  assert check_title("  ship it ") == Ok("ship it")
+  assert is_err(check_title("   "))
+  assert check_user_name(" Ada ") == Ok("ada")
+  assert is_err(check_user_name("a"))
+  assert is_err(check_user_name("no spaces"))
+  assert is_err(check_password("short"))
+}
+
+test "search matches every word in title or notes" {
+  let cards = [card(1, Todo, 0) with (title: "Fix login", notes: "Safari only"), card(2, Todo, 1) with (title: "Write docs")]
+  assert map(search(cards, "login safari"), fn(c) => c.id) == [1]
+  assert map(search(cards, "  "), fn(c) => c.id) == [1, 2]
+  assert len(search(cards, "nothing")) == 0
+}
+
+test "summary and member names" {
+  assert summary(sample_cards()) == "3 to do, 1 doing, 1 done"
+  assert member_name([User(7, "ada")], Some(7)) == "ada"
+  assert member_name([User(7, "ada")], None) == ""
+}

@@ -1,0 +1,28 @@
+// Classic FizzBuzz, showing if-expressions, match on literals and tests.
+
+fn fizzbuzz(n: int) -> str {
+  return match n % 15 {
+    0 => "FizzBuzz",
+    3 => "Fizz", 6 => "Fizz", 9 => "Fizz", 12 => "Fizz",
+    5 => "Buzz", 10 => "Buzz",
+    _ => str(n),
+  }
+}
+
+fn main() uses io {
+  for i in range(1, 16) {
+    print(fizzbuzz(i))
+  }
+}
+
+test "multiples of three" {
+  assert fizzbuzz(9) == "Fizz"
+}
+
+test "multiples of both" {
+  assert fizzbuzz(30) == "FizzBuzz"
+}
+
+test "plain numbers" {
+  assert fizzbuzz(7) == "7"
+}

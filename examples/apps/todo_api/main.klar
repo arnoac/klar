@@ -1,0 +1,113 @@
+// A small JSON REST API with an HTML page, backed by SQLite.
+//
+//   PORT=8080 klar run examples/apps/todo_api/main.klar
+//
+//   GET    /                 HTML page listing todos
+//   GET    /todos            list todos as JSON
+//   POST   /todos            {"title": "..."} -> created todo
+//   POST   /todos/{id}/done  mark as done
+//   DELETE /todos/{id}       delete
+
+use std.http { HttpRequest, HttpResponse, http_serve, http_json, http_html, http_text }
+use std.json { Json, JObj, JStr, JNum, JBool, JArr, json_parse, json_get, json_str }
+use std.sqlite { Database }
+use std.process { env_get }
+use store { Todo, store_open, store_list, store_add, store_set_done, store_delete }
+
+fn todo_json(t: Todo) -> Json {
+  return JObj(["id": JNum(to_float(t.id)), "title": JStr(t.title), "done": JBool(t.done)])
+}
+
+fn error_json(status: int, message: str) -> HttpResponse {
+  return http_json(status, JObj(["error": JStr(message)]))
+}
+
+fn render_page(todos: list[Todo]) -> str {
+  var items = ""
+  for t in todos {
+    let mark = if t.done then "&#10003;" else "&#9744;"
+    items = items + "    <li>{mark} {escape_html(t.title)}</li>\n"
+  }
+  return """
+    <!doctype html>
+    <html>
+    <head><title>Klar todos</title></head>
+    <body>
+      <h1>Todos ({len(todos)})</h1>
+      <ul>
+    {items}  </ul>
+    </body>
+    </html>
+    """
+}
+
+fn escape_html(s: str) -> str {
+  return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+}
+
+// "/todos/12/done" -> ["todos", "12", "done"]
+fn path_parts(path: str) -> list[str] {
+  return filter(split(path, "/"), fn(p) => p != "")
+}
+
+fn handle(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
+  let parts = path_parts(req.path)
+  let shape = join(map(parts, fn(p) => if is_some(parse_int(p)) then ":id" else p), "/")
+  let route = "{req.method} {shape}"
+  return match route {
+    "GET " => Ok(http_html(200, render_page(store_list(db)?))),
+    "GET todos" => Ok(http_json(200, JArr(map(store_list(db)?, fn(t) => todo_json(t))))),
+    "POST todos" => create(db, req.body),
+    "POST todos/:id/done" => {
+      let id = unwrap(parse_int(parts[1]))
+      if store_set_done(db, id, true)? {
+        return Ok(http_json(200, JObj(["ok": JBool(true)])))
+      }
+      return Ok(error_json(404, "no todo {id}"))
+    }
+    "DELETE todos/:id" => {
+      let id = unwrap(parse_int(parts[1]))
+      if store_delete(db, id)? {
+        return Ok(http_json(200, JObj(["ok": JBool(true)])))
+      }
+      return Ok(error_json(404, "no todo {id}"))
+    }
+    _ => Ok(error_json(404, "no route for {req.method} {req.path}")),
+  }
+}
+
+fn create(db: Database, body: str) -> Result[HttpResponse, str] uses io {
+  let title = match json_parse(body) {
+    Ok(j) => json_get(j, "title").unwrap_or(JStr("")).json_str().unwrap_or(""),
+    Err(_) => "",
+  }
+  if trim(title) == "" {
+    return Ok(error_json(400, "body must be JSON with a non-empty \"title\""))
+  }
+  let t = store_add(db, trim(title))?
+  return Ok(http_json(201, todo_json(t)))
+}
+
+fn main() uses io {
+  let port = unwrap_or(parse_int(unwrap_or(env_get("PORT"), "8080")), 8080)
+  let db_path = unwrap_or(env_get("TODO_DB"), ":memory:")
+  match store_open(db_path) {
+    Err(e) => { print("cannot open database: {e}") }
+    Ok(db) => {
+      print("listening on http://127.0.0.1:{port}")
+      let result = http_serve(port, fn(req) => match handle(db, req) {
+        Ok(resp) => resp,
+        Err(e) => error_json(500, e),
+      })
+      print("server stopped: {result}")
+    }
+  }
+}
+
+test "path parts" {
+  assert path_parts("/todos/3/done") == ["todos", "3", "done"]
+}
+
+test "html escaping" {
+  assert escape_html("<b>&") == "&lt;b&gt;&amp;"
+}

@@ -1,0 +1,60 @@
+# Klar roadmap
+
+Goal: a general-purpose language that an AI agent can learn from one page and use to build anything,
+while keeping the agent-friendly core (one way to do things, immutable values, checked effects,
+structured errors).
+
+## Done
+
+| Stage | What it adds | What it unlocks |
+|---|---|---|
+| v0.1 core | types, structs, enums, exhaustive match, Option/Result, effects, tests, coded errors | algorithms, data processing, CLI programs on stdin/stdout |
+| 1. Modules and generics | `use` with explicit import lists, generic structs/enums, `uses io` on function types | multi-file programs, reusable libraries, callbacks and handlers |
+| 2. Python interop | `extern` functions and types with type-directed conversion | any Python library: data science, ML, GUIs, games, cloud SDKs |
+| 3. Standard library | fs, json, http (client and server), sqlite, time, process, math, random, regex; raw and multi-line strings | web APIs and sites, database apps, scripts and automation, CLI tools |
+| 4. Example apps | todo REST API (SQLite + JSON + HTML), notes CLI, Python interop demo, all tested end to end | proof the pieces work together |
+| 5. Native compiler | `klar build`: Klar to C, tcc for ~40 ms dev builds, gcc/clang -O2 for `--release`; monomorphised generics, O(1) amortised `push`/`put`, int64 overflow checks | CPU-bound programs at C/Go speed, single-file executables with no Python needed |
+| 6. The web | JavaScript backend (Node and browser; io functions become async), `std.html` typed HTML with a default theme, `std.ui` model/update/view apps, `std.web` routing, forms, cookies, files; `js:` externs | full-stack web apps in one language, tested without a browser |
+| 7. Faster lists, web polish (v0.5) | in-place `set_at`/`push` for lists only one `var` holds (nbody and fannkuch-redux went from 28x to under 3x C), automatic JSON for every type, `klar dev` (rebuild on save, browser reload, errors in the page), live updates (`web_events`/`web_publish`, `ui_listen`) | array-heavy code at near-C speed; full-stack apps with shared types and no hand-written JSON |
+| 8. Traits and formatter (v0.6) | `trait`/`impl` with bounds (`fn f[T: Show + Shape]`), resolved at compile time in C and JavaScript; `klar fmt` (one canonical layout, token-verified) | shared behaviour across types without classes; agent diffs that show only real changes |
+| 9. Packages (v0.7) | `klar.toml` with path and git dependencies (flattened, conflicts reported), `klar.lock` pinning commits, pinned Python packages for externs, `klar new/add/install/update`; a dependency's private functions never clash with your names | reusing Klar code across projects, reproducible builds, Python libraries without a global install |
+| 10. Native standard library (v0.8) | every std module in `klar build` executables: files, processes, JSON (automatic too), regex (PCRE2), SQLite, HTTP client (HTTPS, proxies) and server with live updates; a program links only the libraries it uses | single-binary web servers and tools with no Python or Node; the todo API serves ~7,700 req/s natively vs ~4,800 on Node and ~280 in the interpreter |
+| 11. Concurrency (v0.9) | `std.task`: `task_all`, task groups with `task_spawn`, channels; tasks never share variables, and if every task is waiting the program stops with E409 instead of hanging; the same programs give the same output in the interpreter, native builds (threads) and Node (promises); servers handle requests concurrently | parallel downloads and API calls, worker pools, pipelines, servers whose slow requests don't block fast ones |
+| 12. Language server (v0.10) | `klar lsp`: diagnostics as you type with quick fixes from the hints, hover types and doc comments, go to definition, references and rename across files, completion (scope, fields, `x.` functions, imports), signature help, outline, formatting; a VS Code extension with highlighting, Neovim and Helix setup | Klar in any editor, with the same errors the compiler and agents see |
+| 13. A real app (v0.11) | Klar Board (`examples/apps/board`): accounts, shared boards, live updates, a concurrent report tool, about 1,400 lines tested in all three backends and in the browser; `std.crypto` (hashes, tokens, passwords); fixes it called for: library names no longer leak between modules, one clear error for value-ending match blocks, a `klar fmt` indent fix, `web_clear_cookie`, `ui_unlisten` | real multi-user web apps with logins; evidence for what to build next |
+| 14. Layout (v0.12) | `std.layout`: containers, rows, stacks, grids, sidebars and centring, tuned with typed options (`gap(Sm)`, `cols_at(Tablet, 3)`, `col_span`, `max_width(Narrow)`, `hide_from(Tablet)`); responsive from the phone up, a typo is a compile error, and the same HTML on every backend; Klar Board dropped its hand-written layout CSS | responsive pages and apps without writing CSS; the base the component kit builds on |
+| 15. Components (v0.13) | `std.kit`: buttons with typed variants and sizes, fields with hints and problems, select, checkbox, switch, radio group, badges, alerts, toasts, dialogs, tabs, menus, panels, empty states, stats, avatars, breadcrumbs, progress, spinners and skeletons; a slim neutral theme (light and dark) restyled by one typed `kit_theme`; roles, labels, focus and keyboard handling built in; state stays in the app model; `on_key`; type parameters usable in local annotations | modern-looking apps with no CSS; Klar Board and the todo app use it |
+| 16. Tables, combobox, drag and drop (v0.14) | `data_table` (sortable, paged, `aria-sort`), `combobox` (filter as you type, arrow keys, `aria-activedescendant`), dialogs that keep Tab inside and give focus back, `on_drag`/`on_drop`/`on_drag_end` with a drop highlight, `on_blur`, `on_press`; Klar Board cards move by dragging | the components most data apps need, with keyboard and screen reader support |
+
+## Next
+
+1. **What the board app found awkward.** Typed SQL queries that fill structs by column name (like
+   `json_decode`), a `std.web` helper for "signed in and allowed, or this reply", tuples (see [examples/apps/board/README.md](examples/apps/board/README.md)).
+2. **More components.** Date picker, multi-select, a command palette, keyed list diffing for long tables, and
+   touch drag and drop (HTML drag and drop does not fire on phones; the board keeps its arrow buttons there).
+3. **More real apps** written in Klar end to end, to find what hurts at scale.
+4. **Faster compiled code and builds.**
+   * user C externs (`extern "c:..."`) for native libraries beyond the standard ones;
+   * a precompiled runtime object so tcc doesn't re-parse the runtime on every build;
+   * faster maps and strings (the `words` benchmark is about 2 times behind Go) and unchecked arithmetic
+     where the checker can prove no overflow (recursive `fib` is about 2 times behind C);
+   * WebAssembly for CPU-heavy browser code.
+5. **More for the web.** Keyed list diffing for long lists, websockets for two-way messages, CSRF protection in
+   `std.web` (the board relies on SameSite cookies), and keeping the app's state across `klar dev` reloads.
+6. **GUI and games.** Browser apps work today through `std.ui` (and a canvas command is a small addition);
+   desktop toolkits through Python `extern`.
+
+## Known limits today
+
+* Servers handle requests concurrently in every backend, but Klar code runs one task at a time, so a
+  CPU-heavy handler still holds up the others (io waits do not). A runtime error in a handler ends a native
+  server (the interpreter and Node answer 500 and go on). Both bind to 127.0.0.1
+  unless HOST is set.
+* In the interpreter, lists are copied on update, so building a large list one `push` at a time is O(n²)
+  (compiled code does it in O(1) amortised). The interpreter is about 20 to 100 times slower than Python.
+* Python externs run only in the interpreter, `js:` externs only in JavaScript builds.
+* No package registry yet: dependencies are git URLs or folders. Types and enum variants must be unique
+  across all packages (functions you do not import are renamed automatically).
+* Native tasks are OS threads (cheap while waiting, but thousands at once cost real memory); channels are
+  unbounded, so a fast producer can outrun a slow consumer.
+* No pattern guards, no destructuring of structs in patterns, no tuples.

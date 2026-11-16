@@ -1,0 +1,59 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Klar",
+  "scopeName": "source.klar",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#declaration" },
+    { "include": "#keyword" },
+    { "include": "#type" },
+    { "include": "#call" },
+    { "include": "#operator" }
+  ],
+  "repository": {
+    "comment": { "name": "comment.line.double-slash.klar", "match": "//.*$" },
+    "string": {
+      "patterns": [
+        { "name": "string.quoted.raw.klar", "begin": "r\"\"\"", "end": "\"\"\"" },
+        { "name": "string.quoted.raw.klar", "match": "r\"[^\"\\n]*\"" },
+        { "name": "string.quoted.triple.klar", "begin": "\"\"\"", "end": "\"\"\"", "patterns": [{ "include": "#escape" }, { "include": "#interpolation" }] },
+        { "name": "string.quoted.double.klar", "begin": "\"", "end": "\"", "patterns": [{ "include": "#escape" }, { "include": "#interpolation" }] }
+      ]
+    },
+    "escape": { "name": "constant.character.escape.klar", "match": "\\\\[ntr0\"\\\\{}]|\\{\\{|\\}\\}" },
+    "interpolation": {
+      "name": "meta.interpolation.klar",
+      "begin": "\\{", "end": "\\}",
+      "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.klar" } },
+      "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.klar" } },
+      "patterns": [{ "include": "$self" }]
+    },
+    "number": { "name": "constant.numeric.klar", "match": "\\b[0-9][0-9_]*(\\.[0-9][0-9_]*)?([eE][+-]?[0-9]+)?\\b" },
+    "declaration": {
+      "patterns": [
+        { "match": "\\b(fn)\\s+([a-z_][A-Za-z0-9_]*)", "captures": { "1": { "name": "keyword.declaration.function.klar" }, "2": { "name": "entity.name.function.klar" } } },
+        { "match": "\\b(struct|enum|trait|type)\\s+([A-Z][A-Za-z0-9_]*)", "captures": { "1": { "name": "keyword.declaration.type.klar" }, "2": { "name": "entity.name.type.klar" } } },
+        { "match": "\\b(test)\\s+(?=\")", "captures": { "1": { "name": "keyword.other.test.klar" } } }
+      ]
+    },
+    "keyword": {
+      "patterns": [
+        { "name": "keyword.control.klar", "match": "\\b(if|else|then|while|for|in|return|break|continue|match)\\b" },
+        { "name": "keyword.other.klar", "match": "\\b(fn|let|var|struct|enum|use|test|assert|extern|type|trait|impl|uses|with)\\b" },
+        { "name": "keyword.operator.word.klar", "match": "\\b(and|or|not)\\b" },
+        { "name": "constant.language.klar", "match": "\\b(true|false)\\b" },
+        { "name": "storage.modifier.effect.klar", "match": "\\bio\\b" }
+      ]
+    },
+    "type": {
+      "patterns": [
+        { "name": "support.type.primitive.klar", "match": "\\b(int|float|str|bool|unit|never|list|map)\\b" },
+        { "name": "entity.name.type.klar", "match": "\\b[A-Z][A-Za-z0-9_]*\\b" }
+      ]
+    },
+    "call": { "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(?=\\()", "captures": { "1": { "name": "entity.name.function.call.klar" } } },
+    "operator": { "name": "keyword.operator.klar", "match": "=>|->|==|!=|<=|>=|\\?|[-+*/%<>=]" }
+  }
+}

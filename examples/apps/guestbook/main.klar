@@ -1,0 +1,117 @@
+// A server-rendered site: HTML pages built with std.html, a form that posts and redirects, a cookie that
+// remembers the visitor's name, and SQLite storage. No JavaScript runs in the browser.
+//
+//   klar run examples/apps/guestbook/main.klar                       (interpreter)
+//   klar build --target node examples/apps/guestbook/main.klar -o guestbook.mjs && node guestbook.mjs
+//   then open http://127.0.0.1:8080  (PORT and GUESTBOOK_DB change the port and database file)
+
+use std.http { HttpRequest, HttpResponse }
+use std.web { Route, web_get, web_post, web_serve, web_port, web_page, web_redirect, web_form, web_cookies, web_set_cookie }
+use std.html { Html, el, header, nav, a, h1, h2, p, small, form, label, input, textarea, button, text, card, class,
+  href, attr, placeholder, value, input_type, nothing }
+use std.layout { stack, spread }
+use std.sqlite { Database, SqlText, sqlite_open, sqlite_exec, sqlite_query, sql_text }
+use std.time { time_now, time_format }
+use std.process { env_get }
+
+struct Entry { name: str, message: str, when: str }
+
+fn open_db(path: str) -> Result[Database, str] uses io {
+  let db = sqlite_open(path)?
+  let _ = sqlite_exec(db, "create table if not exists entries (id integer primary key, name text, message text, at text)", [])?
+  return Ok(db)
+}
+
+fn entries(db: Database) -> Result[list[Entry], str] uses io {
+  let rows = sqlite_query(db, "select name, message, at from entries order by id desc limit 50", [])?
+  return Ok(map(rows, fn(r) => Entry(unwrap_or(sql_text(r["name"]), ""), unwrap_or(sql_text(r["message"]), ""),
+    unwrap_or(sql_text(r["at"]), ""))))
+}
+
+// ---- pages (pure functions from data to Html, so they are easy to test)
+
+fn layout(title: str, body: list[Html[unit]]) -> Html[unit] {
+  return el("main", [class("container")], [
+    header([], [spread([], [h1([], [text(title)]), nav([], [a([href("/")], [text("Guestbook")]), a([href("/about")], [text("About")])])])]),
+    stack([], body),
+  ])
+}
+
+fn home_page(all: list[Entry], name: str, error: str) -> Html[unit] {
+  return layout("Guestbook", [
+    card([], [
+      form([attr("method", "post"), attr("action", "/sign")], [
+        h2([], [text("Sign the guestbook")]),
+        if error == "" then nothing() else p([class("error")], [text(error)]),
+        label([], [text("Name"), input([attr("name", "name"), value(name), placeholder("Your name")])]),
+        label([], [text("Message"), textarea([attr("name", "message"), placeholder("Say hello")], [])]),
+        button([input_type("submit")], [text("Sign")]),
+      ]),
+    ]),
+    if len(all) == 0 then p([class("muted")], [text("No entries yet. Be the first!")]) else nothing(),
+    stack([], map(all, fn(e) => entry_card(e))),
+  ])
+}
+
+fn entry_card(e: Entry) -> Html[unit] {
+  return card([], [spread([], [text(e.name), small([], [text(e.when)])]), p([], [text(e.message)])])
+}
+
+fn about_page() -> Html[unit] {
+  return layout("About", [p([], [text("This site is written in Klar: pages are typed values, text is escaped automatically, "
+      + "and the same code runs in the interpreter or compiled to Node.js.")])])
+}
+
+// ---- handlers
+
+fn home(db: Database, req: HttpRequest) -> HttpResponse uses io {
+  let name = unwrap_or(get(web_cookies(req), "name"), "")
+  let error = if unwrap_or(get(req.query, "error"), "") == "empty" then "Please write a name and a message." else ""
+  return match entries(db) {
+    Ok(all) => web_page("Guestbook", home_page(all, name, error)),
+    Err(e) => HttpResponse(500, [:], "database error: {e}\n"),
+  }
+}
+
+fn sign(db: Database, req: HttpRequest) -> HttpResponse uses io {
+  let fields = web_form(req)
+  let name = trim(unwrap_or(get(fields, "name"), ""))
+  let message = trim(unwrap_or(get(fields, "message"), ""))
+  if name == "" or message == "" {
+    return web_redirect("/?error=empty")
+  }
+  let when = time_format(time_now(), "%Y-%m-%d %H:%M UTC")
+  return match sqlite_exec(db, "insert into entries (name, message, at) values (?, ?, ?)", [SqlText(name), SqlText(message), SqlText(when)]) {
+    Ok(_) => web_set_cookie(web_redirect("/"), "name", name),
+    Err(e) => HttpResponse(500, [:], "database error: {e}\n"),
+  }
+}
+
+fn routes(db: Database) -> list[Route] {
+  return [
+    web_get("/", fn(req) => home(db, req)),
+    web_post("/sign", fn(req) => sign(db, req)),
+    web_get("/about", fn(req) => web_page("About", about_page())),
+  ]
+}
+
+fn main() uses io {
+  let port = web_port(8080)
+  match open_db(unwrap_or(env_get("GUESTBOOK_DB"), "guestbook.db")) {
+    Err(e) => print("cannot open database: {e}"),
+    Ok(db) => {
+      print("guestbook on http://127.0.0.1:{port}")
+      match web_serve(port, routes(db)) { Ok(_) => {}, Err(e) => print("server error: {e}") }
+    }
+  }
+}
+
+test "entries are escaped" {
+  let page = html_render_page(home_page([Entry("<b>", "hi & bye", "now")], "", ""))
+  assert contains(page, "&lt;b&gt;")
+  assert contains(page, "hi &amp; bye")
+}
+
+fn html_render_page(h: Html[unit]) -> str {
+  return web_page("t", h).body
+}

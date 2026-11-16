@@ -1,0 +1,59 @@
+// k-nucleotide (Computer Language Benchmarks Game): count DNA k-mers of the third fasta sequence in a hash map.
+// Input is the output of the fasta program, on stdin.
+
+fn read_three() -> str uses io {
+  var lines: list[str] = []
+  var inside = false
+  while true {
+    match read_line() {
+      None => { break }
+      Some(line) => {
+        if inside {
+          if starts_with(line, ">") { break }
+          lines = push(lines, line)
+        } else if starts_with(line, ">THREE") {
+          inside = true
+        }
+      }
+    }
+  }
+  return upper(join(lines, ""))
+}
+
+fn count_kmers(seq: str, k: int) -> map[str, int] {
+  var counts: map[str, int] = [:]
+  for i in range(0, len(seq) - k + 1) {
+    let key = slice(seq, i, i + k)
+    counts = put(counts, key, unwrap_or(get(counts, key), 0) + 1)
+  }
+  return counts
+}
+
+// printf("%.3f") equivalent
+fn fixed3(v: float) -> str {
+  let n = round(v * 1000.0)
+  var frac = str(n % 1000)
+  while len(frac) < 3 { frac = "0{frac}" }
+  return "{n / 1000}.{frac}"
+}
+
+fn frequencies(seq: str, k: int) uses io {
+  let counts = count_kmers(seq, k)
+  let total = to_float(len(seq) - k + 1)
+  // most frequent first, ties in alphabetical order (sort_by is stable)
+  let sorted = sort_by(sort(keys(counts)), fn(key) => -counts[key])
+  for key in sorted {
+    print("{key} {fixed3(100.0 * to_float(counts[key]) / total)}")
+  }
+  print("")
+}
+
+fn main() uses io {
+  let seq = read_three()
+  frequencies(seq, 1)
+  frequencies(seq, 2)
+  for kmer in ["GGT", "GGTA", "GGTATT", "GGTATTTTAATT", "GGTATTTTAATTTATAGT"] {
+    let counts = count_kmers(seq, len(kmer))
+    print("{unwrap_or(get(counts, kmer), 0)}\t{kmer}")
+  }
+}

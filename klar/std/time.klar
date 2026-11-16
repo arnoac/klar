@@ -1,0 +1,8 @@
+// std.time: clocks and formatting. Timestamps are seconds since 1970-01-01 UTC as float.
+
+extern "klar.stdpy.timelib.now" fn time_now() -> float uses io
+extern "klar.stdpy.timelib.millis" fn time_millis() -> int uses io
+extern "klar.stdpy.timelib.sleep" fn time_sleep(seconds: float) uses io
+// strftime-style pattern, e.g. "%Y-%m-%d %H:%M", always in UTC.
+extern "klar.stdpy.timelib.format_utc" fn time_format(timestamp: float, pattern: str) -> str
+extern "klar.stdpy.timelib.iso_utc" fn time_iso(timestamp: float) -> str

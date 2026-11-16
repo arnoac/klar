@@ -1,0 +1,30 @@
+// std.sqlite: embedded SQL database. Always pass values as parameters (`?`), never build SQL strings.
+
+extern type Database
+
+enum SqlValue {
+  SqlNull,
+  SqlInt(value: int),
+  SqlFloat(value: float),
+  SqlText(value: str),
+}
+
+// Use ":memory:" for a temporary database.
+extern "klar.stdpy.sqlitelib.open_db" fn sqlite_open(path: str) -> Result[Database, str] uses io
+// Run a statement; returns the number of affected rows.
+extern "klar.stdpy.sqlitelib.execute" fn sqlite_exec(db: Database, sql: str, params: list[SqlValue]) -> Result[int, str] uses io
+extern "klar.stdpy.sqlitelib.query" fn sqlite_query(db: Database, sql: str, params: list[SqlValue]) -> Result[list[map[str, SqlValue]], str] uses io
+extern "klar.stdpy.sqlitelib.last_insert_id" fn sqlite_last_id(db: Database) -> int uses io
+extern "klar.stdpy.sqlitelib.close" fn sqlite_close(db: Database) uses io
+
+fn sql_text(v: SqlValue) -> Option[str] {
+  return match v { SqlText(s) => Some(s), _ => None }
+}
+
+fn sql_int(v: SqlValue) -> Option[int] {
+  return match v { SqlInt(n) => Some(n), _ => None }
+}
+
+fn sql_float(v: SqlValue) -> Option[float] {
+  return match v { SqlFloat(x) => Some(x), SqlInt(n) => Some(to_float(n)), _ => None }
+}

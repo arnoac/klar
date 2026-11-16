@@ -1,0 +1,87 @@
+// In-place list updates must never be visible through any other value (see klar/ownership.py).
+struct Box { items: list[int] }
+
+fn total(xs: list[int]) -> int {
+  var t = 0
+  for x in xs { t = t + x }
+  return t
+}
+
+fn bump_all(xs: list[int]) -> list[int] {
+  var ys = xs
+  for i in range(0, len(ys)) { ys = set_at(ys, i, ys[i] + 1) }
+  return ys
+}
+
+fn main() uses io {
+  // a let-bound alias taken while the var is owned
+  var a = [1, 2, 3]
+  a = set_at(a, 0, 10)
+  let snap = a
+  a = set_at(a, 1, 20)
+  a = push(a, 4)
+  print("{snap} {a}")
+
+  // stored in a struct, then updated
+  var b = range(0, 4)
+  b = set_at(b, 0, 7)
+  let box = Box(items: b)
+  b = set_at(b, 3, 9)
+  print("{box.items} {b}")
+
+  // iterated while being updated: the loop sees the list as it was
+  var c = [1, 2, 3]
+  for x in c { c = push(c, x * 10) }
+  print(c)
+
+  // passed to a function, then updated
+  var d = [5, 5, 5]
+  d = set_at(d, 2, 1)
+  let t = total(d)
+  d = set_at(d, 0, 0)
+  print("{t} {d} {total(d)}")
+
+  // a function that updates its own copy of a parameter
+  let e = [1, 2, 3]
+  let f = bump_all(e)
+  print("{e} {f}")
+
+  // nested set_at reads the old list for every value
+  var g = [1, 2, 3]
+  g = set_at(set_at(g, 0, g[1]), 1, g[0])
+  print(g)
+  var h = [4, 5]
+  h = set_at(set_at(h, 0, 9), 0, h[0] + 1)
+  print(h)
+
+  // push then set_at in one statement, and a list of lists
+  var k = [1]
+  k = set_at(push(k, 2), 0, 3)
+  print(k)
+  var rows = [[0, 0], [0, 0]]
+  let row0 = rows[0]
+  rows = set_at(rows, 0, set_at(row0, 1, 5))
+  print("{rows} {row0}")
+
+  // copying into another var: both stay independent
+  var p = [1, 2]
+  p = set_at(p, 0, 3)
+  var q = p
+  q = set_at(q, 1, 9)
+  p = set_at(p, 1, 8)
+  print("{p} {q}")
+
+  // reassigned to an older value
+  var r = [1, 2, 3]
+  let r0 = r
+  r = set_at(r, 0, 100)
+  r = r0
+  r = set_at(r, 2, 300)
+  print("{r0} {r}")
+
+  // out of bounds on the fast path still fails with E401
+  var z = [1, 2]
+  z = set_at(z, 0, 5)
+  z = set_at(z, 5, 1)
+  print(z)
+}

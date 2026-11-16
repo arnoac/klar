@@ -1,0 +1,22 @@
+// Calling Python from Klar. `extern` declares a typed Klar signature for any Python function:
+// from the standard library, an installed package, or a .py file next to this one.
+
+extern "statistics.median" fn median(xs: list[float]) -> float
+extern "statistics.stdev" fn stdev(xs: list[float]) -> Result[float, str]
+extern "hashlib_sha256_hex.digest" fn sha256_hex(text: str) -> str
+extern "textstats.top_words" fn top_words(text: str, n: int) -> list[WordCount]
+extern "urllib.parse.quote" fn url_quote(text: str) -> str
+
+struct WordCount { word: str, count: int }
+
+fn main() uses io {
+  let xs = [3.0, 1.0, 4.0, 1.0, 5.0]
+  print("median {median(xs)}")
+  print("stdev {stdev(xs)}")
+  print("stdev of one value: {stdev([1.0])}")
+  print("sha256 {sha256_hex("klar")}")
+  for wc in top_words("the cat and the hat and the bat", 2) {
+    print("{wc.word}: {wc.count}")
+  }
+  print(url_quote("a b&c"))
+}

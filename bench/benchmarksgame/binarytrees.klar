@@ -1,0 +1,39 @@
+// binary-trees (Computer Language Benchmarks Game): allocate and walk many perfect binary trees.
+enum Tree { Leaf, Node(left: Tree, right: Tree) }
+
+fn bottom_up(depth: int) -> Tree {
+  if depth > 0 { return Node(bottom_up(depth - 1), bottom_up(depth - 1)) }
+  return Node(Leaf, Leaf)
+}
+
+fn check(t: Tree) -> int {
+  return match t {
+    Leaf => 0,
+    Node(l, r) => 1 + check(l) + check(r),
+  }
+}
+
+fn pow2(k: int) -> int {
+  var p = 1
+  for _i in range(0, k) { p = p * 2 }
+  return p
+}
+
+fn main() uses io {
+  let args_ = args()
+  let n = if len(args_) > 0 then unwrap_or(parse_int(args_[0]), 10) else 10
+  let min_depth = 4
+  let max_depth = max(min_depth + 2, n)
+  let stretch = max_depth + 1
+  print("stretch tree of depth {stretch}\t check: {check(bottom_up(stretch))}")
+  let long_lived = bottom_up(max_depth)
+  var d = min_depth
+  while d <= max_depth {
+    let iterations = pow2(max_depth - d + min_depth)
+    var total = 0
+    for _i in range(0, iterations) { total = total + check(bottom_up(d)) }
+    print("{iterations}\t trees of depth {d}\t check: {total}")
+    d = d + 2
+  }
+  print("long lived tree of depth {max_depth}\t check: {check(long_lived)}")
+}

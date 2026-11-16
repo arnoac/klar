@@ -1,0 +1,5 @@
+circle at (0.0, 0.0) with radius 1.0: area 3.141592653589793
+4.0x2.5 rectangle at (2.0, 3.0): area 10.0
+triangle: area 6.0
+total area: 19.141592653589793
+largest: 4.0x2.5 rectangle at (2.0, 3.0)

@@ -1,0 +1,7 @@
+fn main() uses io {
+  var total = 0
+  for i in range(0, 100000000) {
+    total = total + (i * i) % 7
+  }
+  print(total)
+}

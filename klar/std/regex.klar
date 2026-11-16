@@ -1,0 +1,8 @@
+// std.regex: Python-compatible regular expressions.
+
+extern "klar.stdpy.regexlib.matches" fn regex_matches(pattern: str, text: str) -> bool
+extern "klar.stdpy.regexlib.find_all" fn regex_find_all(pattern: str, text: str) -> list[str]
+// Capture groups of the first match ("" for groups that did not participate).
+extern "klar.stdpy.regexlib.groups" fn regex_groups(pattern: str, text: str) -> Option[list[str]]
+extern "klar.stdpy.regexlib.replace" fn regex_replace(pattern: str, text: str, replacement: str) -> str
+extern "klar.stdpy.regexlib.split" fn regex_split(pattern: str, text: str) -> list[str]

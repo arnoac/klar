@@ -1,0 +1,89 @@
+// std.ui: interactive web apps that run in the browser.
+//
+// An app is three things (the Elm architecture):
+//   * a model: one immutable value holding all state,
+//   * update(model, msg) -> Next[model, msg]: a pure function that handles one message (a click, typed text,
+//     an HTTP reply) and returns the new model plus commands (side effects) to run,
+//   * view(model) -> Html[msg]: a pure function from the model to the page (see std.html).
+// Because update and view are pure, both are tested with ordinary `test` blocks; nothing needs a browser.
+//
+//   klar build --target web app.klar     ->  app.html (open it, or serve it from a std.web backend)
+
+use std.html { Html, html_theme_css }
+use std.http { HttpResponse }
+use std.json { Json, json_stringify }
+
+// What update returns: the new model and the commands to run (often []).
+struct Next[M, Msg] {
+  model: M,
+  cmds: list[Cmd[Msg]],
+}
+
+enum Cmd[Msg] {
+  CmdHttp(method: str, url: str, headers: map[str, str], body: str, to_msg: fn(Result[HttpResponse, str]) -> Msg),
+  CmdAfter(ms: int, msg: Msg),
+  CmdSave(key: str, data: str),
+  CmdGo(url: str),
+  CmdFocus(element_id: str),
+  CmdListen(url: str, to_msg: fn(str) -> Msg),
+  CmdUnlisten(url: str),
+}
+
+// Live updates: listen to a server-sent event stream (std.web's web_events) and turn every message into a Msg.
+// Issue it once, usually from init; the browser reconnects by itself if the connection drops.
+fn ui_listen[Msg](url: str, to_msg: fn(str) -> Msg) -> Cmd[Msg] {
+  return CmdListen(url, to_msg)
+}
+
+// Stop listening to a stream started with ui_listen (e.g. when leaving the page it belongs to).
+fn ui_unlisten[Msg](url: str) -> Cmd[Msg] {
+  return CmdUnlisten(url)
+}
+
+// GET a URL; `to_msg` turns the reply (or a network error) into a message for update.
+fn ui_get[Msg](url: str, to_msg: fn(Result[HttpResponse, str]) -> Msg) -> Cmd[Msg] {
+  return CmdHttp("GET", url, [:], "", to_msg)
+}
+
+// Send JSON with any method ("POST", "PUT", "DELETE", ...).
+fn ui_send[Msg](method: str, url: str, body: Json, to_msg: fn(Result[HttpResponse, str]) -> Msg) -> Cmd[Msg] {
+  return CmdHttp(method, url, ["content-type": "application/json"], json_stringify(body), to_msg)
+}
+
+// Deliver `msg` after `ms` milliseconds (timers, polling, animations: re-arm it from update).
+fn ui_after[Msg](ms: int, msg: Msg) -> Cmd[Msg] {
+  return CmdAfter(ms, msg)
+}
+
+// Store text in the browser (localStorage); read it back with ui_load in main.
+fn ui_save[Msg](key: str, data: str) -> Cmd[Msg] {
+  return CmdSave(key, data)
+}
+
+// Go to another URL inside a routed app (see ui_run_routed) without reloading the page.
+fn ui_go[Msg](url: str) -> Cmd[Msg] {
+  return CmdGo(url)
+}
+
+// Move keyboard focus to the element with this id after the next render.
+fn ui_focus[Msg](element_id: str) -> Cmd[Msg] {
+  return CmdFocus(element_id)
+}
+
+// The general form of ui_run: `on_url` as in ui_run_routed (or None), and the page's whole stylesheet, usually
+// html_theme_css() followed by the app's own rules.
+extern "klar:ui.start" fn ui_start[M, Msg](init: Next[M, Msg], update: fn(M, Msg) -> Next[M, Msg], view: fn(M) -> Html[Msg], on_url: Option[fn(str) -> Msg], css: str) uses io
+
+// Text saved with ui_save, if any.
+extern "klar:ui.load" fn ui_load(key: str) -> Option[str] uses io
+
+// Start the app in the page. Call it from main; it returns immediately and the app runs on events.
+fn ui_run[M, Msg](init: Next[M, Msg], update: fn(M, Msg) -> Next[M, Msg], view: fn(M) -> Html[Msg]) uses io {
+  ui_start(init, update, view, None, html_theme_css())
+}
+
+// Like ui_run, for apps with several pages: `on_url` turns the current path (e.g. "/items/3?tab=a") into a
+// message at start-up, when a same-site link is clicked, on ui_go, and on the browser's back and forward buttons.
+fn ui_run_routed[M, Msg](init: Next[M, Msg], update: fn(M, Msg) -> Next[M, Msg], view: fn(M) -> Html[Msg], on_url: fn(str) -> Msg) uses io {
+  ui_start(init, update, view, Some(on_url), html_theme_css())
+}

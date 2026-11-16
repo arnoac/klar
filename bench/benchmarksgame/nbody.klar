@@ -1,0 +1,109 @@
+// n-body (Computer Language Benchmarks Game): Jovian planets, symplectic integrator.
+// Positions, velocities and masses are list[float] values held in local variables while the bodies move.
+struct System {
+  x: list[float], y: list[float], z: list[float],
+  vx: list[float], vy: list[float], vz: list[float],
+  m: list[float],
+}
+
+fn pi() -> float { return 3.141592653589793 }
+fn solar_mass() -> float { return 4.0 * pi() * pi() }
+fn days_per_year() -> float { return 365.24 }
+
+fn initial() -> System {
+  let d = days_per_year()
+  let sm = solar_mass()
+  return System(
+    x: [0.0, 4.84143144246472090e+00, 8.34336671824457987e+00, 1.28943695621391310e+01, 1.53796971148509165e+01],
+    y: [0.0, -1.16032004402742839e+00, 4.12479856412430479e+00, -1.51111514016986312e+01, -2.59193146099879641e+01],
+    z: [0.0, -1.03622044471123109e-01, -4.03523417114321381e-01, -2.23307578892655734e-01, 1.79258772950371181e-01],
+    vx: [0.0, 1.66007664274403694e-03 * d, -2.76742510726862411e-03 * d, 2.96460137564761618e-03 * d, 2.68067772490389322e-03 * d],
+    vy: [0.0, 7.69901118419740425e-03 * d, 4.99852801234917238e-03 * d, 2.37847173959480950e-03 * d, 1.62824170038242295e-03 * d],
+    vz: [0.0, -6.90460016972063023e-05 * d, 2.30417297573763929e-05 * d, -2.96589568540237556e-05 * d, -9.51592254519715870e-05 * d],
+    m: [sm, 9.54791938424326609e-04 * sm, 2.85885980666130812e-04 * sm, 4.36624404335156298e-05 * sm, 5.15138902046611451e-05 * sm],
+  )
+}
+
+fn offset_momentum(s: System) -> System {
+  var px = 0.0
+  var py = 0.0
+  var pz = 0.0
+  for i in range(0, len(s.m)) {
+    px = px + s.vx[i] * s.m[i]
+    py = py + s.vy[i] * s.m[i]
+    pz = pz + s.vz[i] * s.m[i]
+  }
+  let sm = solar_mass()
+  return s with (vx: set_at(s.vx, 0, -px / sm), vy: set_at(s.vy, 0, -py / sm), vz: set_at(s.vz, 0, -pz / sm))
+}
+
+fn energy(s: System) -> float {
+  var e = 0.0
+  let n = len(s.m)
+  for i in range(0, n) {
+    e = e + 0.5 * s.m[i] * (s.vx[i] * s.vx[i] + s.vy[i] * s.vy[i] + s.vz[i] * s.vz[i])
+    for j in range(i + 1, n) {
+      let dx = s.x[i] - s.x[j]
+      let dy = s.y[i] - s.y[j]
+      let dz = s.z[i] - s.z[j]
+      e = e - s.m[i] * s.m[j] / sqrt(dx * dx + dy * dy + dz * dz)
+    }
+  }
+  return e
+}
+
+fn simulate(s: System, steps: int, dt: float) -> System {
+  // The official algorithm: visit each pair once and update both bodies in place. The lists live in local
+  // variables for the whole run, so every set_at writes straight into the buffer (see SPEC "Lists in loops").
+  let n = len(s.m)
+  let m = s.m
+  var x = s.x
+  var y = s.y
+  var z = s.z
+  var vx = s.vx
+  var vy = s.vy
+  var vz = s.vz
+  for _step in range(0, steps) {
+    for i in range(0, n) {
+      for j in range(i + 1, n) {
+        let dx = x[i] - x[j]
+        let dy = y[i] - y[j]
+        let dz = z[i] - z[j]
+        let d2 = dx * dx + dy * dy + dz * dz
+        let mag = dt / (d2 * sqrt(d2))
+        let mi = m[i] * mag
+        let mj = m[j] * mag
+        vx = set_at(set_at(vx, i, vx[i] - dx * mj), j, vx[j] + dx * mi)
+        vy = set_at(set_at(vy, i, vy[i] - dy * mj), j, vy[j] + dy * mi)
+        vz = set_at(set_at(vz, i, vz[i] - dz * mj), j, vz[j] + dz * mi)
+      }
+    }
+    for k in range(0, n) {
+      x = set_at(x, k, x[k] + dt * vx[k])
+      y = set_at(y, k, y[k] + dt * vy[k])
+      z = set_at(z, k, z[k] + dt * vz[k])
+    }
+  }
+  return System(x: x, y: y, z: z, vx: vx, vy: vy, vz: vz, m: m)
+}
+
+// printf("%.9f") equivalent: Klar has no number formatting yet.
+fn fixed(v: float, digits: int) -> str {
+  var scale = 1
+  for _i in range(0, digits) { scale = scale * 10 }
+  let neg = v < 0.0
+  let a = if neg then -v else v
+  let n = round(a * to_float(scale))
+  var frac = str(n % scale)
+  while len(frac) < digits { frac = "0{frac}" }
+  let sign = if neg and n != 0 then "-" else ""
+  return "{sign}{n / scale}.{frac}"
+}
+
+fn main() uses io {
+  let a = args()
+  let steps = if len(a) > 0 then unwrap_or(parse_int(a[0]), 1000) else 1000
+  let s = offset_momentum(initial())
+  print(fixed(energy(s), 9))
+  print(fixed(energy(simulate(s, steps, 0.01)), 9))
+}

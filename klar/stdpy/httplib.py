@@ -1,0 +1,122 @@
+import json as _json
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+import queue
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# Requests are accepted on threads so that live-update streams (web_events) can stay open, but Klar handlers
+# run one at a time under this lock: the interpreter is single-threaded.
+_LOCK = threading.RLock()
+
+
+def _baton():
+    from .. import tasks
+    return tasks.RUNTIME.cond if tasks.RUNTIME is not None else _LOCK
+_TOPICS = {}        # topic -> set of queues, one per open event stream
+
+
+def publish(topic, data):
+    msg = "".join(f"data: {line}\n" for line in str(data).split("\n")) + "\n"
+    for q in list(_TOPICS.get(topic, ())):
+        q.put(msg)
+
+
+def request(method, url, headers, body):
+    data = body.encode("utf-8") if body else None
+    req = urllib.request.Request(url, data=data, method=method, headers=dict(headers))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return {"status": r.status, "headers": {k.lower(): v for k, v in r.headers.items()},
+                    "body": r.read().decode("utf-8", "replace")}
+    except urllib.error.HTTPError as e:
+        return {"status": e.code, "headers": {k.lower(): v for k, v in e.headers.items()},
+                "body": e.read().decode("utf-8", "replace")}
+
+
+def serve(port, handler, max_requests):
+    class H(BaseHTTPRequestHandler):
+        def _handle(self):
+            parsed = urllib.parse.urlsplit(self.path)
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
+            req = {
+                "method": self.command,
+                "path": parsed.path,
+                "query": {k: v[-1] for k, v in urllib.parse.parse_qs(parsed.query).items()},
+                "headers": {k.lower(): v for k, v in self.headers.items()},
+                "body": body,
+                "params": {},
+            }
+            with _baton():
+                try:
+                    resp = handler(req)
+                except Exception as e:  # a Klar runtime error inside the handler
+                    msg = getattr(e, "render", None)
+                    text = msg() if msg else f"{type(e).__name__}: {e}"
+                    print(text, file=sys.stderr)
+                    resp = {"status": 500, "headers": {"content-type": "text/plain"}, "body": "internal error\n"}
+                sys.stdout.flush()
+            headers = dict(resp["headers"])
+            if "x-klar-stream" in headers:
+                return self._stream(headers["x-klar-stream"])
+            status = resp["status"]
+            payload = resp["body"].encode("utf-8")
+            path = headers.pop("x-klar-file", None)
+            if path is not None:
+                try:
+                    with open(path, "rb") as f:
+                        payload = f.read()
+                except OSError:
+                    status, payload = 404, b"not found\n"
+                    headers = {"content-type": "text/plain; charset=utf-8"}
+            self.send_response(status)
+            headers.setdefault("content-type", "text/plain; charset=utf-8")
+            for k, v in headers.items():
+                for line in v.split("\n") if k == "set-cookie" else [v]:
+                    self.send_header(k, line)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def _stream(self, topic):
+            q = queue.Queue()
+            _TOPICS.setdefault(topic, set()).add(q)
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.send_header("cache-control", "no-store")
+            self.end_headers()
+            self.close_connection = True
+            try:
+                self.wfile.write(b": connected\n\n")
+                self.wfile.flush()
+                while True:
+                    try:
+                        msg = q.get(timeout=15)
+                    except queue.Empty:
+                        msg = ": ping\n\n"
+                    self.wfile.write(msg.encode("utf-8"))
+                    self.wfile.flush()
+            except OSError:
+                pass
+            finally:
+                _TOPICS[topic].discard(q)
+
+        do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = _handle
+
+        def log_message(self, *args):
+            pass
+
+    import os
+    server = ThreadingHTTPServer((os.environ.get("HOST") or "127.0.0.1", port), H)
+    server.daemon_threads = max_requests <= 0    # with a request limit, wait for the last replies before returning
+    try:
+        if max_requests > 0:
+            for _ in range(max_requests):
+                server.handle_request()
+        else:
+            server.serve_forever()
+    finally:
+        server.server_close()

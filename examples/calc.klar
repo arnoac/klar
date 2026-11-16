@@ -1,0 +1,130 @@
+// A tiny expression evaluator: tokenizer + recursive-descent parser.
+// Reads one expression per line from stdin, e.g.  echo "2 * (3 + 4)" | klar run calc.klar
+
+enum Tok {
+  Num(value: int),
+  Op(symbol: str),
+  LParen,
+  RParen,
+}
+
+fn tokenize(src: str) -> Result[list[Tok], str] {
+  var toks: list[Tok] = []
+  var i = 0
+  let cs = chars(src)
+  while i < len(cs) {
+    let c = cs[i]
+    if c == " " {
+      i = i + 1
+    } else if contains("0123456789", c) {
+      var n = 0
+      while i < len(cs) and contains("0123456789", cs[i]) {
+        n = n * 10 + unwrap(parse_int(cs[i]))
+        i = i + 1
+      }
+      toks = push(toks, Num(n))
+    } else if contains("+-*/", c) {
+      toks = push(toks, Op(c))
+      i = i + 1
+    } else if c == "(" {
+      toks = push(toks, LParen)
+      i = i + 1
+    } else if c == ")" {
+      toks = push(toks, RParen)
+      i = i + 1
+    } else {
+      return Err("unexpected character '{c}' at column {i + 1}")
+    }
+  }
+  return Ok(toks)
+}
+
+// Parser state is passed explicitly: every function returns the value and the next position.
+struct Parsed { value: int, pos: int }
+
+fn parse_expr(toks: list[Tok], pos: int) -> Result[Parsed, str] {
+  var left = parse_term(toks, pos)?
+  while left.pos < len(toks) {
+    let op = match toks[left.pos] { Op(s) => s, _ => "" }
+    if op != "+" and op != "-" { break }
+    let right = parse_term(toks, left.pos + 1)?
+    let v = if op == "+" then left.value + right.value else left.value - right.value
+    left = Parsed(value: v, pos: right.pos)
+  }
+  return Ok(left)
+}
+
+fn parse_term(toks: list[Tok], pos: int) -> Result[Parsed, str] {
+  var left = parse_atom(toks, pos)?
+  while left.pos < len(toks) {
+    let op = match toks[left.pos] { Op(s) => s, _ => "" }
+    if op != "*" and op != "/" { break }
+    let right = parse_atom(toks, left.pos + 1)?
+    if op == "/" and right.value == 0 {
+      return Err("division by zero")
+    }
+    let v = if op == "*" then left.value * right.value else left.value / right.value
+    left = Parsed(value: v, pos: right.pos)
+  }
+  return Ok(left)
+}
+
+fn parse_atom(toks: list[Tok], pos: int) -> Result[Parsed, str] {
+  let t = get(toks, pos)
+  return match t {
+    None => Err("unexpected end of input"),
+    Some(Num(n)) => Ok(Parsed(value: n, pos: pos + 1)),
+    Some(Op(s)) => if s == "-" then negate(parse_atom(toks, pos + 1)) else Err("unexpected operator {s}"),
+    Some(LParen) => close_paren(toks, parse_expr(toks, pos + 1)),
+    Some(RParen) => Err("unexpected )"),
+  }
+}
+
+fn negate(r: Result[Parsed, str]) -> Result[Parsed, str] {
+  let p = r?
+  return Ok(p with (value: 0 - p.value))
+}
+
+fn close_paren(toks: list[Tok], r: Result[Parsed, str]) -> Result[Parsed, str] {
+  let p = r?
+  return match get(toks, p.pos) {
+    Some(RParen) => Ok(p with (pos: p.pos + 1)),
+    _ => Err("expected )"),
+  }
+}
+
+fn evaluate(src: str) -> Result[int, str] {
+  let toks = tokenize(src)?
+  let p = parse_expr(toks, 0)?
+  if p.pos != len(toks) {
+    return Err("unexpected trailing input")
+  }
+  return Ok(p.value)
+}
+
+fn main() uses io {
+  var line = read_line()
+  while is_some(line) {
+    let text = trim(unwrap(line))
+    if text != "" {
+      match evaluate(text) {
+        Ok(v) => { print("{text} = {v}") }
+        Err(e) => { print("{text} -> error: {e}") }
+      }
+    }
+    line = read_line()
+  }
+}
+
+test "precedence" {
+  assert evaluate("2 + 3 * 4") == Ok(14)
+}
+
+test "parentheses and negation" {
+  assert evaluate("-(2 + 3) * 2") == Ok(-10)
+}
+
+test "errors are values" {
+  assert evaluate("1 / 0") == Err("division by zero")
+  assert is_err(evaluate("2 +"))
+}

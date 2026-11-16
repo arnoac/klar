@@ -1,0 +1,4 @@
+// The smallest Klar program.
+fn main() uses io {
+  print("Hello, Klar!")
+}

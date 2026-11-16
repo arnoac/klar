@@ -1,0 +1,9 @@
+fn main() uses io {
+  var xs: list[int] = []
+  for i in range(0, 5000000) {
+    xs = push(xs, i)
+  }
+  let evens = filter(xs, fn(x) => x % 2 == 0)
+  let squares = map(evens, fn(x) => x % 1000 * 3)
+  print(fold(squares, 0, fn(acc, x) => acc + x))
+}

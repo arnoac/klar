@@ -1,0 +1,287 @@
+// Every std.kit component and std.layout layout on one page: a small settings app.
+//
+//   klar dev examples/apps/showcase/app.klar          http://127.0.0.1:8000
+//   klar test examples/apps/showcase/app.klar
+//
+// Try ?accent=e11d48 or ?scheme=dark in the address bar... or just change `theme()` below.
+
+use std.ui { Next, ui_start, ui_after }
+use std.html { Html, span, input, textarea, button, text, nothing, table, thead, tbody, tr, th, td,
+  class, href, value, placeholder, input_type, on_click, on_input, on_submit, form, html_theme_css, html_render }
+use std.layout { Sm, Lg, Tablet, Laptop, Wide, Narrow, Between, Center, container, row, stack, grid, spread, sidebar, box,
+  spacer, gap, no_wrap, cols, cols_at, col_span_at, max_width, align, justify, grow, hide_from }
+use std.kit { Tone, Secondary, Outline, Ghost, Destructive, Link, Small, Large, Neutral, Info, Success, Warning, Danger,
+  Hint, Problem, Choice, TableColumn, TableState, ComboState, ByText, ByNumber, Unsorted, data_table, table_start, table_sort,
+  combobox, combo_start, Tab, Toast, Crumb, Rounded, Auto, Theme, default_theme, kit_theme, variant, size, busy, tooltip,
+  icon_button, menu, menu_item, menu_danger, menu_link, field, field_note, select_box, checkbox, toggle, radio_group,
+  badge, alert, alert_dismissable, toasts, progress_bar, spinner, skeleton, empty_state, dialog, tabs, panel,
+  breadcrumbs, avatar, stat, kbd, separator }
+
+struct Model {
+  tab: str,
+  name: str,
+  email: str,
+  bio: str,
+  plan: str,
+  role: str,
+  emails: bool,
+  weekly: bool,
+  saving: bool,
+  confirm: bool,
+  banner: bool,
+  toasts: list[Toast],
+  next_toast: int,
+  table: TableState,
+  zone: ComboState,
+}
+
+enum Msg {
+  PickTab(id: str),
+  Name(s: str), Email(s: str), Bio(s: str), Plan(s: str), Role(s: str),
+  Emails(on: bool), Weekly(on: bool),
+  Save, Saved,
+  AskDelete, CloseDialog, Delete,
+  HideBanner,
+  Dismiss(id: int),
+  Notify(tone: str),
+  TableChanged(t: TableState),
+  ZoneChanged(c: ComboState),
+  ZonePicked(c: Choice),
+}
+
+fn init() -> Model {
+  return Model(tab: "account", name: "Ada Lovelace", email: "ada@example.com", bio: "", plan: "team", role: "admin",
+    emails: true, weekly: false, saving: false, confirm: false, banner: true, toasts: [], next_toast: 1,
+    table: table_start(), zone: combo_start("Europe/Brussels"))
+}
+
+fn toast(m: Model, t: Toast) -> Next[Model, Msg] {
+  let id = m.next_toast
+  return Next(m with (toasts: push(m.toasts, t with (id: id)), next_toast: id + 1), [ui_after(4000, Dismiss(id))])
+}
+
+fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
+  return match msg {
+    PickTab(id) => Next(m with (tab: id), []),
+    Name(s) => Next(m with (name: s), []),
+    Email(s) => Next(m with (email: s), []),
+    Bio(s) => Next(m with (bio: s), []),
+    Plan(s) => Next(m with (plan: s), []),
+    Role(s) => Next(m with (role: s), []),
+    Emails(on) => Next(m with (emails: on), []),
+    Weekly(on) => Next(m with (weekly: on), []),
+    Save => if email_problem(m.email) != "" then Next(m, []) else Next(m with (saving: true), [ui_after(900, Saved)]),
+    Saved => toast(m with (saving: false), Toast(0, Success, "Profile saved", "Your changes are live.")),
+    AskDelete => Next(m with (confirm: true), []),
+    CloseDialog => Next(m with (confirm: false), []),
+    Delete => toast(m with (confirm: false), Toast(0, Danger, "Workspace deleted", "")),
+    HideBanner => Next(m with (banner: false), []),
+    Dismiss(id) => Next(m with (toasts: filter(m.toasts, fn(t) => t.id != id)), []),
+    TableChanged(t) => Next(m with (table: t), []),
+    ZoneChanged(c) => Next(m with (zone: c), []),
+    ZonePicked(c) => Next(m with (zone: combo_start(c.label)), []),
+    Notify(kind) => toast(m, Toast(0, if kind == "info" then Info else Warning, "Heads up", "Something happened.")),
+  }
+}
+
+fn email_problem(email: str) -> str {
+  return if not contains(email, "@") then "Enter an address like name@example.com" else ""
+}
+
+// ---- view
+
+fn view(m: Model) -> Html[Msg] {
+  return container([max_width(Wide), gap(Lg)], [
+    top(m),
+    if m.banner then alert_dismissable([], Info, "This page shows every std.kit component.",
+      [text("Resize the window: the layout is built with std.layout and works down to phone width.")], HideBanner) else nothing(),
+    sidebar([], side_nav(m), content(m)),
+    toasts(m.toasts, fn(id) => Dismiss(id)),
+    dialog(m.confirm, "Delete this workspace?", "All boards and cards are removed. This cannot be undone.", CloseDialog, [],
+      [button([variant(Outline), on_click(CloseDialog)], [text("Cancel")]), button([variant(Destructive), on_click(Delete)], [text("Delete workspace")])]),
+  ])
+}
+
+fn top(m: Model) -> Html[Msg] {
+  return spread([class("topbar")], [
+    row([gap(Sm)], [span([class("logo")], [text("◆")]), span([class("brand")], [text("Acme")]), badge([], Neutral, "Team")]),
+    row([gap(Sm)], [
+      box([hide_from(Laptop)], []),
+      button([variant(Ghost), size(Small), tooltip("Search (Ctrl K)")], [text("Search "), kbd("Ctrl K")]),
+      menu([class("end")], [avatar(m.name), text(m.name)], [
+        menu_link("Profile", "#profile"),
+        menu_item("Send a notification", Notify("info")),
+        separator(),
+        menu_danger("Delete workspace", AskDelete),
+      ]),
+    ]),
+  ])
+}
+
+fn side_nav(m: Model) -> Html[Msg] {
+  return stack([gap(Sm)], [
+    breadcrumbs([Crumb("Acme", "#"), Crumb("Settings", "#"), Crumb(tab_title(m.tab), "")]),
+    stack([gap(Sm), class("side-nav")], map(["account", "notifications", "billing"], fn(id) =>
+        button([variant(if m.tab == id then Secondary else Ghost), on_click(PickTab(id))], [text(tab_title(id))]))),
+  ])
+}
+
+fn tab_title(id: str) -> str {
+  return if id == "account" then "Account" else if id == "notifications" then "Notifications" else "Billing"
+}
+
+fn content(m: Model) -> Html[Msg] {
+  return stack([gap(Lg)], [
+    grid([cols(1), cols_at(Tablet, 3), gap(Sm)], [
+      box([class("card")], [stat("Boards", "12", "+2 this month")]),
+      box([class("card")], [stat("Cards done", "348", "86% of all cards")]),
+      box([class("card")], [stack([gap(Sm)], [stat("Storage", "6.2 GB", ""), progress_bar("Storage used", 62)])]),
+    ]),
+    tabs([], m.tab, [
+      Tab("account", "Account", account(m)),
+      Tab("notifications", "Notifications", notifications(m)),
+      Tab("billing", "Billing", billing(m)),
+    ], fn(id) => PickTab(id)),
+    panel([], "Buttons and badges", "Variants, sizes and states.", [
+      row([gap(Sm)], [
+        button([], [text("Primary")]),
+        button([variant(Secondary)], [text("Secondary")]),
+        button([variant(Outline)], [text("Outline")]),
+        button([variant(Ghost)], [text("Ghost")]),
+        button([variant(Destructive)], [text("Destructive")]),
+        button([variant(Link)], [text("Link")]),
+      ]),
+      row([gap(Sm)], [
+        button([size(Small)], [text("Small")]),
+        button([size(Large)], [text("Large")]),
+        button([busy(true)], [text("Saving")]),
+        icon_button([], "Settings", "⚙"),
+        icon_button([variant(Outline)], "Add", "+"),
+        spinner("Loading"),
+      ]),
+      row([gap(Sm)], [badge([], Neutral, "Neutral"), badge([], Info, "Info"), badge([], Success, "Paid"),
+        badge([], Warning, "Trial ends soon"), badge([], Danger, "Overdue")]),
+    ], []),
+    grid([cols(1), cols_at(Laptop, 2), gap(Sm)], [
+      alert([], Success, "Deployed", [text("Version 0.13 is live on all servers.")]),
+      alert([], Warning, "Card limit", [text("You have used 90% of the cards in your plan.")]),
+      alert([], Danger, "Payment failed", [text("Update your card to keep your workspace.")]),
+      alert([], Neutral, "Tip", [text("Press "), kbd("?"), text(" to see every shortcut.")]),
+    ]),
+    panel([], "Members", "People in this workspace.", [
+      data_table([], member_columns(), members(), m.table, 4, fn(t) => TableChanged(t)),
+    ], [button([variant(Outline), size(Small)], [text("Invite")])]),
+    grid([cols(1), cols_at(Tablet, 2), gap(Sm)], [
+      empty_state("No archived boards", "Boards you archive show up here. You can restore them at any time.",
+        [button([variant(Outline), size(Small)], [text("Learn more")])]),
+      panel([], "Loading", "Skeletons hold the shape of content.", [
+        stack([gap(Sm)], [skeleton([]), skeleton([]), skeleton([])]),
+      ], []),
+    ]),
+  ])
+}
+
+struct Member { name: str, role: str, tone: Tone, status: str, cards: int }
+
+fn members() -> list[Member] {
+  return [Member("Ada Lovelace", "Admin", Success, "Active", 41), Member("Grace Hopper", "Member", Success, "Active", 57),
+    Member("Alan Turing", "Member", Warning, "Invited", 0), Member("Katherine Johnson", "Member", Success, "Active", 23),
+    Member("Edsger Dijkstra", "Viewer", Neutral, "Away", 8), Member("Barbara Liskov", "Admin", Success, "Active", 36)]
+}
+
+fn member_columns() -> list[TableColumn[Member, Msg]] {
+  return [
+    TableColumn("name", "Name", fn(x: Member) => row([gap(Sm), no_wrap()], [avatar(x.name), text(x.name)]), ByText(fn(x: Member) => x.name)),
+    TableColumn("role", "Role", fn(x: Member) => text(x.role), ByText(fn(x: Member) => x.role)),
+    TableColumn("cards", "Cards", fn(x: Member) => text(str(x.cards)), ByNumber(fn(x: Member) => to_float(x.cards))),
+    TableColumn("status", "Status", fn(x: Member) => badge([], x.tone, x.status), Unsorted),
+  ]
+}
+
+fn account(m: Model) -> Html[Msg] {
+  return panel([], "Profile", "This is how others see you.", [
+    form([on_submit(Save)], [
+      grid([cols(1), cols_at(Tablet, 2)], [
+        field("Name", input([value(m.name), on_input(fn(s) => Name(s))])),
+        if email_problem(m.email) == "" then field_note("Email", input([input_type("email"), value(m.email), on_input(fn(s) => Email(s))]),
+          Hint("We only use it to sign you in."))
+          else field_note("Email", input([input_type("email"), value(m.email), on_input(fn(s) => Email(s))]), Problem(email_problem(m.email))),
+      ]),
+      field("Bio", textarea([value(m.bio), placeholder("A sentence about you"), on_input(fn(s) => Bio(s))], [])),
+      combobox("Time zone", m.zone, zones(), fn(c) => ZoneChanged(c), fn(c) => ZonePicked(c)),
+      field("Role", select_box([], [Choice("admin", "Admin"), Choice("member", "Member"), Choice("viewer", "Viewer")], m.role, fn(v) => Role(v))),
+      row([gap(Sm)], [
+        button([input_type("submit"), busy(m.saving)], [text(if m.saving then "Saving" else "Save changes")]),
+        button([variant(Ghost), input_type("button")], [text("Cancel")]),
+      ]),
+    ]),
+  ], [])
+}
+
+fn zones() -> list[Choice] {
+  return map(["Europe/Amsterdam", "Europe/Brussels", "Europe/London", "Europe/Paris", "America/New_York", "America/Chicago",
+    "America/Los_Angeles", "Asia/Tokyo", "Asia/Singapore", "Australia/Sydney"], fn(z) => Choice(z, z))
+}
+
+fn notifications(m: Model) -> Html[Msg] {
+  return panel([], "Notifications", "Choose what we send you.", [
+    stack([], [
+      toggle("Product emails", "News about features and updates.", m.emails, fn(on) => Emails(on)),
+      separator(),
+      toggle("Weekly summary", "A digest of every board you follow.", m.weekly, fn(on) => Weekly(on)),
+      separator(),
+      checkbox("Also notify me on mobile", m.weekly, fn(on) => Weekly(on)),
+    ]),
+  ], [button([variant(Outline), on_click(Notify("info"))], [text("Send a test")])])
+}
+
+fn billing(m: Model) -> Html[Msg] {
+  return panel([], "Plan", "Change it at any time.", [
+    radio_group("Plan", "plan", [Choice("free", "Free: 3 boards"), Choice("team", "Team: unlimited boards, 9 € per person"),
+      Choice("business", "Business: SSO and audit logs")], m.plan, fn(v) => Plan(v)),
+  ], [button([variant(Destructive), on_click(AskDelete)], [text("Delete workspace")])])
+}
+
+fn theme() -> Theme {
+  return default_theme()
+}
+
+fn app_css() -> str {
+  return r"""
+    .logo { font-size: 1.1rem; } .brand { font-weight: 600; }
+    .topbar { padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
+    .side-nav > button { justify-content: flex-start; width: 100%; }
+  """
+}
+
+fn main() uses io {
+  ui_start(Next(init(), []), update, view, None, html_theme_css() + kit_theme(theme()) + app_css())
+}
+
+// ---- tests
+
+test "saving shows progress, then a toast that goes away" {
+  let first = update(init(), Save)
+  assert first.model.saving
+  let b = update(first.model, Saved)
+  assert not b.model.saving
+  assert len(b.model.toasts) == 1
+  assert len(update(b.model, Dismiss(b.model.toasts[0].id)).model.toasts) == 0
+}
+
+test "the members table sorts and pages" {
+  let by_cards = TableState(sort: "cards", descending: true, page: 0)
+  assert map(table_sort(member_columns(), members(), by_cards), fn(x) => x.cards)[0] == 57
+  let by_name = update(init(), TableChanged(TableState(sort: "name", descending: false, page: 1))).model
+  assert contains(html_render(view(by_name)), "5–6 of 6")
+}
+
+test "the time zone box suggests and picks" {
+  let typed = update(init(), ZoneChanged(ComboState(query: "lon", open: true, active: 0))).model
+  assert contains(html_render(view(typed)), "Europe/London")
+  assert update(typed, ZonePicked(Choice("Asia/Tokyo", "Asia/Tokyo"))).model.zone.query == "Asia/Tokyo"
+}
+
+test "a bad email blocks saving" {
+  assert len(update(init() with (email: "nope"), Save).cmds) == 0
+}

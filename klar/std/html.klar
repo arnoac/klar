@@ -1,0 +1,502 @@
+// std.html: HTML as typed values.
+//
+// A page or component is a value of type Html[Msg], built with one function per element:
+//   div([class("card")], [h2([], [text("Hello")]), button([on_click(Save)], [text("Save")])])
+// Every element function takes a list of attributes and a list of children (void elements such as `input`
+// take only attributes). Text is escaped when rendered, so user data can never inject markup.
+// The same values render to a string on the server (html_render, html_page) and drive std.ui apps in the browser.
+// Msg is the message type of a std.ui app; server-rendered pages that have no events use Html[unit].
+
+enum Html[M] {
+  HtmlNode(tag: str, attrs: list[Attr[M]], children: list[Html[M]]),
+  HtmlText(text: str),
+  HtmlRaw(html: str),
+}
+
+enum Attr[M] {
+  AttrText(name: str, value: str),
+  AttrFlag(name: str, on: bool),
+  AttrOn(event: str, handler: Handler[M]),
+}
+
+enum Handler[M] {
+  HandleMsg(msg: M),
+  HandleText(to_msg: fn(str) -> M),
+  HandleCheck(to_msg: fn(bool) -> M),
+  HandleKey(to_msg: fn(str) -> Option[M]),
+}
+
+// ---- content
+
+// Plain text (escaped when rendered).
+fn text[M](s: str) -> Html[M] {
+  return HtmlText(s)
+}
+
+// Trusted HTML inserted as is. Never pass user input here.
+fn raw_html[M](html: str) -> Html[M] {
+  return HtmlRaw(html)
+}
+
+// Renders nothing; useful in `if c then x else nothing()`.
+fn nothing[M]() -> Html[M] {
+  return HtmlRaw("")
+}
+
+// Any element by tag name, for tags without their own function (e.g. el("main", [], [...])).
+fn el[M](tag: str, attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] {
+  return HtmlNode(tag, attrs, children)
+}
+
+// ---- elements
+
+fn div[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("div", attrs, children) }
+fn span[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("span", attrs, children) }
+fn p[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("p", attrs, children) }
+fn a[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("a", attrs, children) }
+fn h1[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("h1", attrs, children) }
+fn h2[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("h2", attrs, children) }
+fn h3[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("h3", attrs, children) }
+fn h4[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("h4", attrs, children) }
+fn ul[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("ul", attrs, children) }
+fn ol[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("ol", attrs, children) }
+fn li[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("li", attrs, children) }
+fn button[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("button", attrs, children) }
+fn form[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("form", attrs, children) }
+fn label[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("label", attrs, children) }
+fn textarea[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("textarea", attrs, children) }
+fn select[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("select", attrs, children) }
+fn option[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("option", attrs, children) }
+fn section[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("section", attrs, children) }
+fn article[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("article", attrs, children) }
+fn header[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("header", attrs, children) }
+fn footer[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("footer", attrs, children) }
+fn nav[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("nav", attrs, children) }
+fn aside[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("aside", attrs, children) }
+fn table[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("table", attrs, children) }
+fn thead[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("thead", attrs, children) }
+fn tbody[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("tbody", attrs, children) }
+fn tr[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("tr", attrs, children) }
+fn th[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("th", attrs, children) }
+fn td[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("td", attrs, children) }
+fn strong[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("strong", attrs, children) }
+fn em[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("em", attrs, children) }
+fn small[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("small", attrs, children) }
+fn code[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("code", attrs, children) }
+fn pre[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("pre", attrs, children) }
+fn blockquote[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("blockquote", attrs, children) }
+fn figure[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("figure", attrs, children) }
+fn figcaption[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("figcaption", attrs, children) }
+fn details[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("details", attrs, children) }
+fn summary[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("summary", attrs, children) }
+fn fieldset[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("fieldset", attrs, children) }
+fn legend[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("legend", attrs, children) }
+fn dl[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("dl", attrs, children) }
+fn dt[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("dt", attrs, children) }
+fn dd[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("dd", attrs, children) }
+fn img[M](attrs: list[Attr[M]]) -> Html[M] { return HtmlNode("img", attrs, []) }
+fn input[M](attrs: list[Attr[M]]) -> Html[M] { return HtmlNode("input", attrs, []) }
+fn br[M](attrs: list[Attr[M]]) -> Html[M] { return HtmlNode("br", attrs, []) }
+fn hr[M](attrs: list[Attr[M]]) -> Html[M] { return HtmlNode("hr", attrs, []) }
+
+// ---- components (layout elements such as row, stack, grid and container are in std.layout)
+
+// a padded, bordered panel
+fn card[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("div", push(attrs, AttrText("class", "card")), children) }
+
+// ---- attributes
+
+// Any attribute: attr("type", "email"), attr("aria-label", "Close").
+fn attr[M](name: str, val: str) -> Attr[M] { return AttrText(name, val) }
+// A boolean attribute that is present only when `on` is true: flag("required", true).
+fn flag[M](name: str, on: bool) -> Attr[M] { return AttrFlag(name, on) }
+fn class[M](names: str) -> Attr[M] { return AttrText("class", names) }
+// Adds `name` to the classes only when `on` is true.
+fn class_if[M](name: str, on: bool) -> Attr[M] { return AttrText("class", if on then name else "") }
+fn id[M](value: str) -> Attr[M] { return AttrText("id", value) }
+fn href[M](url: str) -> Attr[M] { return AttrText("href", url) }
+fn src[M](url: str) -> Attr[M] { return AttrText("src", url) }
+fn alt[M](description: str) -> Attr[M] { return AttrText("alt", description) }
+// inline CSS; several style attributes on one element are joined
+fn style[M](css: str) -> Attr[M] { return AttrText("style", css) }
+fn value[M](current: str) -> Attr[M] { return AttrText("value", current) }
+fn placeholder[M](hint: str) -> Attr[M] { return AttrText("placeholder", hint) }
+// The `type` attribute of inputs and buttons (`type` is a keyword in Klar).
+fn input_type[M](kind: str) -> Attr[M] { return AttrText("type", kind) }
+fn checked[M](on: bool) -> Attr[M] { return AttrFlag("checked", on) }
+fn disabled[M](on: bool) -> Attr[M] { return AttrFlag("disabled", on) }
+
+// ---- events (used by std.ui apps; ignored when rendering on the server)
+
+fn on_click[M](msg: M) -> Attr[M] { return AttrOn("click", HandleMsg(msg)) }
+// Form submission; the page does not reload.
+fn on_submit[M](msg: M) -> Attr[M] { return AttrOn("submit", HandleMsg(msg)) }
+// Every keystroke in an input or textarea, with the new text.
+fn on_input[M](to_msg: fn(str) -> M) -> Attr[M] { return AttrOn("input", HandleText(to_msg)) }
+// A select or input whose value was committed.
+fn on_change[M](to_msg: fn(str) -> M) -> Attr[M] { return AttrOn("change", HandleText(to_msg)) }
+// A checkbox was ticked or unticked.
+fn on_check[M](to_msg: fn(bool) -> M) -> Attr[M] { return AttrOn("change", HandleCheck(to_msg)) }
+// Drag and drop: an element with on_drag can be picked up; one with on_drop accepts it (and has the class
+// "drag-over" while something is held above it). Keep what is being dragged in the model: on_drag(Dragging(id)),
+// then on_drop(DroppedOn(place)). on_drag_end fires when a drag ends, dropped or not.
+fn on_drag[M](msg: M) -> Attr[M] { return AttrOn("dragstart", HandleMsg(msg)) }
+fn on_drop[M](msg: M) -> Attr[M] { return AttrOn("drop", HandleMsg(msg)) }
+fn on_drag_end[M](msg: M) -> Attr[M] { return AttrOn("dragend", HandleMsg(msg)) }
+// Focus leaving the element (a text box closing its suggestions), and a mouse press that keeps focus where it is.
+fn on_blur[M](msg: M) -> Attr[M] { return AttrOn("blur", HandleMsg(msg)) }
+fn on_press[M](msg: M) -> Attr[M] { return AttrOn("mousedown", HandleMsg(msg)) }
+// A key pressed while this element or something inside it has focus. The function gets the key's name
+// ("Enter", "Escape", "ArrowDown", "a", ...) and returns Some(msg) to handle it (the browser's default
+// action is then skipped) or None to let it through.
+fn on_key[M](to_msg: fn(str) -> Option[M]) -> Attr[M] { return AttrOn("keydown", HandleKey(to_msg)) }
+
+// ---- rendering
+
+// Escapes text for use in HTML content and attribute values.
+fn html_escape(s: str) -> str {
+  return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&#39;")
+}
+
+fn html_render[M](node: Html[M]) -> str {
+  return join(html_parts(node, []), "")
+}
+
+fn html_is_void(tag: str) -> bool {
+  return contains(["img", "input", "br", "hr", "meta", "link", "area", "base", "col", "embed", "source", "track", "wbr"], tag)
+}
+
+fn html_parts[M](node: Html[M], acc: list[str]) -> list[str] {
+  match node {
+    HtmlText(t) => { return push(acc, html_escape(t)) }
+    HtmlRaw(r) => { return push(acc, r) }
+    HtmlNode(tag, attrs, children) => {
+      var out = push(acc, "<" + tag)
+      var classes: list[str] = []
+      var styles: list[str] = []
+      for at in attrs {
+        match at {
+          AttrText(name, v) => {
+            if name == "class" {
+              if v != "" { classes = push(classes, v) }
+            } else if name == "style" {
+              if v != "" { styles = push(styles, v) }
+            } else {
+              out = push(out, " {name}=\"{html_escape(v)}\"")
+            }
+          }
+          AttrFlag(name, on) => { if on { out = push(out, " " + name) } }
+          AttrOn(_, _) => {}
+        }
+      }
+      if len(classes) > 0 { out = push(out, " class=\"{html_escape(join(classes, " "))}\"") }
+      if len(styles) > 0 { out = push(out, " style=\"{html_escape(join(styles, "; "))}\"") }
+      out = push(out, ">")
+      if html_is_void(tag) { return out }
+      for c in children { out = html_parts(c, out) }
+      return push(out, "</{tag}>")
+    }
+  }
+}
+
+// A complete HTML document with the default theme. `css` is added after the theme ("" for none), so it can
+// override theme variables, e.g. ":root { --accent: #c2410c; }".
+fn html_page[M](title: str, css: str, body: Html[M]) -> str {
+  return "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
+    + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+    + "<title>{html_escape(title)}</title>\n<style>\n{html_theme_css()}\n{css}\n</style>\n</head>\n<body>\n"
+    + html_render(body) + "\n</body>\n</html>\n"
+}
+
+// The default theme: slim and neutral, in the style of modern component libraries. It covers typography, form
+// controls, buttons, tables, the std.layout layouts and the std.kit components, light and dark.
+// Everything reads a few CSS variables (design tokens), so a theme is a handful of overrides:
+//   --accent / --accent-fg   buttons, checked controls, focus rings (default: near-black, near-white in dark)
+//   --bg --surface --fg --muted --subtle --border --input   page, cards, text, quiet text, quiet fills, lines
+//   --danger --ok --warn --info   tones; --radius (0.5rem); --font, --mono; --space-xs ... --space-xl
+// std.kit's `kit_theme` writes these overrides from a typed Theme value.
+fn html_theme_css() -> str {
+  return ":root {{ {html_common_tokens()}{html_light_tokens()} }}\n"
+    + "@media (prefers-color-scheme: dark) {{ :root {{ {html_dark_tokens()} }} }}\n"
+    + html_base_css() + html_layout_css() + html_kit_css()
+}
+
+fn html_common_tokens() -> str {
+  return "--radius: 0.5rem; --gap: 1rem; "
+    + "--font: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; "
+    + "--mono: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, Consolas, monospace; "
+    + "--ring: color-mix(in srgb, var(--accent) 22%, transparent); --ring-border: color-mix(in srgb, var(--accent) 55%, var(--border)); "
+}
+
+// The light and dark palettes, also used by kit_theme to force one scheme.
+fn html_light_tokens() -> str {
+  return "--bg: #ffffff; --surface: #ffffff; --fg: #09090b; --muted: #71717a; --subtle: #f4f4f5; --border: #e4e4e7; "
+    + "--input: #e4e4e7; --accent: #18181b; --accent-fg: #fafafa; --danger: #dc2626; --ok: #16a34a; --warn: #d97706; "
+    + "--info: #2563eb; --shadow-sm: 0 1px 2px rgb(0 0 0 / 5%); "
+    + "--shadow: 0 12px 32px -12px rgb(0 0 0 / 22%), 0 2px 6px -2px rgb(0 0 0 / 6%); color-scheme: light; "
+}
+
+fn html_dark_tokens() -> str {
+  return "--bg: #09090b; --surface: #0f0f12; --fg: #fafafa; --muted: #a1a1aa; --subtle: #1f1f23; --border: #27272a; "
+    + "--input: #2f2f35; --accent: #fafafa; --accent-fg: #18181b; --danger: #f05252; --ok: #22c55e; --warn: #f59e0b; "
+    + "--info: #3b82f6; --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%); "
+    + "--shadow: 0 12px 32px -12px rgb(0 0 0 / 70%), 0 2px 6px -2px rgb(0 0 0 / 30%); color-scheme: dark; "
+}
+
+fn html_base_css() -> str {
+  return r"""
+    *, *::before, *::after { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; color-scheme: light dark; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 400 16px/1.5 var(--font);
+      -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+    body > * { max-width: 72rem; margin-left: auto; margin-right: auto; padding-left: 1rem; padding-right: 1rem; }
+    h1, h2, h3, h4 { line-height: 1.2; margin: 1.2em 0 0.5em; font-weight: 600; letter-spacing: -0.02em; }
+    h1 { font-size: 1.875rem; font-weight: 700; } h2 { font-size: 1.5rem; } h3 { font-size: 1.125rem; } h4 { font-size: 1rem; }
+    p { margin: 0 0 1em; } small { font-size: 0.875rem; } small, .muted { color: var(--muted); }
+    a { color: inherit; text-decoration: underline; text-decoration-color: var(--border); text-underline-offset: 3px; }
+    a:hover { text-decoration-color: currentColor; }
+    code, pre, kbd { font-family: var(--mono); font-size: 0.875em; }
+    code { background: var(--subtle); padding: 0.15em 0.35em; border-radius: calc(var(--radius) * 0.6); }
+    pre { background: var(--subtle); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; overflow-x: auto; }
+    pre code { background: none; padding: 0; }
+    img { max-width: 100%; height: auto; border-radius: var(--radius); }
+    hr { border: 0; border-top: 1px solid var(--border); margin: 1.5rem 0; }
+    blockquote { margin: 1rem 0; padding: 0.25rem 1rem; border-left: 2px solid var(--border); color: var(--muted); }
+    header, footer { padding-top: 1rem; padding-bottom: 1rem; }
+    nav { display: flex; gap: 1.25rem; align-items: center; flex-wrap: wrap; font-size: 0.875rem; }
+    nav a { text-decoration: none; color: var(--muted); font-weight: 500; } nav a:hover, nav a[aria-current] { color: var(--fg); }
+    ul, ol { padding-left: 1.4rem; }
+    ::selection { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    th, td { text-align: left; padding: 0.625rem 0.75rem; border-bottom: 1px solid var(--border); }
+    th { font-weight: 500; color: var(--muted); }
+    tbody tr:hover { background: color-mix(in srgb, var(--subtle) 60%, transparent); }
+    button, .button { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; white-space: nowrap;
+      height: 2.25rem; padding: 0 1rem; font: inherit; font-size: 0.875rem; font-weight: 500; line-height: 1;
+      border-radius: var(--radius); cursor: pointer; text-decoration: none; user-select: none;
+      border: 1px solid transparent; background: var(--accent); color: var(--accent-fg); box-shadow: var(--shadow-sm);
+      transition: background-color 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s, opacity 0.15s; }
+    button:hover, .button:hover { background: color-mix(in srgb, var(--accent) 88%, var(--bg)); }
+    button:disabled, .button[aria-disabled=true] { opacity: 0.5; pointer-events: none; }
+    button:focus-visible, .button:focus-visible, summary:focus-visible, a:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ring); }
+    .v-secondary { background: var(--subtle); color: var(--fg); box-shadow: none; }
+    .v-secondary:hover { background: color-mix(in srgb, var(--subtle) 80%, var(--fg) 6%); }
+    .v-outline, button.secondary, .button.secondary { background: var(--bg); color: var(--fg); border-color: var(--input); }
+    .v-outline:hover, button.secondary:hover, .button.secondary:hover { background: var(--subtle); }
+    .v-ghost, button.ghost { background: transparent; color: var(--fg); box-shadow: none; }
+    .v-ghost:hover, button.ghost:hover { background: var(--subtle); }
+    .v-destructive, button.danger { background: var(--danger); color: #fff; }
+    .v-destructive:hover, button.danger:hover { background: color-mix(in srgb, var(--danger) 88%, #000); }
+    .v-link { background: transparent; color: var(--fg); box-shadow: none; padding: 0; height: auto;
+      text-decoration: underline; text-decoration-color: var(--border); text-underline-offset: 3px; }
+    .v-link:hover { background: transparent; text-decoration-color: currentColor; }
+    .s-small { height: 2rem; padding: 0 0.75rem; font-size: 0.8125rem; } .s-large { height: 2.75rem; padding: 0 1.5rem; font-size: 1rem; }
+    .icon-button { width: 2.25rem; padding: 0; } .icon-button.s-small { width: 2rem; } .icon-button.s-large { width: 2.75rem; }
+    [aria-busy=true]::before { content: ""; width: 1em; height: 1em; border-radius: 50%; border: 2px solid currentColor;
+      border-right-color: transparent; animation: k-spin 0.7s linear infinite; }
+    label { display: block; font-size: 0.875rem; font-weight: 500; }
+    input, textarea, select { display: block; font: inherit; font-size: 0.875rem; color: inherit; width: 100%;
+      height: 2.25rem; padding: 0 0.75rem; background: transparent; border: 1px solid var(--input);
+      border-radius: var(--radius); box-shadow: var(--shadow-sm); transition: border-color 0.15s, box-shadow 0.15s; }
+    textarea { height: auto; min-height: 5rem; padding: 0.5rem 0.75rem; resize: vertical; line-height: 1.5; }
+    select { appearance: none; padding-right: 2rem; background: no-repeat right 0.6rem center / 0.9rem
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
+    select option { background: var(--bg); color: var(--fg); }
+    input::placeholder, textarea::placeholder { color: var(--muted); }
+    input:focus-visible, textarea:focus-visible, select:focus-visible { outline: none; border-color: var(--ring-border); box-shadow: 0 0 0 3px var(--ring); }
+    input:disabled, textarea:disabled, select:disabled { opacity: 0.5; cursor: not-allowed; }
+    [aria-invalid=true] { border-color: var(--danger) !important; }
+    [aria-invalid=true]:focus-visible { box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 25%, transparent) !important; }
+    input[type=checkbox], input[type=radio] { appearance: none; display: inline-grid; place-content: center; flex: none;
+      width: 1rem; height: 1rem; padding: 0; margin: 0; border: 1px solid var(--input); border-radius: 0.25rem;
+      background: transparent; cursor: pointer; }
+    input[type=radio] { border-radius: 50%; }
+    input[type=checkbox]:checked, input[type=radio]:checked { background: var(--accent); border-color: var(--accent); }
+    input[type=checkbox]:checked::after { content: ""; width: 0.55rem; height: 0.3rem; margin-top: -0.1rem;
+      border: solid var(--accent-fg); border-width: 0 0 2px 2px; transform: rotate(-45deg); }
+    input[type=radio]:checked::after { content: ""; width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--accent-fg); }
+    input[role=switch] { width: 2.25rem; height: 1.25rem; border-radius: 999px; border: 0; background: var(--input);
+      box-shadow: inset 0 0 0 1px rgb(0 0 0 / 4%); transition: background-color 0.15s; place-content: center start; padding: 0 2px; }
+    input[role=switch]::after { content: ""; width: 1rem; height: 1rem; border-radius: 50%; background: var(--bg);
+      box-shadow: var(--shadow-sm); transition: transform 0.15s; border: 0; margin: 0; transform: none; }
+    input[role=switch]:checked { background: var(--accent); }
+    input[role=switch]:checked::after { transform: translateX(1rem); background: var(--accent-fg); width: 1rem; height: 1rem; border: 0; }
+    input[type=range] { height: auto; padding: 0; border: 0; box-shadow: none; accent-color: var(--accent); }
+    form { display: flex; flex-direction: column; gap: var(--gap); }
+    form > button { align-self: flex-start; } form > :first-child { margin-top: 0; }
+    fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; margin: 0; }
+    legend { font-size: 0.875rem; font-weight: 500; padding: 0 0.25rem; }
+    """
+}
+
+fn html_layout_css() -> str {
+  return r"""
+    :root { --space-xs: 0.25rem; --space-sm: 0.5rem; --space-md: 1rem; --space-lg: 1.5rem; --space-xl: 2.5rem; }
+    @property --cols { syntax: "*"; inherits: false; }
+    @property --cols-tablet { syntax: "*"; inherits: false; }
+    @property --cols-laptop { syntax: "*"; inherits: false; }
+    @property --cols-desktop { syntax: "*"; inherits: false; }
+    @property --span { syntax: "*"; inherits: false; }
+    @property --span-tablet { syntax: "*"; inherits: false; }
+    @property --span-laptop { syntax: "*"; inherits: false; }
+    @property --span-desktop { syntax: "*"; inherits: false; }
+    .container { width: 100%; max-width: 48rem; margin: 0 auto; padding: 1rem; display: flex; flex-direction: column; gap: var(--gap); }
+    .container > h1, .container > h2, .container > .spread > h1 { margin: 0.5rem 0 0; }
+    .row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap); }
+    .row > input, .row > select { flex: 1 1 12rem; width: auto; }
+    form.row { flex-direction: row; }
+    .stack { display: flex; flex-direction: column; gap: var(--gap); }
+    .spread { display: flex; align-items: center; justify-content: space-between; gap: var(--gap); flex-wrap: wrap; }
+    .center-box { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: var(--gap); min-height: 8rem; }
+    .spacer { flex: 1 1 auto; }
+    .grid { display: grid; gap: var(--gap); grid-template-columns: var(--cols, repeat(auto-fill, minmax(min(16rem, 100%), 1fr))); }
+    .grid > * { grid-column: var(--span, auto); min-width: 0; }
+    .sidebar { display: grid; gap: var(--gap); grid-template-columns: minmax(0, 1fr); align-items: start; }
+    .k-gap-0 { gap: 0; } .k-gap-xs { gap: var(--space-xs); } .k-gap-sm { gap: var(--space-sm); } .k-gap-md { gap: var(--space-md); } .k-gap-lg { gap: var(--space-lg); } .k-gap-xl { gap: var(--space-xl); }
+    .k-pad-0 { padding: 0; } .k-pad-xs { padding: var(--space-xs); } .k-pad-sm { padding: var(--space-sm); } .k-pad-md { padding: var(--space-md); } .k-pad-lg { padding: var(--space-lg); } .k-pad-xl { padding: var(--space-xl); }
+    .k-padx-0 { padding-left: 0; padding-right: 0; } .k-padx-xs { padding-left: var(--space-xs); padding-right: var(--space-xs); } .k-padx-sm { padding-left: var(--space-sm); padding-right: var(--space-sm); } .k-padx-md { padding-left: var(--space-md); padding-right: var(--space-md); } .k-padx-lg { padding-left: var(--space-lg); padding-right: var(--space-lg); } .k-padx-xl { padding-left: var(--space-xl); padding-right: var(--space-xl); }
+    .k-pady-0 { padding-top: 0; padding-bottom: 0; } .k-pady-xs { padding-top: var(--space-xs); padding-bottom: var(--space-xs); } .k-pady-sm { padding-top: var(--space-sm); padding-bottom: var(--space-sm); } .k-pady-md { padding-top: var(--space-md); padding-bottom: var(--space-md); } .k-pady-lg { padding-top: var(--space-lg); padding-bottom: var(--space-lg); } .k-pady-xl { padding-top: var(--space-xl); padding-bottom: var(--space-xl); }
+    .k-align-start { align-items: flex-start; } .k-align-center { align-items: center; } .k-align-end { align-items: flex-end; } .k-align-stretch { align-items: stretch; }
+    .k-justify-start { justify-content: flex-start; justify-items: flex-start; } .k-justify-center { justify-content: center; justify-items: center; } .k-justify-end { justify-content: flex-end; justify-items: flex-end; } .k-justify-between { justify-content: space-between; justify-items: stretch; } .k-justify-around { justify-content: space-around; justify-items: stretch; }
+    .k-w-narrow { max-width: 30rem; } .k-w-readable { max-width: 48rem; } .k-w-wide { max-width: 72rem; } .k-w-full { max-width: none; }
+    .k-centered { width: 100%; margin-left: auto; margin-right: auto; }
+    .k-grow { flex: 1 1 0; min-width: 0; } .k-nowrap { flex-wrap: nowrap; } .k-scroll-y { overflow-y: auto; min-height: 0; } .k-scroll-x { overflow-x: auto; min-width: 0; }
+    .k-hide-from { display: none !important; }
+    @media (max-width: 639.98px) { .k-show-from-tablet { display: none !important; } }
+    @media (min-width: 640px) {
+      .sidebar { grid-template-columns: var(--side, 16rem) minmax(0, 1fr); }
+      .grid { grid-template-columns: var(--cols-tablet, var(--cols, repeat(auto-fill, minmax(min(16rem, 100%), 1fr)))); }
+      .grid > * { grid-column: var(--span-tablet, var(--span, auto)); }
+      .k-row-tablet { flex-direction: row; }
+      .k-hide-from-tablet { display: none !important; }
+    }
+    @media (max-width: 1023.98px) { .k-show-from-laptop { display: none !important; } }
+    @media (min-width: 1024px) {
+      .grid { grid-template-columns: var(--cols-laptop, var(--cols-tablet, var(--cols, repeat(auto-fill, minmax(min(16rem, 100%), 1fr))))); }
+      .grid > * { grid-column: var(--span-laptop, var(--span-tablet, var(--span, auto))); }
+      .k-row-laptop { flex-direction: row; }
+      .k-hide-from-laptop { display: none !important; }
+    }
+    @media (max-width: 1279.98px) { .k-show-from-desktop { display: none !important; } }
+    @media (min-width: 1280px) {
+      .grid { grid-template-columns: var(--cols-desktop, var(--cols-laptop, var(--cols-tablet, var(--cols, repeat(auto-fill, minmax(min(16rem, 100%), 1fr)))))); }
+      .grid > * { grid-column: var(--span-desktop, var(--span-laptop, var(--span-tablet, var(--span, auto)))); }
+      .k-row-desktop { flex-direction: row; }
+      .k-hide-from-desktop { display: none !important; }
+    }
+    """
+}
+
+fn html_kit_css() -> str {
+  return r"""
+    .card { background: var(--surface); color: var(--fg); border: 1px solid var(--border);
+      border-radius: calc(var(--radius) * 1.5); padding: 1.5rem; box-shadow: var(--shadow-sm); }
+    .card > :first-child { margin-top: 0; } .card > :last-child { margin-bottom: 0; }
+    .panel { display: flex; flex-direction: column; gap: 1.25rem; }
+    .panel-head { display: flex; flex-direction: column; gap: 0.25rem; }
+    .panel-head h3 { margin: 0; font-size: 1rem; } .panel-head p { margin: 0; color: var(--muted); font-size: 0.875rem; }
+    .panel-foot { display: flex; gap: 0.5rem; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+    .badge { display: inline-flex; align-items: center; gap: 0.25rem; height: 1.375rem; padding: 0 0.5rem;
+      font-size: 0.75rem; font-weight: 500; white-space: nowrap; border-radius: calc(var(--radius) * 0.75);
+      border: 1px solid var(--border); color: var(--fg); background: var(--bg); }
+    .t-neutral { --tone: var(--muted); } .t-info { --tone: var(--info); } .t-success { --tone: var(--ok); }
+    .t-warning { --tone: var(--warn); } .t-danger { --tone: var(--danger); }
+    .badge:not(.t-neutral) { border-color: color-mix(in srgb, var(--tone) 30%, transparent);
+      background: color-mix(in srgb, var(--tone) 10%, transparent); color: color-mix(in srgb, var(--tone) 80%, var(--fg)); }
+    .alert { display: grid; grid-template-columns: auto 1fr auto; gap: 0.25rem 0.75rem; align-items: start;
+      padding: 0.875rem 1rem; font-size: 0.875rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+    .alert::before { content: ""; width: 0.5rem; height: 0.5rem; margin-top: 0.4rem; border-radius: 50%; background: var(--tone); }
+    .alert:not(.t-neutral) { border-color: color-mix(in srgb, var(--tone) 35%, var(--border));
+      background: color-mix(in srgb, var(--tone) 6%, var(--surface)); }
+    .alert-title { font-weight: 500; } .alert-body { grid-column: 2; color: var(--muted); } .alert-body > :last-child { margin-bottom: 0; }
+    .alert > .dismiss { grid-column: 3; grid-row: 1; margin: -0.375rem -0.5rem 0 0; }
+    .field { display: flex; flex-direction: column; gap: 0.5rem; }
+    .field-note { margin: 0; font-size: 0.8125rem; color: var(--muted); } .field-note.problem { color: var(--danger); }
+    .check { display: flex; align-items: center; gap: 0.5rem; font-weight: 500; cursor: pointer; }
+    .check-text { display: flex; flex-direction: column; } .check-text small { font-weight: 400; }
+    .choices { display: flex; flex-direction: column; gap: 0.625rem; border: 0; padding: 0; }
+    .choices > legend { padding: 0; margin-bottom: 0.625rem; }
+    .tabs { display: flex; flex-direction: column; gap: 1rem; }
+    .tab-list { display: inline-flex; align-self: flex-start; max-width: 100%; overflow-x: auto; gap: 0.25rem; padding: 0.25rem;
+      background: var(--subtle); border-radius: var(--radius); }
+    .tab-list > button { height: 1.875rem; padding: 0 0.75rem; background: transparent; color: var(--muted); box-shadow: none;
+      border-radius: calc(var(--radius) * 0.75); }
+    .tab-list > button:hover { color: var(--fg); background: transparent; }
+    .tab-list > button[aria-selected=true] { background: var(--bg); color: var(--fg); box-shadow: var(--shadow-sm); }
+    .menu { position: relative; display: inline-block; }
+    .menu > summary { list-style: none; } .menu > summary::-webkit-details-marker { display: none; }
+    .menu-items { position: absolute; z-index: 40; top: calc(100% + 0.375rem); min-width: 11rem; padding: 0.25rem;
+      display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); box-shadow: var(--shadow); animation: k-in 0.12s ease-out; }
+    .menu.end > .menu-items { right: 0; }
+    .menu-items > button, .menu-items > a { justify-content: flex-start; height: 2rem; padding: 0 0.5rem; width: 100%;
+      background: transparent; color: var(--fg); box-shadow: none; font-weight: 400; text-decoration: none;
+      border-radius: calc(var(--radius) * 0.6); display: flex; align-items: center; font-size: 0.875rem; }
+    .menu-items > button:hover, .menu-items > a:hover, .menu-items > :focus-visible { background: var(--subtle); box-shadow: none; }
+    .menu-items > .v-destructive { color: var(--danger); background: transparent; }
+    .menu-items > hr { margin: 0.25rem -0.25rem; }
+    .dialog-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 1rem;
+      max-width: none; background: rgb(0 0 0 / 50%); animation: k-fade 0.15s ease-out; }
+    .dialog { width: 100%; max-width: 32rem; max-height: calc(100vh - 2rem); overflow-y: auto; animation: k-in 0.15s ease-out;
+      box-shadow: var(--shadow); }
+    .dialog .panel-head h3 { font-size: 1.125rem; }
+    .toasts { position: fixed; z-index: 60; right: 1rem; bottom: 1rem; left: auto; display: flex; flex-direction: column;
+      gap: 0.5rem; width: min(24rem, calc(100vw - 2rem)); padding: 0; margin: 0; max-width: none; }
+    .toasts > .alert { box-shadow: var(--shadow); animation: k-in 0.2s ease-out; background: var(--surface); }
+    .avatar { display: inline-grid; place-items: center; flex: none; width: 2rem; height: 2rem; border-radius: 50%;
+      font-size: 0.75rem; font-weight: 600; background: var(--subtle); color: var(--fg); text-transform: uppercase; }
+    .progress { width: 100%; height: 0.5rem; border-radius: 999px; background: var(--subtle); overflow: hidden; }
+    .progress > div { height: 100%; background: var(--accent); border-radius: inherit; transition: width 0.3s; }
+    .spinner { display: inline-block; width: 1rem; height: 1rem; border-radius: 50%; border: 2px solid var(--border);
+      border-top-color: var(--fg); animation: k-spin 0.7s linear infinite; }
+    .skeleton { height: 1rem; border-radius: calc(var(--radius) * 0.6); background: var(--subtle); animation: k-pulse 1.6s ease-in-out infinite; }
+    .separator { border: 0; border-top: 1px solid var(--border); margin: 0; width: 100%; }
+    kbd { display: inline-flex; align-items: center; height: 1.25rem; padding: 0 0.375rem; font-size: 0.75rem;
+      border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 0.3rem; background: var(--subtle); color: var(--muted); }
+    .empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 0.5rem; padding: 2.5rem 1rem;
+      border: 1px dashed var(--border); border-radius: calc(var(--radius) * 1.5); }
+    .empty h3 { margin: 0; font-size: 1rem; } .empty p { margin: 0 0 0.5rem; color: var(--muted); font-size: 0.875rem; max-width: 28rem; }
+    .stat { display: flex; flex-direction: column; gap: 0.25rem; }
+    .stat-label { font-size: 0.875rem; color: var(--muted); } .stat-value { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; }
+    .stat-note { font-size: 0.75rem; color: var(--muted); }
+    .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem; list-style: none; padding: 0; margin: 0;
+      font-size: 0.875rem; color: var(--muted); }
+    .crumbs li + li::before { content: "/"; margin-right: 0.375rem; color: var(--border); }
+    .crumbs a { color: var(--muted); text-decoration: none; } .crumbs a:hover { color: var(--fg); }
+    .crumbs [aria-current] { color: var(--fg); }
+    [data-tip] { position: relative; }
+    [data-tip]:hover::after, [data-tip]:focus-visible::after { content: attr(data-tip); position: absolute; z-index: 70;
+      bottom: calc(100% + 0.375rem); left: 50%; transform: translateX(-50%); padding: 0.25rem 0.5rem; white-space: nowrap;
+      font-size: 0.75rem; font-weight: 400; line-height: 1.4; border-radius: calc(var(--radius) * 0.75);
+      background: var(--fg); color: var(--bg); pointer-events: none; animation: k-fade 0.1s; }
+    .table-wrap { overflow-x: auto; }
+    th > .sort { height: auto; padding: 0; margin: 0; gap: 0.375rem; background: none; box-shadow: none; color: inherit; font-weight: inherit; }
+    th > .sort:hover { color: var(--fg); background: none; }
+    .sort-mark { font-size: 0.75rem; opacity: 0.5; } th[aria-sort=ascending] .sort-mark, th[aria-sort=descending] .sort-mark { opacity: 1; }
+    th[aria-sort=ascending], th[aria-sort=descending] { color: var(--fg); }
+    .table-empty { text-align: center; color: var(--muted); padding: 2rem 0.75rem; }
+    .pager { display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; padding-top: 0.75rem; font-size: 0.875rem; }
+    .pager > span { margin-right: auto; }
+    .combo { position: relative; }
+    .combo-list { position: absolute; z-index: 40; top: 100%; left: 0; right: 0; margin: 0.25rem 0 0; padding: 0.25rem; list-style: none;
+      max-height: 16rem; overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      box-shadow: var(--shadow); animation: k-in 0.1s ease-out; }
+    .combo-list > li { padding: 0.375rem 0.5rem; font-size: 0.875rem; border-radius: calc(var(--radius) * 0.6); cursor: pointer; }
+    .combo-list > li:hover, .combo-list > li[aria-selected=true] { background: var(--subtle); }
+    [draggable=true] { cursor: grab; } [draggable=true]:active { cursor: grabbing; }
+    .drag-over { outline: 2px dashed var(--ring-border); outline-offset: 2px; }
+    .list { list-style: none; padding: 0; margin: 0; }
+    .list > li { display: flex; align-items: center; gap: 0.75rem; padding: 0.625rem 0; border-bottom: 1px solid var(--border); }
+    .list > li:last-child { border-bottom: 0; }
+    .grow { flex: 1 1 auto; min-width: 0; }
+    .done { text-decoration: line-through; color: var(--muted); }
+    .error { color: var(--danger); } .success { color: var(--ok); }
+    .center { text-align: center; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    @keyframes k-spin { to { transform: rotate(360deg); } }
+    @keyframes k-pulse { 50% { opacity: 0.5; } }
+    @keyframes k-fade { from { opacity: 0; } }
+    @keyframes k-in { from { opacity: 0; transform: translateY(4px) scale(0.98); } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
+    """
+}

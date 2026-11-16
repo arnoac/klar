@@ -1,0 +1,536 @@
+// std.kit: UI components on top of std.html and std.layout. Slim, neutral and easy to restyle.
+//
+//   button([variant(Outline), size(Small), on_click(Cancel)], [text("Cancel")])
+//   field("Email", input([value(m.email), on_input(fn(s) => EmailTyped(s))]))
+//   tabs([], m.tab, [Tab("overview", "Overview", overview(m)), Tab("billing", "Billing", billing(m))], fn(t) => TabPicked(t))
+//   dialog(m.confirming, "Delete board?", "This cannot be undone.", CloseDialog, [], [button(...), button(...)])
+//
+// Rules the components follow:
+//   * State lives in your model. A dialog is open because you pass `true`; a tab is current because you pass its id.
+//     Components hold nothing, so update and view stay plain functions you can test.
+//   * Accessibility is part of the signature: an icon button needs a label, a field needs one, a progress bar
+//     needs one. Roles, aria-* attributes, focus rings and keyboard handling are added for you.
+//   * Looks come from the theme's CSS variables. Change them all at once with kit_theme(default_theme() with (...)).
+//   * Options (variant, size, busy, tooltip, tone) are attributes: they work on plain std.html elements too.
+
+use std.html { Html, Attr, HtmlNode, HtmlText, AttrText, AttrFlag, AttrOn, HandleMsg, HandleCheck, HandleText, HandleKey,
+  html_light_tokens, html_dark_tokens }
+
+// How a button looks. Primary is the default for a plain `button`.
+enum Variant { Primary, Secondary, Outline, Ghost, Destructive, Link }
+
+// Button sizes.
+enum Size { Small, Regular, Large }
+
+// The colour meaning of badges, alerts and toasts.
+enum Tone { Neutral, Info, Success, Warning, Danger }
+
+// Text under a field: a hint, or a problem that marks the control invalid.
+enum Note { Hint(text: str), Problem(text: str) }
+
+// One option of a radio group or a select box.
+struct Choice { value: str, label: str }
+
+// One tab: its id (what `current` and the pick message use), its label, and what it shows.
+struct Tab[M] { id: str, label: str, body: Html[M] }
+
+// A toast message. Keep a list of them in the model; remove one when `dismiss(id)` arrives
+// (or after a while, with ui_after).
+struct Toast { id: int, tone: Tone, title: str, text: str }
+
+// One step of a breadcrumb trail. The last crumb is the current page; its href is not used.
+struct Crumb { label: str, href: str }
+
+// ---- theme
+
+// Corner rounding for everything: Square 0, Soft 0.25rem, Rounded 0.5rem (default), Round 0.875rem.
+enum Corners { Square, Soft, Rounded, Round }
+
+// Light and dark follow the system unless a theme forces one.
+enum Scheme { Auto, Light, Dark }
+
+// A theme: the accent colour (a "#rrggbb" or "#rgb" hex; "" keeps the neutral default), corner rounding,
+// the colour scheme and the font ("" keeps the system font stack). Text on the accent is chosen for contrast.
+struct Theme { accent: str, corners: Corners, scheme: Scheme, font: str }
+
+fn default_theme() -> Theme { return Theme(accent: "", corners: Rounded, scheme: Auto, font: "") }
+
+// CSS that applies a theme on top of html_theme_css. Pass it as the css of html_page, web_page or ui_start:
+//   ui_start(init(), update, view, None, html_theme_css() + kit_theme(default_theme() with (accent: "#2563eb")))
+fn kit_theme(t: Theme) -> str {
+  var root = "--radius: {corner_size(t.corners)}; "
+  if t.font != "" { root = root + "--font: {t.font}; " }
+  var accent = ""
+  if t.accent != "" {
+    let fg = if is_light(t.accent) then "#09090b" else "#fafafa"
+    accent = "--accent: {t.accent}; --accent-fg: {fg}; "
+  }
+  return match t.scheme {
+    Auto => ":root {{ {root}{accent}}}\n@media (prefers-color-scheme: dark) {{ :root {{ {accent}}} }}\n",
+    Light => ":root {{ {root}{html_light_tokens()}{accent}}}\n"
+      + "@media (prefers-color-scheme: dark) {{ :root {{ {html_light_tokens()}{accent}}} }}\n",
+    Dark => ":root {{ {root}{html_dark_tokens()}{accent}}}\n"
+      + "@media (prefers-color-scheme: dark) {{ :root {{ {html_dark_tokens()}{accent}}} }}\n",
+  }
+}
+
+// ---- options (attributes)
+
+fn variant[M](v: Variant) -> Attr[M] { return AttrText("class", variant_class(v)) }
+// Smaller or larger buttons: size(Small), size(Large). Regular is the default.
+fn size[M](s: Size) -> Attr[M] {
+  return AttrText("class", match s { Small => "s-small", Regular => "", Large => "s-large" })
+}
+// A button that is working: shows a spinner and ignores clicks while `on` is true.
+fn busy[M](on: bool) -> Attr[M] { return AttrText("aria-busy", if on then "true" else "false") }
+// A short label shown on hover and keyboard focus.
+fn tooltip[M](label: str) -> Attr[M] { return AttrText("data-tip", label) }
+fn tone[M](t: Tone) -> Attr[M] { return AttrText("class", tone_class(t)) }
+
+// ---- actions
+
+// A square button showing only an icon or symbol. The label is read by screen readers and shown as a tooltip.
+// Ghost unless you pass a variant.
+fn icon_button[M](attrs: list[Attr[M]], label: str, icon: str) -> Html[M] {
+  let look: list[Attr[M]] = if has_class_prefix(attrs, "v-") then [] else [AttrText("class", "v-ghost")]
+  return HtmlNode("button", look + attrs + [AttrText("class", "icon-button"), AttrText("aria-label", label),
+    AttrText("data-tip", label), AttrText("type", "button")], [HtmlText(icon)])
+}
+
+// A dropdown menu. `trigger` is what the button shows; items are menu_item, menu_link or separator().
+// It opens on click and closes on a pick, a click elsewhere or Escape. Add class("end") to align it right.
+fn menu[M](attrs: list[Attr[M]], trigger: list[Html[M]], items: list[Html[M]]) -> Html[M] {
+  return HtmlNode("details", push(attrs, AttrText("class", "menu")), [
+    HtmlNode("summary", [AttrText("class", "button v-outline"), AttrText("aria-haspopup", "menu")], trigger),
+    HtmlNode("div", [AttrText("class", "menu-items"), AttrText("role", "menu")], items),
+  ])
+}
+
+fn menu_item[M](label: str, msg: M) -> Html[M] {
+  return HtmlNode("button", [AttrText("role", "menuitem"), AttrText("type", "button"), AttrOn("click", HandleMsg(msg))],
+    [HtmlText(label)])
+}
+
+// A menu item that deletes or otherwise destroys something: shown in the danger colour.
+fn menu_danger[M](label: str, msg: M) -> Html[M] {
+  return HtmlNode("button", [AttrText("role", "menuitem"), AttrText("type", "button"), AttrText("class", "v-destructive"),
+    AttrOn("click", HandleMsg(msg))], [HtmlText(label)])
+}
+
+fn menu_link[M](label: str, url: str) -> Html[M] {
+  return HtmlNode("a", [AttrText("role", "menuitem"), AttrText("href", url)], [HtmlText(label)])
+}
+
+// ---- forms
+
+// A labelled control: field("Name", input([...])). The control gets an id from the label ("field-name") unless
+// it has its own, and the label points at it.
+fn field[M](label: str, control: Html[M]) -> Html[M] {
+  return field_parts(label, control, [])
+}
+
+// A field with a hint or a problem underneath. A problem marks the control invalid for screen readers too.
+fn field_note[M](label: str, control: Html[M], note: Note) -> Html[M] {
+  let fid = unwrap_or(own_id(control), field_id(label))
+  let extra: list[Attr[M]] = match note {
+    Hint(_) => [AttrText("aria-describedby", fid + "-note")],
+    Problem(_) => [AttrText("aria-describedby", fid + "-note"), AttrText("aria-invalid", "true")],
+  }
+  let shown: Html[M] = match note {
+    Hint(t) => HtmlNode("p", [AttrText("class", "field-note"), AttrText("id", fid + "-note")], [HtmlText(t)]),
+    Problem(t) => HtmlNode("p", [AttrText("class", "field-note problem"), AttrText("id", fid + "-note"),
+      AttrText("role", "alert")], [HtmlText(t)]),
+  }
+  return field_parts(label, with_attrs(control, extra), [shown])
+}
+
+// A select box for a field: field("Assignee", select_box([], choices, m.assignee, fn(v) => Assigned(v))).
+fn select_box[M](attrs: list[Attr[M]], options: list[Choice], current: str, pick: fn(str) -> M) -> Html[M] {
+  return HtmlNode("select", push(attrs, AttrOn("change", HandleText(pick))), map(options, fn(c) => HtmlNode("option",
+    [AttrText("value", c.value), AttrFlag("selected", c.value == current)], [HtmlText(c.label)])))
+}
+
+// A checkbox with its label.
+fn checkbox[M](label: str, on: bool, changed: fn(bool) -> M) -> Html[M] {
+  return check_parts("checkbox", label, "", on, changed)
+}
+
+// An on/off switch with its label and an optional description ("" for none).
+fn toggle[M](label: str, description: str, on: bool, changed: fn(bool) -> M) -> Html[M] {
+  return check_parts("switch", label, description, on, changed)
+}
+
+// A group of radio buttons under a legend. `name` groups them (unique per page).
+fn radio_group[M](legend_text: str, name: str, options: list[Choice], current: str, pick: fn(str) -> M) -> Html[M] {
+  let legend = HtmlNode("legend", [], [HtmlText(legend_text)])
+  return HtmlNode("fieldset", [AttrText("class", "choices")], [legend] + map(options, fn(c) => radio(name, c, current, pick)))
+}
+
+fn radio[M](name: str, c: Choice, current: str, pick: fn(str) -> M) -> Html[M] {
+  let dot = HtmlNode("input", [AttrText("type", "radio"), AttrText("name", name), AttrText("value", c.value),
+    AttrFlag("checked", c.value == current), AttrOn("change", HandleText(pick))], [])
+  return HtmlNode("label", [AttrText("class", "check")], [dot, HtmlText(c.label)])
+}
+
+// ---- feedback
+
+fn badge[M](attrs: list[Attr[M]], t: Tone, label: str) -> Html[M] {
+  return HtmlNode("span", attrs + [AttrText("class", "badge " + tone_class(t))], [HtmlText(label)])
+}
+
+// A message box. Danger and Warning interrupt screen readers; the others are announced politely.
+fn alert[M](attrs: list[Attr[M]], t: Tone, title: str, body: list[Html[M]]) -> Html[M] {
+  return HtmlNode("div", attrs + alert_attrs(t), alert_parts(title, body))
+}
+
+// An alert with a close button that sends `dismiss`.
+fn alert_dismissable[M](attrs: list[Attr[M]], t: Tone, title: str, body: list[Html[M]], dismiss: M) -> Html[M] {
+  let close = HtmlNode("button", [AttrText("class", "v-ghost s-small icon-button dismiss"), AttrText("type", "button"),
+    AttrText("aria-label", "Dismiss"), AttrOn("click", HandleMsg(dismiss))], [HtmlText("×")])
+  return HtmlNode("div", attrs + alert_attrs(t), push(alert_parts(title, body), close))
+}
+
+// The toast stack, in the bottom right corner. Put it once at the end of the view.
+fn toasts[M](items: list[Toast], dismiss: fn(int) -> M) -> Html[M] {
+  return HtmlNode("div", [AttrText("class", "toasts"), AttrText("aria-live", "polite")],
+    map(items, fn(t) => alert_dismissable([], t.tone, t.title, if t.text == "" then [] else [HtmlText(t.text)], dismiss(t.id))))
+}
+
+// A determinate progress bar, 0 to 100.
+fn progress_bar[M](label: str, percent: int) -> Html[M] {
+  let p = if percent < 0 then 0 else if percent > 100 then 100 else percent
+  return HtmlNode("div", [AttrText("class", "progress"), AttrText("role", "progressbar"), AttrText("aria-label", label),
+    AttrText("aria-valuemin", "0"), AttrText("aria-valuemax", "100"), AttrText("aria-valuenow", str(p))],
+    [HtmlNode("div", [AttrText("style", "width: {p}%")], [])])
+}
+
+// A small spinning indicator; the label is read by screen readers ("Loading boards").
+fn spinner[M](label: str) -> Html[M] {
+  return HtmlNode("span", [AttrText("class", "spinner"), AttrText("role", "status"), AttrText("aria-label", label)], [])
+}
+
+// A grey placeholder bar while content loads. Size it with options: skeleton([style("width: 60%")]).
+fn skeleton[M](attrs: list[Attr[M]]) -> Html[M] {
+  return HtmlNode("div", attrs + [AttrText("class", "skeleton"), AttrText("aria-hidden", "true")], [])
+}
+
+// What to show where a list would be when it is empty: a title, one sentence, and optional actions.
+fn empty_state[M](title: str, description: str, actions: list[Html[M]]) -> Html[M] {
+  return HtmlNode("div", [AttrText("class", "empty")], [
+    HtmlNode("h3", [], [HtmlText(title)]),
+    HtmlNode("p", [], [HtmlText(description)]),
+  ] + actions)
+}
+
+// ---- overlays
+
+// A modal dialog, shown while `open` is true. `close` is sent on Escape, a click outside and the close button.
+// `actions` sit at the bottom right (put the main action last).
+fn dialog[M](open: bool, title: str, description: str, close: M, body: list[Html[M]], actions: list[Html[M]]) -> Html[M] {
+  if not open { return HtmlText("") }
+  let head = HtmlNode("div", [AttrText("class", "panel-head")], [
+    HtmlNode("h3", [AttrText("id", "dialog-title")], [HtmlText(title)]),
+    if description == "" then HtmlText("") else HtmlNode("p", [AttrText("id", "dialog-description")], [HtmlText(description)]),
+  ])
+  let foot = if len(actions) == 0 then HtmlText("") else HtmlNode("div", [AttrText("class", "panel-foot")], actions)
+  return HtmlNode("div", [AttrText("class", "dialog-backdrop"), AttrOn("keydown", HandleKey(fn(k) => if k == "Escape" then Some(close) else None))], [
+    HtmlNode("div", [AttrText("style", "position: absolute; inset: 0"), AttrOn("click", HandleMsg(close))], []),
+    HtmlNode("section", [AttrText("class", "card panel dialog"), AttrText("role", "dialog"), AttrText("aria-modal", "true"),
+      AttrText("aria-labelledby", "dialog-title"), AttrText("aria-describedby", "dialog-description"),
+      AttrText("tabindex", "-1"), AttrFlag("autofocus", true), AttrText("style", "position: relative")],
+      [head] + body + [foot]),
+  ])
+}
+
+// ---- navigation and structure
+
+// Tabs: a row of tab buttons and the current tab's content. Arrow keys move between tabs.
+fn tabs[M](attrs: list[Attr[M]], current: str, items: list[Tab[M]], pick: fn(str) -> M) -> Html[M] {
+  let ids = map(items, fn(t) => t.id)
+  let at = unwrap_or(index_of(ids, current), 0)
+  let n = len(items)
+  let keys = fn(k: str) => if k == "ArrowRight" and n > 0 then Some(pick(ids[(at + 1) % n]))
+    else if k == "ArrowLeft" and n > 0 then Some(pick(ids[(at + n - 1) % n])) else None
+  let shown: list[Html[M]] = match get(items, at) {
+    Some(t) => [HtmlNode("div", [AttrText("role", "tabpanel"), AttrText("id", "tab-panel-" + t.id),
+      AttrText("aria-labelledby", "tab-" + t.id)], [t.body])],
+    None => [],
+  }
+  return HtmlNode("div", push(attrs, AttrText("class", "tabs")), [
+    HtmlNode("div", [AttrText("class", "tab-list"), AttrText("role", "tablist"), AttrOn("keydown", HandleKey(keys))],
+      map(items, fn(t) => HtmlNode("button", [AttrText("role", "tab"), AttrText("type", "button"), AttrText("id", "tab-" + t.id),
+        AttrText("aria-selected", if t.id == ids[at] then "true" else "false"), AttrText("aria-controls", "tab-panel-" + t.id),
+        AttrText("tabindex", if t.id == ids[at] then "0" else "-1"), AttrOn("click", HandleMsg(pick(t.id)))], [HtmlText(t.label)]))),
+  ] + shown)
+}
+
+// A card with a title, a one-line description ("" for none), content, and actions in the footer.
+fn panel[M](attrs: list[Attr[M]], title: str, description: str, body: list[Html[M]], footer: list[Html[M]]) -> Html[M] {
+  let head = HtmlNode("div", [AttrText("class", "panel-head")], [
+    HtmlNode("h3", [], [HtmlText(title)]),
+    if description == "" then HtmlText("") else HtmlNode("p", [], [HtmlText(description)]),
+  ])
+  let foot = if len(footer) == 0 then HtmlText("") else HtmlNode("div", [AttrText("class", "panel-foot")], footer)
+  return HtmlNode("section", attrs + [AttrText("class", "card panel")], [head] + body + [foot])
+}
+
+fn breadcrumbs[M](crumbs: list[Crumb]) -> Html[M] {
+  let last = len(crumbs) - 1
+  return HtmlNode("nav", [AttrText("aria-label", "Breadcrumb")], [HtmlNode("ol", [AttrText("class", "crumbs")],
+    map(range(0, len(crumbs)), fn(i) => HtmlNode("li", [], [
+      if i == last then HtmlNode("span", [AttrText("aria-current", "page")], [HtmlText(crumbs[i].label)])
+        else HtmlNode("a", [AttrText("href", crumbs[i].href)], [HtmlText(crumbs[i].label)]),
+  ])))])
+}
+
+// A round badge with someone's initials (from the first two words of the name).
+fn avatar[M](name: str) -> Html[M] {
+  return HtmlNode("span", [AttrText("class", "avatar"), AttrText("aria-label", name), AttrText("title", name)],
+    [HtmlText(initials(name))])
+}
+
+// A number with its label and an optional note ("" for none): stat("Open cards", "12", "+3 this week").
+fn stat[M](label: str, value: str, note: str) -> Html[M] {
+  return HtmlNode("div", [AttrText("class", "stat")], [
+    HtmlNode("span", [AttrText("class", "stat-label")], [HtmlText(label)]),
+    HtmlNode("span", [AttrText("class", "stat-value")], [HtmlText(value)]),
+    if note == "" then HtmlText("") else HtmlNode("span", [AttrText("class", "stat-note")], [HtmlText(note)]),
+  ])
+}
+
+// A keyboard key: kbd("Ctrl K").
+fn kbd[M](keys: str) -> Html[M] { return HtmlNode("kbd", [], [HtmlText(keys)]) }
+
+// A thin line between groups.
+fn separator[M]() -> Html[M] { return HtmlNode("hr", [AttrText("class", "separator")], []) }
+
+// ---- tables
+
+// How a table column sorts: not at all, by text (ignoring case), or by number.
+enum SortBy[R] { Unsorted, ByText(key: fn(R) -> str), ByNumber(key: fn(R) -> float) }
+
+// One column of a data table: an id, a header label, how to show a row's cell, and how to sort by it.
+struct TableColumn[R, M] { id: str, label: str, cell: fn(R) -> Html[M], sort: SortBy[R] }
+
+// A table's view state; keep it in your model. sort is a column id ("" for the rows' own order).
+struct TableState { sort: str, descending: bool, page: int }
+
+fn table_start() -> TableState { return TableState(sort: "", descending: false, page: 0) }
+
+// A sortable, paged table. Clicking a sortable header sorts by it (again: reverses); `change` gets the new
+// state. page_size 0 shows every row. Headers carry aria-sort, so screen readers announce the order.
+fn data_table[R, M](attrs: list[Attr[M]], columns: list[TableColumn[R, M]], rows: list[R], state: TableState, page_size: int,
+  change: fn(TableState) -> M) -> Html[M] {
+  let sorted = table_sort(columns, rows, state)
+  let pages = if page_size <= 0 then 1 else max(1, (len(sorted) + page_size - 1) / page_size)
+  let page = min(max(state.page, 0), pages - 1)
+  let shown = if page_size <= 0 then sorted else slice(sorted, page * page_size, page * page_size + page_size)
+  let head = HtmlNode("thead", [], [HtmlNode("tr", [], map(columns, fn(c) => table_header(c, state, change)))])
+  let body = if len(shown) == 0
+    then HtmlNode("tbody", [], [HtmlNode("tr", [], [HtmlNode("td", [AttrText("colspan", str(len(columns))), AttrText("class", "table-empty")],
+      [HtmlText("No results.")])])])
+    else HtmlNode("tbody", [], map(shown, fn(r) => HtmlNode("tr", [], map(columns, fn(c) => HtmlNode("td", [], [(c.cell)(r)])))))
+  let table = HtmlNode("div", [AttrText("class", "table-wrap")], [HtmlNode("table", [], [head, body])])
+  if page_size <= 0 or len(sorted) <= page_size {
+    return HtmlNode("div", push(attrs, AttrText("class", "data-table")), [table])
+  }
+  let first = page * page_size + 1
+  let last = min(len(sorted), first + page_size - 1)
+  let pager = HtmlNode("div", [AttrText("class", "pager")], [
+    HtmlNode("span", [AttrText("class", "muted")], [HtmlText("{first}–{last} of {len(sorted)}")]),
+    HtmlNode("button", [AttrText("class", "v-outline s-small"), AttrText("type", "button"), AttrFlag("disabled", page == 0),
+      AttrOn("click", HandleMsg(change(state with (page: page - 1))))], [HtmlText("Previous")]),
+    HtmlNode("button", [AttrText("class", "v-outline s-small"), AttrText("type", "button"), AttrFlag("disabled", page >= pages - 1),
+      AttrOn("click", HandleMsg(change(state with (page: page + 1))))], [HtmlText("Next")]),
+  ])
+  return HtmlNode("div", push(attrs, AttrText("class", "data-table")), [table, pager])
+}
+
+// The rows in the order the table shows them (all pages), for tests and exports.
+fn table_sort[R, M](columns: list[TableColumn[R, M]], rows: list[R], state: TableState) -> list[R] {
+  return match find(columns, fn(c) => c.id == state.sort) {
+    None => rows,
+    Some(c) => match c.sort {
+      Unsorted => rows,
+      ByText(key) => if state.descending then reverse(sort_by(rows, fn(r) => lower(key(r)))) else sort_by(rows, fn(r) => lower(key(r))),
+      ByNumber(key) => if state.descending then sort_by(rows, fn(r) => 0.0 - key(r)) else sort_by(rows, key),
+    },
+  }
+}
+
+fn table_header[R, M](c: TableColumn[R, M], state: TableState, change: fn(TableState) -> M) -> Html[M] {
+  let sortable = match c.sort { Unsorted => false, _ => true }
+  if not sortable { return HtmlNode("th", [AttrText("scope", "col")], [HtmlText(c.label)]) }
+  let active = state.sort == c.id
+  let order = if not active then "none" else if state.descending then "descending" else "ascending"
+  let arrow = if not active then "↕" else if state.descending then "↓" else "↑"
+  let next = TableState(sort: c.id, descending: active and not state.descending, page: 0)
+  return HtmlNode("th", [AttrText("scope", "col"), AttrText("aria-sort", order)], [
+    HtmlNode("button", [AttrText("class", "sort"), AttrText("type", "button"), AttrOn("click", HandleMsg(change(next)))],
+      [HtmlText(c.label), HtmlNode("span", [AttrText("class", "sort-mark"), AttrText("aria-hidden", "true")], [HtmlText(arrow)])]),
+  ])
+}
+
+// ---- combobox
+
+// A combobox's state; keep it in your model. query is the typed text, active the highlighted suggestion.
+struct ComboState { query: str, open: bool, active: int }
+
+fn combo_start(query: str) -> ComboState { return ComboState(query: query, open: false, active: 0) }
+
+// A text box that suggests matching options as you type. Arrow keys move through them, Enter or a click picks
+// one (`pick`), Escape or leaving the box closes the list. `change` gets every new state.
+fn combobox[M](label: str, state: ComboState, options: list[Choice], change: fn(ComboState) -> M, pick: fn(Choice) -> M) -> Html[M] {
+  let fid = field_id(label)
+  let matches = combo_matches(options, state.query)
+  let n = len(matches)
+  let active = if n == 0 then 0 else min(max(state.active, 0), n - 1)
+  let showing = state.open and n > 0
+  let keys = fn(k: str) => if k == "ArrowDown" then Some(change(state with (open: true, active: if showing then (active + 1) % n else 0)))
+    else if k == "ArrowUp" and showing then Some(change(state with (active: (active + n - 1) % n)))
+    else if k == "Enter" and showing then Some(pick(matches[active]))
+    else if k == "Escape" and state.open then Some(change(state with (open: false))) else None
+  let box = HtmlNode("input", [AttrText("id", fid), AttrText("role", "combobox"), AttrText("autocomplete", "off"),
+    AttrText("aria-autocomplete", "list"), AttrText("aria-expanded", if showing then "true" else "false"),
+    AttrText("aria-controls", fid + "-list"), AttrText("aria-activedescendant", if showing then "{fid}-{active}" else ""),
+    AttrText("value", state.query), AttrOn("input", HandleText(fn(q) => change(ComboState(query: q, open: true, active: 0)))),
+    AttrOn("keydown", HandleKey(keys)), AttrOn("blur", HandleMsg(change(state with (open: false))))], [])
+  let list = if not showing then HtmlText("") else HtmlNode("ul", [AttrText("class", "combo-list"), AttrText("role", "listbox"),
+    AttrText("id", fid + "-list")], map(range(0, n), fn(i) => HtmlNode("li", [AttrText("role", "option"),
+    AttrText("id", "{fid}-{i}"), AttrText("aria-selected", if i == active then "true" else "false"),
+    AttrOn("mousedown", HandleMsg(pick(matches[i])))], [HtmlText(matches[i].label)])))
+  return HtmlNode("div", [AttrText("class", "field combo")], [HtmlNode("label", [AttrText("for", fid)], [HtmlText(label)]), box, list])
+}
+
+// The options a combobox suggests for a query: labels containing it, ignoring case, those starting with it first.
+fn combo_matches(options: list[Choice], query: str) -> list[Choice] {
+  let q = lower(trim(query))
+  if q == "" { return options }
+  let hits = filter(options, fn(c) => contains(lower(c.label), q))
+  return filter(hits, fn(c) => starts_with(lower(c.label), q)) + filter(hits, fn(c) => not starts_with(lower(c.label), q))
+}
+
+// ---- internals
+
+fn variant_class(v: Variant) -> str {
+  return match v {
+    Primary => "v-primary", Secondary => "v-secondary", Outline => "v-outline", Ghost => "v-ghost",
+    Destructive => "v-destructive", Link => "v-link",
+  }
+}
+
+fn tone_class(t: Tone) -> str {
+  return match t { Neutral => "t-neutral", Info => "t-info", Success => "t-success", Warning => "t-warning", Danger => "t-danger" }
+}
+
+fn alert_attrs[M](t: Tone) -> list[Attr[M]] {
+  let urgent = match t { Danger => true, Warning => true, _ => false }
+  return [AttrText("class", "alert " + tone_class(t)), AttrText("role", if urgent then "alert" else "status")]
+}
+
+fn alert_parts[M](title: str, body: list[Html[M]]) -> list[Html[M]] {
+  let head = HtmlNode("div", [AttrText("class", "alert-title")], [HtmlText(title)])
+  return if len(body) == 0 then [head] else [head, HtmlNode("div", [AttrText("class", "alert-body")], body)]
+}
+
+fn field_parts[M](label: str, control: Html[M], below: list[Html[M]]) -> Html[M] {
+  let fid = unwrap_or(own_id(control), field_id(label))
+  return HtmlNode("div", [AttrText("class", "field")],
+    [HtmlNode("label", [AttrText("for", fid)], [HtmlText(label)]), with_attrs(control, [AttrText("id", fid)])] + below)
+}
+
+fn check_parts[M](kind: str, label: str, description: str, on: bool, changed: fn(bool) -> M) -> Html[M] {
+  let role: list[Attr[M]] = if kind == "switch" then [AttrText("role", "switch")] else []
+  let box = HtmlNode("input", [AttrText("type", "checkbox"), AttrFlag("checked", on), AttrOn("change", HandleCheck(changed))] + role, [])
+  let words: Html[M] = if description == "" then HtmlText(label)
+    else HtmlNode("span", [AttrText("class", "check-text")], [HtmlText(label), HtmlNode("small", [], [HtmlText(description)])])
+  return HtmlNode("label", [AttrText("class", "check")], [box, words])
+}
+
+// Adds attributes to an element (a control handed to field), leaving its own id if it has one.
+fn with_attrs[M](node: Html[M], extra: list[Attr[M]]) -> Html[M] {
+  return match node {
+    HtmlNode(tag, attrs, kids) => HtmlNode(tag, attrs + filter(extra, fn(a) => not (attr_name(a) == "id" and has_attr(attrs, "id"))), kids),
+    _ => node,
+  }
+}
+
+// The id a control already has, if any.
+fn own_id[M](node: Html[M]) -> Option[str] {
+  match node {
+    HtmlNode(_, attrs, _) => {
+      for a in attrs {
+        match a { AttrText(n, v) => { if n == "id" { return Some(v) } }, _ => {} }
+      }
+      return None
+    }
+    _ => { return None }
+  }
+}
+
+fn attr_name[M](a: Attr[M]) -> str {
+  return match a { AttrText(n, _) => n, AttrFlag(n, _) => n, AttrOn(e, _) => "on" + e }
+}
+
+fn has_attr[M](attrs: list[Attr[M]], name: str) -> bool { return any(attrs, fn(a) => attr_name(a) == name) }
+
+fn has_class_prefix[M](attrs: list[Attr[M]], prefix: str) -> bool {
+  return any(attrs, fn(a) => match a { AttrText(n, v) => n == "class" and starts_with(v, prefix), _ => false })
+}
+
+// "Email address" -> "field-email-address"
+fn field_id(label: str) -> str {
+  var out = "field"
+  var dash = true
+  for c in chars(lower(label)) {
+    if contains("abcdefghijklmnopqrstuvwxyz0123456789", c) {
+      if dash { out = out + "-" }
+      out = out + c
+      dash = false
+    } else {
+      dash = true
+    }
+  }
+  return out
+}
+
+fn initials(name: str) -> str {
+  let words = filter(split(trim(name), " "), fn(w) => w != "")
+  return join(map(slice(words, 0, 2), fn(w) => upper(slice(w, 0, 1))), "")
+}
+
+fn corner_size(c: Corners) -> str {
+  return match c { Square => "0px", Soft => "0.25rem", Rounded => "0.5rem", Round => "0.875rem" }
+}
+
+// Whether a hex colour is light enough to need dark text (WCAG relative luminance above about 0.4).
+fn is_light(hex: str) -> bool {
+  let h = lower(if starts_with(hex, "#") then slice(hex, 1, len(hex)) else hex)
+  let full = if len(h) == 3 then join(map(chars(h), fn(c) => c + c), "") else h
+  if len(full) != 6 { return false }
+  let r = channel(hex_byte(slice(full, 0, 2)))
+  let g = channel(hex_byte(slice(full, 2, 4)))
+  let b = channel(hex_byte(slice(full, 4, 6)))
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.4
+}
+
+fn hex_byte(s: str) -> int {
+  let digits = chars(s)
+  return hex_digit(digits[0]) * 16 + hex_digit(digits[1])
+}
+
+fn hex_digit(c: str) -> int { return unwrap_or(index_of(chars("0123456789abcdef"), c), 0) }
+
+fn channel(v: int) -> float {
+  let x = to_float(v) / 255.0
+  return if x <= 0.04045 then x / 12.92 else pow_24((x + 0.055) / 1.055)
+}
+
+// x^2.4 for 0 <= x <= 1 without std.math: x^2.4 = y * y^0.2 with y = x^2, and y^0.2 by Newton's method on t^5 = y.
+fn pow_24(x: float) -> float {
+  let y = x * x
+  if y <= 0.0 { return 0.0 }
+  var t = 1.0
+  for i in range(0, 30) { t = t - (t * t * t * t * t - y) / (5.0 * t * t * t * t) }
+  return y * t
+}

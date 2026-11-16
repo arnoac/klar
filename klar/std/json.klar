@@ -1,0 +1,69 @@
+// std.json: parse and produce JSON.
+// Numbers are floats (like JavaScript); use json_int to read whole numbers.
+
+enum Json {
+  JNull,
+  JBool(value: bool),
+  JNum(value: float),
+  JStr(value: str),
+  JArr(items: list[Json]),
+  JObj(fields: map[str, Json]),
+}
+
+extern "klar.stdpy.jsonlib.parse" fn json_parse(text: str) -> Result[Json, str]
+extern "klar.stdpy.jsonlib.stringify" fn json_stringify(value: Json) -> str
+extern "klar.stdpy.jsonlib.pretty" fn json_pretty(value: Json) -> str
+
+// Field of an object; None if `value` is not an object or has no such key.
+fn json_get(value: Json, key: str) -> Option[Json] {
+  return match value { JObj(fields) => get(fields, key), _ => None }
+}
+
+// Element of an array; None if out of range or not an array.
+fn json_at(value: Json, index: int) -> Option[Json] {
+  return match value { JArr(items) => get(items, index), _ => None }
+}
+
+fn json_str(value: Json) -> Option[str] {
+  return match value { JStr(s) => Some(s), _ => None }
+}
+
+fn json_num(value: Json) -> Option[float] {
+  return match value { JNum(n) => Some(n), _ => None }
+}
+
+// Whole numbers only: 3.0 -> Some(3), 3.5 -> None.
+fn json_int(value: Json) -> Option[int] {
+  return match value {
+    JNum(n) => if to_float(floor(n)) == n then Some(floor(n)) else None,
+    _ => None,
+  }
+}
+
+fn json_bool(value: Json) -> Option[bool] {
+  return match value { JBool(b) => Some(b), _ => None }
+}
+
+fn json_list(value: Json) -> Option[list[Json]] {
+  return match value { JArr(items) => Some(items), _ => None }
+}
+
+// Convenience constructors.
+fn json_int_value(n: int) -> Json {
+  return JNum(to_float(n))
+}
+
+fn json_str_list(xs: list[str]) -> Json {
+  return JArr(map(xs, fn(s) => JStr(s)))
+}
+
+// Automatic JSON for any type: structs become objects, enums become "Variant" or {"type": "Variant", ...},
+// Option is null or the value, Result is {"ok": ...} or {"err": ...}, map[str, V] is an object.
+extern "klar:json.encode" fn json_encode[T](value: T) -> str
+extern "klar:json.pretty" fn json_encode_pretty[T](value: T) -> str
+// The type to read comes from where the result goes: `let r: Result[Todo, str] = json_decode(text)`.
+// Errors name the place: "expected a whole number at $.items[2].id, found a string".
+extern "klar:json.decode" fn json_decode[T](text: str) -> Result[T, str]
+// The same between Klar values and Json values.
+extern "klar:json.of" fn json_of[T](value: T) -> Json
+extern "klar:json.into" fn json_into[T](value: Json) -> Result[T, str]

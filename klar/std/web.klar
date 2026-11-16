@@ -1,0 +1,189 @@
+// std.web: routing and helpers for web backends (HTML sites and JSON APIs), on top of std.http.
+//
+//   fn main() uses io {
+//     let routes = [
+//       web_get("/", home),
+//       web_get("/todos/:id", show_todo),        // req.params["id"]
+//       web_post("/todos", create_todo),
+//       web_get("/assets/*", web_static("public")),
+//     ]
+//     match web_serve(8080, routes) { Ok(_) => {}, Err(e) => print("server error: {e}") }
+//   }
+//
+// Handlers are ordinary functions `fn(HttpRequest) -> HttpResponse uses io`, so they can be tested by calling
+// them (or web_handle) with a request built by web_request.
+
+use std.http { HttpRequest, HttpResponse, http_serve }
+use std.html { Html, html_page }
+use std.json { Json, json_parse, json_encode, json_decode }
+use std.process { env_get }
+
+struct Route {
+  method: str,
+  pattern: str,
+  handler: fn(HttpRequest) -> HttpResponse uses io,
+}
+
+fn web_get(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("GET", pattern, handler) }
+fn web_post(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("POST", pattern, handler) }
+fn web_put(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("PUT", pattern, handler) }
+fn web_patch(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("PATCH", pattern, handler) }
+fn web_delete(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("DELETE", pattern, handler) }
+
+// Serve `routes` on `port` (see http_serve for the address). Requests are handled by the first route whose
+// method and pattern match; a path that matches no route gets 404, a path that matches with another method 405.
+fn web_serve(port: int, routes: list[Route]) -> Result[unit, str] uses io {
+  return http_serve(port, fn(req) => web_handle(routes, req))
+}
+
+// Route one request (what web_serve does for each request; handy in tests).
+fn web_handle(routes: list[Route], req: HttpRequest) -> HttpResponse uses io {
+  var path_matched = false
+  let method = if req.method == "HEAD" then "GET" else req.method
+  for r in routes {
+    match web_match(r.pattern, req.path) {
+      Some(params) => {
+        if r.method == method {
+          let handler = r.handler
+          return handler(req with (params: params))
+        }
+        path_matched = true
+      }
+      None => {}
+    }
+  }
+  if path_matched {
+    return HttpResponse(405, ["content-type": "text/plain; charset=utf-8"], "method not allowed\n")
+  }
+  return HttpResponse(404, ["content-type": "text/plain; charset=utf-8"], "not found\n")
+}
+
+// Match a path against a pattern: "/todos/:id" matches "/todos/3" giving ["id": "3"];
+// a final "*" segment matches the rest of the path ("/assets/*" on "/assets/css/a.css" gives ["*": "css/a.css"]).
+fn web_match(pattern: str, path: str) -> Option[map[str, str]] {
+  let ps = filter(split(pattern, "/"), fn(s) => s != "")
+  let xs = filter(split(path, "/"), fn(s) => s != "")
+  var params: map[str, str] = [:]
+  var i = 0
+  while i < len(ps) {
+    let p = ps[i]
+    if p == "*" {
+      return Some(put(params, "*", join(slice(xs, i, len(xs)), "/")))
+    }
+    if i >= len(xs) {
+      return None
+    }
+    if starts_with(p, ":") {
+      params = put(params, slice(p, 1, len(p)), web_url_decode(xs[i]))
+    } else if p != xs[i] {
+      return None
+    }
+    i = i + 1
+  }
+  return if len(xs) == len(ps) then Some(params) else None
+}
+
+// Build a request, for tests: web_request("POST", "/todos", "{\"title\": \"x\"}").
+fn web_request(method: str, path: str, body: str) -> HttpRequest {
+  return HttpRequest(method: method, path: path, query: [:], headers: [:], body: body, params: [:])
+}
+
+// The port to listen on: the PORT environment variable (set by `klar dev` and most hosting platforms), else `fallback`.
+fn web_port(fallback: int) -> int uses io {
+  return match env_get("PORT") { Some(p) => unwrap_or(parse_int(p), fallback), None => fallback }
+}
+
+// ---- reading requests
+
+// Fields of a submitted HTML form (application/x-www-form-urlencoded body).
+fn web_form(req: HttpRequest) -> map[str, str] {
+  return web_form_decode(req.body)
+}
+
+fn web_json_body(req: HttpRequest) -> Result[Json, str] {
+  return json_parse(req.body)
+}
+
+// The JSON body read as any type: `let r: Result[Todo, str] = web_body(req)`.
+fn web_body[T](req: HttpRequest) -> Result[T, str] {
+  return json_decode(req.body)
+}
+
+fn web_cookies(req: HttpRequest) -> map[str, str] {
+  var out: map[str, str] = [:]
+  for part in split(unwrap_or(get(req.headers, "cookie"), ""), ";") {
+    let kv = split(trim(part), "=")
+    if len(kv) >= 2 {
+      out = put(out, kv[0], web_url_decode(join(slice(kv, 1, len(kv)), "=")))
+    }
+  }
+  return out
+}
+
+// ---- responses
+
+// A full HTML page with the default theme (status 200).
+fn web_page[M](title: str, body: Html[M]) -> HttpResponse {
+  return HttpResponse(200, ["content-type": "text/html; charset=utf-8"], html_page(title, "", body))
+}
+
+// ---- live updates (server-sent events)
+//
+//   web_get("/live", fn(req) => web_events("todos"))     // browsers subscribe with ui_listen("/live", ...)
+//   web_publish("todos", json_encode(todos))             // every subscribed browser gets the text
+
+// A response that stays open and receives everything published on `topic`.
+fn web_events(topic: str) -> HttpResponse {
+  return HttpResponse(status: 200, headers: ["x-klar-stream": topic], body: "")
+}
+
+extern "klar:web.publish" fn web_publish(topic: str, data: str) uses io
+
+// Any value as a JSON response: `web_json(200, todos)`.
+fn web_json[T](status: int, value: T) -> HttpResponse {
+  return HttpResponse(status: status, headers: ["content-type": "application/json"], body: json_encode(value))
+}
+
+// Redirect after a form post (303 See Other), so a reload does not post again.
+fn web_redirect(url: str) -> HttpResponse {
+  return HttpResponse(303, ["location": url, "content-type": "text/plain; charset=utf-8"], "")
+}
+
+// Add a cookie (Path=/, HttpOnly, SameSite=Lax). Several calls add several cookies.
+fn web_set_cookie(res: HttpResponse, name: str, data: str) -> HttpResponse {
+  let line = "{name}={web_url_encode(data)}; Path=/; HttpOnly; SameSite=Lax"
+  let all = match get(res.headers, "set-cookie") { Some(prev) => prev + "\n" + line, None => line }
+  return res with (headers: put(res.headers, "set-cookie", all))
+}
+
+// Tell the browser to forget a cookie (logging out).
+fn web_clear_cookie(res: HttpResponse, name: str) -> HttpResponse {
+  let line = "{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+  let all = match get(res.headers, "set-cookie") { Some(prev) => prev + "\n" + line, None => line }
+  return res with (headers: put(res.headers, "set-cookie", all))
+}
+
+// Send a file from disk (any type, including images); 404 if it does not exist.
+fn web_file(path: str) -> HttpResponse {
+  return HttpResponse(200, ["content-type": web_mime_type(path), "x-klar-file": path], "")
+}
+
+// A handler serving files below `dir` for a route ending in "/*": web_get("/assets/*", web_static("public")).
+fn web_static(dir: str) -> fn(HttpRequest) -> HttpResponse uses io {
+  return fn(req) => web_static_file(dir, req)
+}
+
+fn web_static_file(dir: str, req: HttpRequest) -> HttpResponse {
+  let rest = unwrap_or(get(req.params, "*"), "")
+  if contains(split(rest, "/"), "..") or starts_with(rest, "/") {
+    return HttpResponse(404, ["content-type": "text/plain; charset=utf-8"], "not found\n")
+  }
+  return web_file(dir + "/" + rest)
+}
+
+// ---- encoding
+
+extern "klar:web.form_decode" fn web_form_decode(text: str) -> map[str, str]
+extern "klar:web.url_encode" fn web_url_encode(s: str) -> str
+extern "klar:web.url_decode" fn web_url_decode(s: str) -> str
+extern "klar:web.mime_type" fn web_mime_type(path: str) -> str

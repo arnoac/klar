@@ -1,0 +1,62 @@
+// Structs, enums, exhaustive match, and `with` updates.
+
+struct Point { x: float, y: float }
+
+enum Shape {
+  Circle(center: Point, radius: float),
+  Rect(corner: Point, width: float, height: float),
+  Triangle(a: Point, b: Point, c: Point),
+}
+
+fn area(s: Shape) -> float {
+  return match s {
+    Circle(_, r) => 3.141592653589793 * r * r,
+    Rect(_, w, h) => w * h,
+    Triangle(a, b, c) => abs((a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y)) / 2.0),
+  }
+}
+
+fn describe(s: Shape) -> str {
+  return match s {
+    Circle(c, r) => "circle at ({c.x}, {c.y}) with radius {r}",
+    Rect(p, w, h) => "{w}x{h} rectangle at ({p.x}, {p.y})",
+    Triangle(_, _, _) => "triangle",
+  }
+}
+
+fn move_by(p: Point, dx: float, dy: float) -> Point {
+  return p with (x: p.x + dx, y: p.y + dy)
+}
+
+fn main() uses io {
+  let origin = Point(x: 0.0, y: 0.0)
+  let shapes = [
+    Circle(center: origin, radius: 1.0),
+    Rect(corner: move_by(origin, 2.0, 3.0), width: 4.0, height: 2.5),
+    Triangle(a: origin, b: Point(x: 4.0, y: 0.0), c: Point(x: 0.0, y: 3.0)),
+  ]
+  for s in shapes {
+    print("{describe(s)}: area {area(s)}")
+  }
+  let total = shapes.map(fn(s) => area(s)).sum()
+  print("total area: {total}")
+  let largest = sort_by(shapes, fn(s) => area(s)).reverse()[0]
+  print("largest: {describe(largest)}")
+}
+
+test "rect area" {
+  let r = Rect(corner: Point(x: 0.0, y: 0.0), width: 2.0, height: 3.0)
+  assert area(r) == 6.0
+}
+
+test "triangle area" {
+  let t = Triangle(a: Point(x: 0.0, y: 0.0), b: Point(x: 4.0, y: 0.0), c: Point(x: 0.0, y: 3.0))
+  assert area(t) == 6.0
+}
+
+test "move does not mutate" {
+  let p = Point(x: 1.0, y: 1.0)
+  let q = move_by(p, 1.0, 0.0)
+  assert p.x == 1.0
+  assert q.x == 2.0
+}

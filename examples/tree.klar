@@ -1,0 +1,56 @@
+// A recursive data type: an immutable binary search tree.
+
+enum Tree {
+  Leaf,
+  Node(left: Tree, value: int, right: Tree),
+}
+
+fn insert(t: Tree, v: int) -> Tree {
+  return match t {
+    Leaf => Node(Leaf, v, Leaf),
+    Node(l, x, r) => if v < x then Node(insert(l, v), x, r)
+      else if v > x then Node(l, x, insert(r, v))
+      else t,
+  }
+}
+
+fn contains_value(t: Tree, v: int) -> bool {
+  return match t {
+    Leaf => false,
+    Node(l, x, r) => v == x or (v < x and contains_value(l, v)) or (v > x and contains_value(r, v)),
+  }
+}
+
+fn to_list(t: Tree) -> list[int] {
+  return match t {
+    Leaf => [],
+    Node(l, x, r) => to_list(l) + [x] + to_list(r),
+  }
+}
+
+fn height(t: Tree) -> int {
+  return match t {
+    Leaf => 0,
+    Node(l, _, r) => 1 + max(height(l), height(r)),
+  }
+}
+
+fn from_list(xs: list[int]) -> Tree {
+  return fold(xs, Leaf, fn(acc, x) => insert(acc, x))
+}
+
+fn main() uses io {
+  let t = from_list([50, 30, 70, 20, 40, 60, 80, 30])
+  print("sorted: {to_list(t)}")
+  print("height: {height(t)}")
+  print("has 60? {contains_value(t, 60)}  has 65? {contains_value(t, 65)}")
+}
+
+test "in-order traversal is sorted and deduplicated" {
+  assert to_list(from_list([3, 1, 2, 3])) == [1, 2, 3]
+}
+
+test "empty tree" {
+  assert height(Leaf) == 0
+  assert not contains_value(Leaf, 1)
+}

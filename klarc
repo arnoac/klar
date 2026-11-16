@@ -1,0 +1,7 @@
+#!/bin/sh
+DIR=$(cd "$(dirname "$0")" && pwd)
+if [ "$1" = "build" ]; then
+  # building needs no site-packages; skipping them makes compiles start faster
+  PYTHONPATH="$DIR" exec python3 -S -m klar "$@"
+fi
+PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m klar "$@"

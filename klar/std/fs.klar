@@ -1,0 +1,11 @@
+// std.fs: files and directories. Every operation that can fail returns a Result.
+
+extern "klar.stdpy.fslib.read" fn fs_read(path: str) -> Result[str, str] uses io
+extern "klar.stdpy.fslib.write" fn fs_write(path: str, content: str) -> Result[unit, str] uses io
+extern "klar.stdpy.fslib.append" fn fs_append(path: str, content: str) -> Result[unit, str] uses io
+extern "klar.stdpy.fslib.exists" fn fs_exists(path: str) -> bool uses io
+extern "klar.stdpy.fslib.is_dir" fn fs_is_dir(path: str) -> bool uses io
+extern "klar.stdpy.fslib.list_dir" fn fs_list(path: str) -> Result[list[str], str] uses io
+extern "klar.stdpy.fslib.mkdir" fn fs_mkdir(path: str) -> Result[unit, str] uses io
+extern "klar.stdpy.fslib.remove" fn fs_remove(path: str) -> Result[unit, str] uses io
+extern "klar.stdpy.fslib.join" fn fs_join(parts: list[str]) -> str

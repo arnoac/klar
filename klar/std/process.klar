@@ -1,0 +1,12 @@
+// std.process: run other programs, read the environment, exit.
+
+struct ProcessResult { code: int, stdout: str, stderr: str }
+
+extern "klar.stdpy.processlib.run" fn process_run_input(command: list[str], input: str) -> Result[ProcessResult, str] uses io
+extern "klar.stdpy.processlib.env_get" fn env_get(name: str) -> Option[str] uses io
+extern "klar.stdpy.processlib.exit" fn process_exit(code: int) -> never uses io
+
+// Run a command (no shell) and capture its output. Err only if it could not be started.
+fn process_run(command: list[str]) -> Result[ProcessResult, str] uses io {
+  return process_run_input(command, "")
+}

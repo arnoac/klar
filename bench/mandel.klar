@@ -1,0 +1,25 @@
+fn inside(cr: float, ci: float) -> bool {
+  var zr = 0.0
+  var zi = 0.0
+  var i = 0
+  while i < 100 {
+    let t = zr * zr - zi * zi + cr
+    zi = 2.0 * zr * zi + ci
+    zr = t
+    if zr * zr + zi * zi > 4.0 { return false }
+    i = i + 1
+  }
+  return true
+}
+fn main() uses io {
+  let n = 1000
+  var count = 0
+  for y in range(0, n) {
+    for x in range(0, n) {
+      let cr = 3.0 * to_float(x) / to_float(n) - 2.0
+      let ci = 2.0 * to_float(y) / to_float(n) - 1.0
+      if inside(cr, ci) { count = count + 1 }
+    }
+  }
+  print(count)
+}

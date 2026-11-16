@@ -1,0 +1,105 @@
+// std.task: the same output in the interpreter, Node and native builds.
+use std.task { Chan, TaskGroup, task_all, task_group, task_spawn, chan_new, chan_send, chan_recv, chan_close }
+use std.time { time_sleep }
+
+fn square_later(n: int, delay: float) -> int uses io {
+  time_sleep(delay)
+  return n * n
+}
+
+fn drain(c: Chan[int]) -> list[int] uses io {
+  var got: list[int] = []
+  while true {
+    match chan_recv(c) {
+      Some(v) => { got = got + [v] }
+      None => break,
+    }
+  }
+  return got
+}
+
+// a worker pool: jobs go in on one channel, results come back on another
+fn worker(jobs: Chan[int], results: Chan[str]) uses io {
+  while true {
+    match chan_recv(jobs) {
+      Some(n) => chan_send(results, "{n}->{n * 10}"),
+      None => break,
+    }
+  }
+}
+
+fn main() uses io {
+  // results come back in job order, even when later jobs finish first
+  print(task_all([fn() => square_later(2, 0.03), fn() => square_later(3, 0.01), fn() => square_later(4, 0.0)]))
+  let empty: list[fn() -> int uses io] = []
+  print(task_all(empty))
+  print(task_all([fn() => "a", fn() => "b"]))
+
+  // a ping-pong: each side waits for the other, so the lines strictly alternate
+  let ping: Chan[int] = chan_new()
+  let pong: Chan[int] = chan_new()
+  task_group(fn(g) {
+    task_spawn(g, fn() {
+      for i in range(0, 3) {
+        chan_send(ping, i)
+        match chan_recv(pong) {
+          Some(v) => print("pong {v}"),
+          None => print("closed"),
+        }
+      }
+      chan_close(ping)
+    })
+    task_spawn(g, fn() {
+      while true {
+        match chan_recv(ping) {
+          Some(v) => {
+            print("ping {v}")
+            chan_send(pong, v * 100)
+          }
+          None => break,
+        }
+      }
+    })
+  })
+
+  // three workers share one job queue
+  let jobs: Chan[int] = chan_new()
+  let results: Chan[str] = chan_new()
+  for n in range(1, 8) {
+    chan_send(jobs, n)
+  }
+  chan_close(jobs)
+  task_group(fn(g) {
+    for w in range(0, 3) {
+      task_spawn(g, fn() => worker(jobs, results))
+    }
+  })
+  chan_close(results)
+  var out: list[str] = []
+  while true {
+    match chan_recv(results) {
+      Some(r) => { out = out + [r] }
+      None => break,
+    }
+  }
+  print(sort(out))
+
+  // nested groups and tasks that spawn more tasks into their own group
+  let c: Chan[int] = chan_new()
+  task_group(fn(outer) {
+    task_spawn(outer, fn() {
+      task_group(fn(inner) {
+        for i in range(0, 3) {
+          task_spawn(inner, fn() => chan_send(c, i))
+        }
+      })
+      chan_send(c, 99)
+    })
+    task_spawn(outer, fn() {
+      task_spawn(outer, fn() => chan_send(c, 1000))
+    })
+  })
+  chan_close(c)
+  print(sort(drain(c)))
+  print(chan_recv(c))
+}

@@ -1,0 +1,26 @@
+// std.random: pseudo-random numbers. Randomness is an effect, so these use io.
+
+extern "klar.stdpy.randomlib.seed" fn random_seed(seed: int) uses io
+// Inclusive on both ends.
+extern "klar.stdpy.randomlib.int_between" fn random_int(low: int, high: int) -> int uses io
+// In [0.0, 1.0).
+extern "klar.stdpy.randomlib.unit_float" fn random_float() -> float uses io
+
+fn random_pick[T](xs: list[T]) -> Option[T] uses io {
+  if len(xs) == 0 {
+    return None
+  }
+  return get(xs, random_int(0, len(xs) - 1))
+}
+
+fn random_shuffle[T](xs: list[T]) -> list[T] uses io {
+  var out = xs
+  var i = len(out) - 1
+  while i > 0 {
+    let j = random_int(0, i)
+    let tmp = out[i]
+    out = set_at(set_at(out, i, out[j]), j, tmp)
+    i = i - 1
+  }
+  return out
+}

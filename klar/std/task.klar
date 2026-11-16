@@ -1,0 +1,25 @@
+// std.task: run io work at the same time. Tasks never share variables; they talk through channels.
+//
+//   let pages = task_all([fn() => http_get(a), fn() => http_get(b)])     // both requests at once, results in order
+//
+//   task_group(fn(g) {                     // every task spawned into g has finished when task_group returns
+//     task_spawn(g, fn() { ... })
+//   })
+//
+// A channel is a queue between tasks: chan_send never waits; chan_recv waits for a value and returns None once the
+// channel is closed and empty. If every task is waiting and none can go on, the program stops with E409.
+
+struct Chan[T] { id: int }
+
+struct TaskGroup { id: int }
+
+// Runs every job concurrently and returns their results in the same order.
+extern "klar:task.all" fn task_all[T](jobs: list[fn() -> T uses io]) -> list[T] uses io
+// Runs body, then waits for every task spawned into the group.
+extern "klar:task.group" fn task_group(body: fn(TaskGroup) -> unit uses io) uses io
+extern "klar:task.spawn" fn task_spawn(group: TaskGroup, job: fn() -> unit uses io) uses io
+
+extern "klar:chan.new" fn chan_new[T]() -> Chan[T] uses io
+extern "klar:chan.send" fn chan_send[T](c: Chan[T], value: T) uses io
+extern "klar:chan.recv" fn chan_recv[T](c: Chan[T]) -> Option[T] uses io
+extern "klar:chan.close" fn chan_close[T](c: Chan[T]) uses io

@@ -1,0 +1,37 @@
+// regex-redux (Computer Language Benchmarks Game): match and replace DNA patterns with regular expressions.
+// Input is the output of the fasta program, on stdin.
+use std.regex { regex_find_all, regex_replace }
+
+fn main() uses io {
+  let input = unwrap(read_file("/dev/stdin"))
+  let seq = regex_replace(">.*\n|\n", input, "")
+  let variants = [
+    "agggtaaa|tttaccct",
+    "[cgt]gggtaaa|tttaccc[acg]",
+    "a[act]ggtaaa|tttacc[agt]t",
+    "ag[act]gtaaa|tttac[agt]ct",
+    "agg[act]taaa|ttta[agt]cct",
+    "aggg[acg]aaa|ttt[cgt]ccct",
+    "agggt[cgt]aa|tt[acg]accct",
+    "agggta[cgt]a|t[acg]taccct",
+    "agggtaa[cgt]|[acg]ttaccct",
+  ]
+  for v in variants {
+    print("{v} {len(regex_find_all(v, seq))}")
+  }
+  let substitutions = [
+    ["tHa[Nt]", "<4>"],
+    ["aND|caN|Ha[DS]|WaS", "<3>"],
+    ["a[NSt]|BY", "<2>"],
+    ["<[^>]*>", "|"],
+    [r"\|[^|][^|]*\|", "-"],
+  ]
+  var out = seq
+  for s in substitutions {
+    out = regex_replace(s[0], out, s[1])
+  }
+  print("")
+  print(len(input))
+  print(len(seq))
+  print(len(out))
+}

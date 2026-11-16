@@ -1,0 +1,77 @@
+// Automatic JSON for structs, enums and the built-in types (std.json).
+use std.json { Json, JNum, json_encode, json_encode_pretty, json_decode, json_of, json_into, json_get, json_stringify }
+
+enum Status { Open, Done, Snoozed(until: str) }
+struct Todo { id: int, title: str, tags: list[str], status: Status, note: Option[str], score: float }
+struct Page[T] { items: list[T], total: int }
+enum Shape { Circle(radius: float), Rect(w: float, h: float), Dot }
+
+fn round_trip[T](value: T) -> Result[T, str] {
+  return json_decode(json_encode(value))
+}
+
+fn show_err[T](r: Result[T, str]) -> str {
+  return match r { Ok(_) => "ok", Err(e) => e }
+}
+
+fn main() uses io {
+  let t = Todo(id: 1, title: "Write \"docs\"", tags: ["a", "b"], status: Snoozed(until: "monday"), note: None, score: 2.0)
+  let text = json_encode(t)
+  print(text)
+  let back: Result[Todo, str] = json_decode(text)
+  print(back)
+  print(unwrap(back) == t)
+
+  let page = Page(items: [t, t with (id: 2, status: Done, note: Some("x"), score: 0.5)], total: 2)
+  print(json_encode(page))
+  print(round_trip(page) == Ok(page))
+  print(json_encode_pretty(Page(items: [Circle(radius: 1.5), Dot], total: 2)))
+
+  // built-in types
+  print(json_encode([1, 2, 3]))
+  print(json_encode(["a": 1, "b": 2]))
+  print(json_encode([1: "one", 2: "two"]))
+  let ok_val: Result[int, str] = Ok(5)
+  print(json_encode([ok_val, Err("bad")]))
+  let opts: list[Option[int]] = [Some(3), None]
+  print(json_encode(opts))
+  let m: Result[map[int, str], str] = json_decode("[[1, \"one\"], [2, \"two\"]]")
+  print(m)
+
+  // missing Option fields are None; unknown keys are ignored
+  let loose: Result[Todo, str] = json_decode("{{\"id\": 7, \"title\": \"t\", \"tags\": [], \"status\": \"Open\", \"score\": 1, \"extra\": true}}")
+  print(loose)
+
+  // errors say where
+  let e1: Result[Todo, str] = json_decode("{{\"id\": \"7\", \"title\": \"t\"}}")
+  print(show_err(e1))
+  let e2: Result[Page[Todo], str] = json_decode("{{\"items\": [{{\"id\": 1}}], \"total\": 1}}")
+  print(show_err(e2))
+  let e3: Result[list[Shape], str] = json_decode("[\"Circle\"]")
+  print(show_err(e3))
+  let e4: Result[list[Shape], str] = json_decode("[{{\"type\": \"Hexagon\"}}]")
+  print(show_err(e4))
+  let e5: Result[int, str] = json_decode("1.5")
+  print(show_err(e5))
+  let e6: Result[int, str] = json_decode("{{")
+  print(is_err(e6))
+
+  // numbers print the same in every runtime
+  print(json_encode([0.1 + 0.2, 1.0e-7, 0.000001, 1.0e21, 1.0e20, -0.0, 2.5]))
+  print(json_encode([9007199254740993, -9223372036854775807]))
+  let big: Result[list[int], str] = json_decode("[9007199254740993, -9223372036854775807, 3.0]")
+  print(big)
+  let too_big: Result[int, str] = json_decode("9223372036854775808")
+  print(show_err(too_big))
+  let fl: Result[list[float], str] = json_decode("[1, 2.5, 1e-7]")
+  print(fl)
+
+  // Json values in and out
+  let j = json_of(Rect(w: 2.0, h: 3.5))
+  print(json_stringify(j))
+  print(json_get(j, "h"))
+  let s: Result[Shape, str] = json_into(j)
+  print(s)
+  let raw: Result[map[str, Json], str] = json_decode("{{\"x\": [1, null]}}")
+  print(json_encode(unwrap(raw)))
+}

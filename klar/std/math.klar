@@ -1,0 +1,11 @@
+// std.math: floating point math beyond the built-ins (sqrt, floor, round, abs are built in).
+
+extern "klar.stdpy.mathlib.pi" fn math_pi() -> float
+extern "klar.stdpy.mathlib.sin" fn math_sin(x: float) -> float
+extern "klar.stdpy.mathlib.cos" fn math_cos(x: float) -> float
+extern "klar.stdpy.mathlib.tan" fn math_tan(x: float) -> float
+extern "klar.stdpy.mathlib.atan2" fn math_atan2(y: float, x: float) -> float
+extern "klar.stdpy.mathlib.exp" fn math_exp(x: float) -> float
+extern "klar.stdpy.mathlib.log" fn math_ln(x: float) -> float
+extern "klar.stdpy.mathlib.log10" fn math_log10(x: float) -> float
+extern "klar.stdpy.mathlib.pow" fn math_pow(base: float, exponent: float) -> float

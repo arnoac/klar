@@ -1,0 +1,97 @@
+// A command line notes tool that stores notes in a JSON file.
+//
+//   klar run examples/apps/notes_cli/main.klar add "buy milk"
+//   klar run examples/apps/notes_cli/main.klar list
+//   klar run examples/apps/notes_cli/main.klar search milk
+//   klar run examples/apps/notes_cli/main.klar remove 1
+//
+// The file defaults to notes.json; set NOTES_FILE to change it.
+
+use std.json { Json, JObj, JArr, JStr, JNum, json_parse, json_pretty, json_list, json_get, json_str, json_num }
+use std.fs { fs_read, fs_write, fs_exists }
+use std.time { time_now, time_format }
+use std.process { env_get, process_exit }
+
+struct Note { text: str, created: float }
+
+fn note_to_json(n: Note) -> Json {
+  return JObj(["text": JStr(n.text), "created": JNum(n.created)])
+}
+
+fn note_from_json(j: Json) -> Option[Note] {
+  let text = json_str(json_get(j, "text")?)?
+  let created = json_num(json_get(j, "created")?)?
+  return Some(Note(text: text, created: created))
+}
+
+fn load(path: str) -> Result[list[Note], str] uses io {
+  if not fs_exists(path) {
+    return Ok([])
+  }
+  let data = json_parse(fs_read(path)?)?
+  let items = match json_list(data) {
+    Some(xs) => xs,
+    None => panic("{path} does not contain a JSON array"),
+  }
+  var notes: list[Note] = []
+  for item in items {
+    match note_from_json(item) {
+      Some(n) => { notes = push(notes, n) }
+      None => { print("warning: skipping malformed note") }
+    }
+  }
+  return Ok(notes)
+}
+
+fn save(path: str, notes: list[Note]) -> Result[unit, str] uses io {
+  return fs_write(path, json_pretty(JArr(map(notes, fn(n) => note_to_json(n)))) + "\n")
+}
+
+fn show(notes: list[Note]) uses io {
+  if len(notes) == 0 {
+    print("(no notes)")
+  }
+  var i = 1
+  for n in notes {
+    print("{i}. {n.text}  [{time_format(n.created, "%Y-%m-%d")}]")
+    i = i + 1
+  }
+}
+
+fn usage() uses io {
+  print("usage: notes add TEXT | list | search WORD | remove NUMBER")
+}
+
+fn run(path: str, argv: list[str]) -> Result[unit, str] uses io {
+  let notes = load(path)?
+  let command = unwrap_or(get(argv, 0), "list")
+  let rest = join(slice(argv, 1, len(argv)), " ")
+  match command {
+    "add" => {
+      if rest == "" { return Err("add needs some text") }
+      save(path, push(notes, Note(text: rest, created: time_now())))?
+      print("added note {len(notes) + 1}")
+    }
+    "list" => { show(notes) }
+    "search" => { show(filter(notes, fn(n) => contains(lower(n.text), lower(rest)))) }
+    "remove" => {
+      let n = match parse_int(rest) { Some(k) => k, None => 0 }
+      if n < 1 or n > len(notes) { return Err("no note number {rest}") }
+      save(path, slice(notes, 0, n - 1) + slice(notes, n, len(notes)))?
+      print("removed note {n}")
+    }
+    _ => { usage() }
+  }
+  return Ok(())
+}
+
+fn main() uses io {
+  let path = unwrap_or(env_get("NOTES_FILE"), "notes.json")
+  match run(path, args()) {
+    Ok(_) => {}
+    Err(e) => {
+      print("error: {e}")
+      process_exit(1)
+    }
+  }
+}

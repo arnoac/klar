@@ -1,0 +1,194 @@
+// Full-stack todo app, frontend: runs in the browser and talks to server.klar's JSON API.
+//
+//   klar dev examples/apps/todo_web/server.klar examples/apps/todo_web/app.klar
+//   klar test examples/apps/todo_web/app.klar
+//
+// The whole app is a Model, a Msg enum, a pure `update` and a pure `view` (see std.ui).
+
+use std.ui { Next, ui_run, ui_get, ui_send, ui_focus, ui_listen }
+use std.html { Html, Attr, div, h1, p, span, ul, li, form, input, button, text, nothing, class, class_if, id, attr,
+  placeholder, value, input_type, checked, on_input, on_submit, on_click, on_check, card, html_render }
+use std.layout { Sm, container, row, spread, gap }
+use std.kit { Secondary, Ghost, Neutral, Warning, variant, badge, alert, icon_button, empty_state, panel }
+use std.http { HttpResponse }
+use std.json { JNull, json_of, json_decode }
+use api { Todo, NewTodo, DoneChange }
+
+enum Filter { All, Active, Finished }
+
+struct Model {
+  todos: list[Todo],
+  draft: str,
+  filter: Filter,
+  status: str,       // loading or error message; "" when all is well
+}
+
+enum Msg {
+  GotTodos(reply: Result[HttpResponse, str]),
+  Typed(text: str),
+  Submit,
+  Created(reply: Result[HttpResponse, str]),
+  Toggle(todo: Todo),
+  Remove(todo_id: int),
+  Saved(reply: Result[HttpResponse, str]),
+  ShowOnly(filter: Filter),
+  Synced(data: str),         // the server's live update: every todo, as JSON
+}
+
+fn init() -> Next[Model, Msg] {
+  return Next(Model([], "", All, "Loading..."), [
+    ui_get("/api/todos", fn(r) => GotTodos(r)),
+    ui_listen("/api/live", fn(data) => Synced(data)),   // changes made in other tabs and devices show up here
+  ])
+}
+
+fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
+  return match msg {
+    GotTodos(reply) => match read_todos(reply) {
+      Ok(todos) => Next(m with (todos: todos, status: ""), []),
+      Err(e) => Next(m with (status: e), []),
+    },
+    Typed(t) => Next(m with (draft: t), []),
+    Submit => if trim(m.draft) == "" then Next(m, []) else Next(m with (draft: ""), [
+      ui_send("POST", "/api/todos", json_of(NewTodo(title: trim(m.draft))), fn(r) => Created(r)),
+      ui_focus("new-todo"),
+    ]),
+    Created(reply) => match read_todo(reply) {
+      Ok(t) => Next(m with (todos: upsert(m.todos, t), status: ""), []),
+      Err(e) => Next(m with (status: e), []),
+    },
+    Toggle(t) => Next(m with (todos: map(m.todos, fn(x) => if x.id == t.id then x with (done: not x.done) else x)), [
+      ui_send("PUT", "/api/todos/{t.id}", json_of(DoneChange(done: not t.done)), fn(r) => Saved(r)),
+    ]),
+    Remove(todo_id) => Next(m with (todos: filter(m.todos, fn(x) => x.id != todo_id)), [
+      ui_send("DELETE", "/api/todos/{todo_id}", JNull, fn(r) => Saved(r)),
+    ]),
+    Saved(reply) => match reply {
+      Ok(res) => Next(m with (status: if res.status < 300 then "" else "could not save (HTTP {res.status})"), []),
+      Err(e) => Next(m with (status: e), []),
+    },
+    ShowOnly(f) => Next(m with (filter: f), []),
+    Synced(data) => match json_decode(data) {
+      Ok(todos) => Next(m with (todos: todos), []),
+      Err(_) => Next(m, []),
+    },
+  }
+}
+
+// Add a todo, or replace it if a live update already brought it in.
+fn upsert(todos: list[Todo], t: Todo) -> list[Todo] {
+  if any(todos, fn(x) => x.id == t.id) {
+    return map(todos, fn(x) => if x.id == t.id then t else x)
+  }
+  return push(todos, t)
+}
+
+// ---- view
+
+fn view(m: Model) -> Html[Msg] {
+  let left = len(filter(m.todos, fn(t) => not t.done))
+  return container([], [
+    spread([], [
+      h1([], [text("Todos")]),
+      badge([], Neutral, if left == 1 then "1 item left" else "{left} items left"),
+    ]),
+    form([class("row"), on_submit(Submit)], [
+      input([id("new-todo"), placeholder("What needs doing?"), value(m.draft), on_input(fn(s) => Typed(s)), attr("autofocus", "")]),
+      button([input_type("submit")], [text("Add")]),
+    ]),
+    if m.status == "" then nothing() else alert([], Warning, m.status, []),
+    if len(visible(m)) == 0 then empty_state("Nothing here", "Add a todo above, or pick another filter.", [])
+      else panel([], "Your list", "", [ul([class("list")], map(visible(m), fn(t) => todo_row(t)))], []),
+    row([gap(Sm)], [filter_button(m, All, "All"), filter_button(m, Active, "Active"), filter_button(m, Finished, "Done")]),
+  ])
+}
+
+fn todo_row(t: Todo) -> Html[Msg] {
+  return li([], [
+    input([input_type("checkbox"), checked(t.done), on_check(fn(b) => Toggle(t)), attr("aria-label", "done")]),
+    span([class("grow"), class_if("done", t.done)], [text(t.title)]),
+    icon_button([on_click(Remove(t.id))], "Delete", "×"),
+  ])
+}
+
+fn filter_button(m: Model, f: Filter, label: str) -> Html[Msg] {
+  return button([variant(if m.filter == f then Secondary else Ghost), on_click(ShowOnly(f))], [text(label)])
+}
+
+fn visible(m: Model) -> list[Todo] {
+  return match m.filter {
+    All => m.todos,
+    Active => filter(m.todos, fn(t) => not t.done),
+    Finished => filter(m.todos, fn(t) => t.done),
+  }
+}
+
+// ---- JSON from the server
+
+fn read_todos(reply: Result[HttpResponse, str]) -> Result[list[Todo], str] {
+  return json_decode(ok_body(reply)?)
+}
+
+fn read_todo(reply: Result[HttpResponse, str]) -> Result[Todo, str] {
+  return json_decode(ok_body(reply)?)
+}
+
+fn ok_body(reply: Result[HttpResponse, str]) -> Result[str, str] {
+  let res = reply?
+  if res.status >= 300 {
+    return Err("server error (HTTP {res.status})")
+  }
+  return Ok(res.body)
+}
+
+fn main() uses io {
+  ui_run(init(), update, view)
+}
+
+// ---- tests (no browser needed: update and view are plain functions)
+
+fn sample() -> Model {
+  return Model([Todo(1, "write spec", true), Todo(2, "ship <it>", false)], "", All, "")
+}
+
+test "typing updates the draft and submit clears it" {
+  let typed = update(sample(), Typed("buy milk")).model
+  assert typed.draft == "buy milk"
+  let sent = update(typed, Submit)
+  assert sent.model.draft == ""
+  assert len(sent.cmds) == 2
+}
+
+test "an empty draft sends nothing" {
+  assert len(update(sample(), Submit).cmds) == 0
+}
+
+test "toggling flips done right away" {
+  let m = update(sample(), Toggle(Todo(2, "ship <it>", false))).model
+  assert m.todos[1].done
+}
+
+test "the view escapes titles and counts what is left" {
+  let page = html_render(view(sample()))
+  assert contains(page, "ship &lt;it&gt;")
+  assert contains(page, "1 item left")
+}
+
+test "filters" {
+  let m = update(sample(), ShowOnly(Finished)).model
+  assert len(visible(m)) == 1
+}
+
+test "live updates replace the list, and a todo is never added twice" {
+  let synced = update(sample(), Synced(r"[{\"id\": 9, \"title\": \"from another tab\", \"done\": true}]")).model
+  assert synced.todos == [Todo(9, "from another tab", true)]
+  let created = update(synced, Created(Ok(HttpResponse(201, [:], r"{\"id\": 9, \"title\": \"from another tab\", \"done\": true}")))).model
+  assert len(created.todos) == 1
+}
+
+test "server replies are parsed" {
+  let reply = Ok(HttpResponse(200, [:], r"[{\"id\": 3, \"title\": \"x\", \"done\": false}]"))
+  assert read_todos(reply) == Ok([Todo(3, "x", false)])
+  assert is_err(read_todos(Ok(HttpResponse(500, [:], ""))))
+  assert read_todos(Ok(HttpResponse(200, [:], r"[{\"id\": 3}]"))) == Err("missing field `title` at $[0] (Todo)")
+}

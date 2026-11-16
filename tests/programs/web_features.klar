@@ -1,0 +1,75 @@
+// Exercises std.html, std.web and std.ui logic; main's output must be identical in every backend.
+use std.html { Html, Attr, div, p, a, span, ul, li, input, button, text, raw_html, nothing, el, class, class_if,
+  id, href, attr, flag, value, checked, on_click, on_input, html_render, html_escape, html_page, card }
+use std.layout { row }
+use std.web { Route, web_get, web_post, web_handle, web_request, web_match, web_form, web_cookies, web_redirect,
+  web_set_cookie, web_page, web_static, web_url_encode, web_url_decode }
+use std.http { HttpRequest, HttpResponse, http_text, http_json }
+use std.ui { Next, Cmd, CmdHttp, CmdAfter, ui_get, ui_after, ui_focus }
+use std.json { Json, JObj, JStr, JNum, JArr, JBool, JNull, json_parse, json_stringify, json_pretty }
+
+enum Msg { Clicked, Typed(text: str) }
+
+fn view(n: int, items: list[str]) -> Html[Msg] {
+  return card([id("main"), class("x"), class_if("big", n > 2), class_if("never", false)], [
+    p([], [text("count: {n} & <more>")]),
+    ul([], map(items, fn(s) => li([], [text(s)]))),
+    input([value("say \"hi\""), checked(true), flag("required", false), on_input(fn(s) => Typed(s))]),
+    button([on_click(Clicked)], [text("go")]),
+    if n > 100 then p([], [text("big")]) else nothing(),
+    raw_html("<em>trusted</em>"),
+    a([href("/x?a=1&b=2")], [text("link")]),
+  ])
+}
+
+fn hello(req: HttpRequest) -> HttpResponse uses io {
+  return http_text(200, "hello " + req.params["name"])
+}
+
+fn routes() -> list[Route] {
+  return [
+    web_get("/", fn(req) => http_text(200, "home")),
+    web_get("/hello/:name", hello),
+    web_post("/echo", fn(req) => http_json(201, JObj(["got": JStr(str(web_form(req)))]))),
+    web_get("/files/*", fn(req) => http_text(200, "file " + req.params["*"])),
+  ]
+}
+
+fn show_res(r: HttpResponse) -> str {
+  return "{r.status} {r.body}"
+}
+
+fn main() uses io {
+  print(html_render(view(3, ["a", "b<c"])))
+  print(html_escape("<'\"&>"))
+  print(len(html_page("T & co", "", p([], [text("x")]))) > 3000)
+  print(contains(html_page("T & co", "", p([], [text("x")])), "<title>T &amp; co</title>"))
+  let rs = routes()
+  print(show_res(web_handle(rs, web_request("GET", "/", ""))))
+  print(show_res(web_handle(rs, web_request("GET", "/hello/W%C3%B6rld", ""))))
+  print(show_res(web_handle(rs, web_request("POST", "/echo", "a=1&b=two+words&c=%26"))))
+  print(show_res(web_handle(rs, web_request("GET", "/files/css/site.css", ""))))
+  print(show_res(web_handle(rs, web_request("DELETE", "/", ""))))
+  print(show_res(web_handle(rs, web_request("GET", "/nope", ""))))
+  print(web_match("/a/:x/b", "/a/1/b"))
+  print(web_match("/a/:x/b", "/a/1/c"))
+  print(web_match("/", ""))
+  let req = web_request("GET", "/", "") with (headers: ["cookie": "a=1; name=Ann%20B; empty="])
+  print(web_cookies(req))
+  print(web_set_cookie(web_set_cookie(web_redirect("/home"), "a", "x y"), "b", "2").headers)
+  print(web_url_encode("a b&c/d?é"))
+  print(web_url_decode("a+b%26c%2Fd%3F%C3%A9"))
+  let page = web_page("Title", p([], [text("hi")]))
+  print(page.status)
+  print(page.headers["content-type"])
+  let static = web_static("public")
+  print(static(web_request("GET", "/x", "") with (params: ["*": "css/a.css"])).headers)
+  print(static(web_request("GET", "/x", "") with (params: ["*": "../secret"])).status)
+  let cmds: list[Cmd[Msg]] = [ui_get("/api", fn(r) => Clicked), ui_after(50, Typed("t")), ui_focus("x")]
+  print(len(cmds))
+  let j = JObj(["name": JStr("Ann \"A\""), "n": JNum(3.0), "f": JNum(1.5), "ok": JBool(true), "none": JNull, "xs": JArr([JNum(1.0), JStr("é")])])
+  print(json_stringify(j))
+  print(json_pretty(JObj(["a": JArr([]), "b": JObj([:]), "c": JArr([JNum(1.0)])])))
+  print(json_parse(r"{\"a\": [1, 2.5, \"x\", null, true], \"b\": {}}"))
+  print(is_err(json_parse(r"{bad")))
+}

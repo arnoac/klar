@@ -1,0 +1,140 @@
+// std.layout: page structure. Containers and grids, plus typed options that tune them.
+//
+// Layout elements take attributes and children like any std.html element:
+//   container([max_width(Wide)], [
+//     spread([], [h1([], [text("Boards")]), button([], [text("New")])]),
+//     grid([cols(1), cols_at(Tablet, 3), gap(Sm)], cards),
+//   ])
+// Options are ordinary attributes, so they mix with class(...), id(...) and events. Sizes, screens and
+// alignments are enums, so a typo is a compile error instead of a silently ignored CSS class.
+// Everything is styled by the default theme (html_theme_css), on the server and in std.ui apps alike.
+//
+// Screens are widths and up: Phone is every width, Tablet 640px, Laptop 1024px, Desktop 1280px.
+// Design for the phone first, then add `cols_at(Tablet, 3)`-style options for wider screens.
+
+use std.html { Html, Attr, HtmlNode, AttrText }
+
+// Spacing scale for gap and pad. Md is the theme's default gap (1rem). Themes can change the scale with the
+// CSS variables --space-xs, --space-sm, --space-md, --space-lg and --space-xl.
+enum Space { Zero, Xs, Sm, Md, Lg, Xl }
+
+// Screen widths, each meaning "this wide and wider".
+enum Screen { Phone, Tablet, Laptop, Desktop }
+
+// Where children sit. `align` places them across the main direction (vertically in a row), `justify` along
+// it. Between and Around only apply to `justify`; Stretch only to `align`.
+enum Place { Start, Center, End, Stretch, Between, Around }
+
+// Maximum widths: Narrow 30rem (forms, sign in), Readable 48rem (text, the container default),
+// Wide 72rem (dashboards, boards), Full (no limit), or Rem(n) for anything else.
+enum Width { Narrow, Readable, Wide, Full, Rem(n: int) }
+
+// ---- elements
+
+// Children side by side, wrapping, vertically centred.
+fn row[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return layout_div("row", attrs, children) }
+// Children top to bottom with even spacing.
+fn stack[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return layout_div("stack", attrs, children) }
+// A grid. With no options: as many columns of at least 16rem as fit. Use cols, cols_at or fit_cols to choose.
+fn grid[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return layout_div("grid", attrs, children) }
+// A centred column of stacked children, Readable wide unless max_width says otherwise.
+fn container[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return layout_div("container", attrs, children) }
+// Children pushed to both ends (a title and its buttons).
+fn spread[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return layout_div("spread", attrs, children) }
+// Children centred both ways inside the available space (empty states, a loading message).
+fn center[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return layout_div("center-box", attrs, children) }
+// A plain box with no layout of its own, for when you only need options: box([pad(Md), max_width(Rem(20))], ...).
+fn box[M](attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] { return HtmlNode("div", attrs, children) }
+// Takes all the free space in a row or stack, pushing what follows it to the far end.
+fn spacer[M]() -> Html[M] { return HtmlNode("div", [AttrText("class", "spacer")], []) }
+// A side column next to the main content. They sit side by side from Tablet up and stack on phones.
+// The side column is 16rem wide unless side_width says otherwise.
+fn sidebar[M](attrs: list[Attr[M]], side: Html[M], main: Html[M]) -> Html[M] {
+  return layout_div("sidebar", attrs, [side, main])
+}
+
+// ---- options
+
+// Space between children (row, stack, grid, container, spread).
+fn gap[M](size: Space) -> Attr[M] { return AttrText("class", "k-gap-" + space_key(size)) }
+// Space inside the element, on every side, left and right only, or top and bottom only.
+fn pad[M](size: Space) -> Attr[M] { return AttrText("class", "k-pad-" + space_key(size)) }
+fn pad_x[M](size: Space) -> Attr[M] { return AttrText("class", "k-padx-" + space_key(size)) }
+fn pad_y[M](size: Space) -> Attr[M] { return AttrText("class", "k-pady-" + space_key(size)) }
+
+// A grid with exactly n equal columns on every screen.
+fn cols[M](n: int) -> Attr[M] { return cols_at(Phone, n) }
+// n equal columns from this screen width up: grid([cols(1), cols_at(Tablet, 2), cols_at(Laptop, 4)], ...).
+fn cols_at[M](screen: Screen, n: int) -> Attr[M] {
+  let k = screen_key(screen)
+  return layout_var("--cols" + k, "repeat({at_least(n, 1)}, minmax(0, 1fr))")
+}
+// As many columns as fit, each at least min_rem wide; they share any leftover space.
+fn fit_cols[M](min_rem: int) -> Attr[M] {
+  return layout_var("--cols", "repeat(auto-fit, minmax(min({at_least(min_rem, 1)}rem, 100%), 1fr))")
+}
+// A grid child that covers n columns, on every screen or from a screen width up.
+fn col_span[M](n: int) -> Attr[M] { return col_span_at(Phone, n) }
+// A grid child that covers the whole row (a heading between groups of tiles).
+fn full_row[M]() -> Attr[M] { return layout_var("--span", "1 / -1") }
+fn col_span_at[M](screen: Screen, n: int) -> Attr[M] {
+  let k = screen_key(screen)
+  return layout_var("--span" + k, "span {at_least(n, 1)} / span {at_least(n, 1)}")
+}
+
+fn align[M](where: Place) -> Attr[M] { return AttrText("class", "k-align-" + place_key(where)) }
+fn justify[M](where: Place) -> Attr[M] { return AttrText("class", "k-justify-" + place_key(where)) }
+
+fn max_width[M](w: Width) -> Attr[M] {
+  return match w {
+    Narrow => AttrText("class", "k-w-narrow"),
+    Readable => AttrText("class", "k-w-readable"),
+    Wide => AttrText("class", "k-w-wide"),
+    Full => AttrText("class", "k-w-full"),
+    Rem(n) => AttrText("style", "max-width: {at_least(n, 1)}rem"),
+  }
+}
+// Centre this element horizontally in its parent, using all the width up to its max_width.
+fn centered[M]() -> Attr[M] { return AttrText("class", "k-centered") }
+// The width of a sidebar's side column.
+fn side_width[M](rem: int) -> Attr[M] { return AttrText("style", "--side: {at_least(rem, 1)}rem") }
+
+// In a row or stack: take the free space (a search box, a title).
+fn grow[M]() -> Attr[M] { return AttrText("class", "k-grow") }
+// A row that keeps its children on one line instead of wrapping.
+fn no_wrap[M]() -> Attr[M] { return AttrText("class", "k-nowrap") }
+// A stack whose children go side by side from this screen width up.
+fn row_at[M](screen: Screen) -> Attr[M] { return AttrText("class", "k-row" + screen_key(screen)) }
+// Show only on screens narrower than this one (a phone menu button), or only from this width up.
+fn hide_from[M](screen: Screen) -> Attr[M] { return AttrText("class", "k-hide-from" + screen_key(screen)) }
+fn show_from[M](screen: Screen) -> Attr[M] { return AttrText("class", "k-show-from" + screen_key(screen)) }
+// Scroll the content when it is taller (scroll_y) or wider (scroll_x) than the element.
+fn scroll_y[M]() -> Attr[M] { return AttrText("class", "k-scroll-y") }
+fn scroll_x[M]() -> Attr[M] { return AttrText("class", "k-scroll-x") }
+
+// ---- internals
+
+fn layout_div[M](kind: str, attrs: list[Attr[M]], children: list[Html[M]]) -> Html[M] {
+  return HtmlNode("div", push(attrs, AttrText("class", kind)), children)
+}
+
+// Responsive options set a CSS variable that the theme reads at each screen width. std.html joins several
+// style attributes on one element, so options combine freely.
+fn layout_var[M](var_name: str, value: str) -> Attr[M] {
+  return AttrText("style", "{var_name}: {value}")
+}
+
+fn at_least(n: int, low: int) -> int { return if n < low then low else n }
+
+fn space_key(s: Space) -> str {
+  return match s { Zero => "0", Xs => "xs", Sm => "sm", Md => "md", Lg => "lg", Xl => "xl" }
+}
+
+fn screen_key(s: Screen) -> str {
+  return match s { Phone => "", Tablet => "-tablet", Laptop => "-laptop", Desktop => "-desktop" }
+}
+
+fn place_key(p: Place) -> str {
+  return match p { Start => "start", Center => "center", End => "end", Stretch => "stretch", Between => "between",
+    Around => "around" }
+}

@@ -1,0 +1,68 @@
+// Klar Board: accounts and sessions.
+//
+// Passwords are stored as salted PBKDF2 hashes (std.crypto). A session is a random token in an HttpOnly cookie;
+// the database keeps only the token's SHA-256, so a leaked database does not leak working sessions.
+
+use std.sqlite { Database }
+use std.http { HttpRequest }
+use std.web { web_cookies }
+use std.crypto { crypto_sha256, crypto_token, crypto_password_hash, crypto_password_verify }
+use shared { User, Credentials, check_user_name, check_password }
+use store { Account, user_add, user_by_name, session_add, session_user, session_delete }
+
+// What signing up or logging in can come to.
+enum Login {
+  LoggedIn(user: User, token: str),     // set `token` as the session cookie
+  Refused(status: int, reason: str),    // 400 bad input, 401 wrong password, 409 name taken
+}
+
+fn session_cookie() -> str {
+  return "board_session"
+}
+
+fn start_session(db: Database, user: User) -> Result[Login, str] uses io {
+  let token = crypto_token(32)
+  session_add(db, crypto_sha256(token), user.id)?
+  return Ok(LoggedIn(user, token))
+}
+
+fn sign_up(db: Database, c: Credentials) -> Result[Login, str] uses io {
+  let name = match check_user_name(c.name) { Ok(n) => n, Err(e) => { return Ok(Refused(400, e)) } }
+  match check_password(c.password) {
+    Ok(_) => {}
+    Err(e) => { return Ok(Refused(400, e)) }
+  }
+  if is_some(user_by_name(db, name)?) {
+    return Ok(Refused(409, "that name is taken"))
+  }
+  let user = user_add(db, name, crypto_password_hash(c.password))?
+  return start_session(db, user)
+}
+
+fn log_in(db: Database, c: Credentials) -> Result[Login, str] uses io {
+  let wrong = Refused(401, "wrong name or password")
+  return match user_by_name(db, lower(trim(c.name)))? {
+    None => Ok(wrong),
+    Some(account) => if crypto_password_verify(c.password, account.password_hash) then start_session(db, account.user)
+      else Ok(wrong),
+  }
+}
+
+fn session_token(req: HttpRequest) -> Option[str] {
+  return get(web_cookies(req), session_cookie())
+}
+
+// The signed-in user, if the request carries a live session cookie.
+fn current_user(db: Database, req: HttpRequest) -> Result[Option[User], str] uses io {
+  return match session_token(req) {
+    None => Ok(None),
+    Some(token) => session_user(db, crypto_sha256(token)),
+  }
+}
+
+fn log_out(db: Database, req: HttpRequest) -> Result[unit, str] uses io {
+  return match session_token(req) {
+    None => Ok(()),
+    Some(token) => session_delete(db, crypto_sha256(token)),
+  }
+}

@@ -1,0 +1,48 @@
+// reverse-complement (Computer Language Benchmarks Game): print the reverse complement of every sequence,
+// 60 characters per line. Input is the output of the fasta program, on stdin.
+
+fn complement_table() -> map[str, str] {
+  let from = chars("ACBDGHKMNSRUTWVYacbdghkmnsrutwvy")
+  let to = chars("TGVHCDMKNSYAAWBRTGVHCDMKNSYAAWBR")
+  var m: map[str, str] = [:]
+  for i in range(0, len(from)) { m = put(m, from[i], to[i]) }
+  return m
+}
+
+fn flush(header: str, lines: list[str], table: map[str, str]) uses io {
+  if header == "" { return }
+  print(header)
+  let cs = chars(join(lines, ""))
+  var line: list[str] = []
+  var i = len(cs) - 1
+  while i >= 0 {
+    line = push(line, table[cs[i]])
+    if len(line) == 60 {
+      print(join(line, ""))
+      line = []
+    }
+    i = i - 1
+  }
+  if len(line) > 0 { print(join(line, "")) }
+}
+
+fn main() uses io {
+  let table = complement_table()
+  var header = ""
+  var lines: list[str] = []
+  while true {
+    match read_line() {
+      None => { break }
+      Some(l) => {
+        if starts_with(l, ">") {
+          flush(header, lines, table)
+          header = l
+          lines = []
+        } else {
+          lines = push(lines, l)
+        }
+      }
+    }
+  }
+  flush(header, lines, table)
+}

@@ -1,0 +1,74 @@
+// fasta (Computer Language Benchmarks Game): generate DNA sequences by copying and by weighted random choice.
+struct Freq { chars: str, probs: list[float] }
+
+fn alu() -> str {
+  return "GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGGTCAGGAGTTCGAGACCAGCCTGGCCAACATGGTGAAACCCCGTCTCTACTAAAAATACAAAAATTAGCCGGGCGTGGTGGCGCGCGCCTGTAATCCCAGCTACTCGGGAGGCTGAGGCAGGAGAATCGCTTGAACCCGGGAGGCGGAGGTTGCAGTGAGCCGAGATCGCGCCACTGCACTCCAGCCTGGGCGACAGAGCGAGACTCCGTCTCAAAAA"
+}
+
+fn cumulative(ps: list[float]) -> list[float] {
+  var acc = 0.0
+  var out: list[float] = []
+  for p in ps {
+    acc = acc + p
+    out = push(out, acc)
+  }
+  return out
+}
+
+fn iub() -> Freq {
+  return Freq(chars: "acgtBDHKMNRSVWY",
+    probs: cumulative([0.27, 0.12, 0.12, 0.27, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02]))
+}
+
+fn homo_sapiens() -> Freq {
+  return Freq(chars: "acgt", probs: cumulative([0.3029549426680, 0.1979883004921, 0.1975473066391, 0.3015094502008]))
+}
+
+fn repeat_fasta(header: str, src: str, n: int) uses io {
+  print(header)
+  let k = len(src)
+  let doubled = src + src
+  var pos = 0
+  var left = n
+  while left > 0 {
+    let line = min(left, 60)
+    print(slice(doubled, pos, pos + line))
+    pos = (pos + line) % k
+    left = left - line
+  }
+}
+
+// returns the next seed; the caller turns it into a probability
+fn next_seed(seed: int) -> int {
+  return (seed * 3877 + 29573) % 139968
+}
+
+fn random_fasta(header: str, f: Freq, n: int, seed0: int) -> int uses io {
+  print(header)
+  let chars = chars(f.chars)
+  let m = len(f.probs)
+  var seed = seed0
+  var left = n
+  while left > 0 {
+    let line = min(left, 60)
+    var buf: list[str] = []
+    for _i in range(0, line) {
+      seed = next_seed(seed)
+      let r = to_float(seed) / 139968.0
+      var j = 0
+      while j < m - 1 and f.probs[j] <= r { j = j + 1 }
+      buf = push(buf, chars[j])
+    }
+    print(join(buf, ""))
+    left = left - line
+  }
+  return seed
+}
+
+fn main() uses io {
+  let args_ = args()
+  let n = if len(args_) > 0 then unwrap_or(parse_int(args_[0]), 1000) else 1000
+  repeat_fasta(">ONE Homo sapiens alu", alu(), n * 2)
+  let s = random_fasta(">TWO IUB ambiguity codes", iub(), n * 3, 42)
+  let _ = random_fasta(">THREE Homo sapiens frequency", homo_sapiens(), n * 5, s)
+}
