@@ -58,7 +58,7 @@ class NativeStd(unittest.TestCase):
         self.assertIn('Err("IntegrityError: UNIQUE constraint failed: t.name")', out["native"])
 
     def test_automatic_json_and_web_logic(self):
-        for f in ("json_auto.klar", "web_features.klar"):
+        for f in ("json_auto.klar", "web_features.klar", "web_security.klar"):
             with self.subTest(program=f):
                 self.assert_all_same(self.outputs(os.path.join(PROGRAMS, f)))
 

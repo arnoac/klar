@@ -245,6 +245,12 @@ class Dev:
                     self.close_connection = True
 
             def handle_any(self):
+                # Only answer requests addressed to this machine by name: a page on another site that points a
+                # hostname of its own at 127.0.0.1 (DNS rebinding) must not be able to read the app or its files.
+                host = (self.headers.get("host") or "").rsplit(":", 1)[0].strip("[]").lower()
+                allowed = {"localhost", "127.0.0.1", "::1", (os.environ.get("HOST") or "127.0.0.1").lower()}
+                if host not in allowed and not host.endswith(".localhost") and os.environ.get("HOST") != "0.0.0.0":
+                    return self.send(403, "text/plain", "klar dev: unexpected Host header\n")
                 path = self.path.split("?", 1)[0]
                 if path == "/__klar/events":
                     return self.events()
@@ -274,6 +280,8 @@ class Dev:
                     target = os.path.normpath(os.path.join(root, path.lstrip("/")))
                     if not target.startswith(root + os.sep) and target != root:
                         return self.send(403, "text/plain", "forbidden\n")
+                    if any(part.startswith(".") for part in os.path.relpath(target, root).split(os.sep)):
+                        return self.send(404, "text/plain", "not found\n")       # .env, .git, .klar
                 if not os.path.isfile(target):
                     return self.send(404, "text/plain", "not found\n")
                 with open(target, "rb") as f:
@@ -286,7 +294,7 @@ class Dev:
             def proxy(self):
                 length = int(self.headers.get("content-length") or 0)
                 body = self.rfile.read(length) if length else None
-                headers = {k: v for k, v in self.headers.items() if k.lower() not in ("host", "accept-encoding", "connection")}
+                headers = {k: v for k, v in self.headers.items() if k.lower() not in ("accept-encoding", "connection")}
                 deadline = time.time() + 10
                 while True:
                     conn = http.client.HTTPConnection("127.0.0.1", dev.child_port, timeout=60)

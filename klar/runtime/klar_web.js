@@ -26,6 +26,14 @@ async function $fetch(method, url, headers, body) {
 // ---------------------------------------------------------------- std.ui: model / update / view
 // The view is an Html value (enum HtmlNode / HtmlText / HtmlRaw); it is turned into DOM nodes and, on every
 // change, compared with the previous view so only the differences touch the page.
+// The same attribute checks as std.html's html_render: no event-handler attributes or malformed names, and no
+// URL attribute that would run script.
+const $URL_ATTRS = new Set(["href", "src", "action", "formaction", "xlink:href", "poster", "cite", "background", "data", "ping"]);
+function $attr_ok(name) { return name !== "" && !/^on/i.test(name) && !/[\s"'><\/=`\0]/.test(name); }
+function $safe_url(url) {
+  const t = url.replace(/[\t\n\r\0]/g, "").trim().toLowerCase();
+  return /^(javascript|vbscript):/.test(t) || (t.startsWith("data:") && !t.startsWith("data:image/")) ? "about:invalid" : url;
+}
 function $ui_attrs(attrs) {
   const props = new Map(), events = {};
   const classes = [], styles = [];
@@ -33,9 +41,9 @@ function $ui_attrs(attrs) {
     if (a.t === "AttrText") {
       if (a.f[0] === "class") { if (a.f[1] !== "") classes.push(a.f[1]); }
       else if (a.f[0] === "style") { if (a.f[1] !== "") styles.push(a.f[1]); }
-      else props.set(a.f[0], a.f[1]);
+      else if ($attr_ok(a.f[0])) props.set(a.f[0], $URL_ATTRS.has(a.f[0].toLowerCase()) ? $safe_url(a.f[1]) : a.f[1]);
     } else if (a.t === "AttrFlag") {
-      props.set(a.f[0], a.f[1]);
+      if ($attr_ok(a.f[0])) props.set(a.f[0], a.f[1]);
     } else {
       events[a.f[0]] = a.f[1];
     }
@@ -152,7 +160,8 @@ class $UiApp {
       wrap.innerHTML = v.f[0];
       return wrap;
     }
-    const el = document.createElement(v.f[0]);
+    let el;
+    try { el = document.createElement(v.f[0]); } catch { el = document.createElement("div"); }   // a malformed tag name
     const { props, events } = $ui_attrs(v.f[1]);
     for (const [k, x] of props) this.set_prop(el, k, x);
     this.set_events(el, events);

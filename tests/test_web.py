@@ -97,7 +97,7 @@ class NodeMatchesInterpreter(unittest.TestCase):
                     self.check_same(os.path.join(EXAMPLES, f), stdin)
 
     def test_feature_programs(self):
-        for f in ("features.klar", "web_features.klar", "owned_lists.klar", "json_auto.klar", "traits.klar"):
+        for f in ("features.klar", "web_features.klar", "web_security.klar", "owned_lists.klar", "json_auto.klar", "traits.klar"):
             with self.subTest(program=f):
                 self.check_same(os.path.join(PROGRAMS, f))
 

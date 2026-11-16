@@ -12,6 +12,11 @@
 //
 // Handlers are ordinary functions `fn(HttpRequest) -> HttpResponse uses io`, so they can be tested by calling
 // them (or web_handle) with a request built by web_request.
+//
+// Safe by default: a POST, PUT, PATCH or DELETE sent by a page on another site is refused with 403 (cross-site
+// request forgery; mark a route that other sites may call with web_cross_origin), responses carry security
+// headers, cookies are HttpOnly, SameSite=Lax and (except on localhost) Secure, web_redirect only goes to paths
+// on this site, and web_static never serves files outside its folder or hidden files.
 
 use std.http { HttpRequest, HttpResponse, http_serve }
 use std.html { Html, html_page }
@@ -22,13 +27,18 @@ struct Route {
   method: str,
   pattern: str,
   handler: fn(HttpRequest) -> HttpResponse uses io,
+  cross_origin: bool,     // whether pages on other sites may send this request (see web_cross_origin)
 }
 
-fn web_get(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("GET", pattern, handler) }
-fn web_post(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("POST", pattern, handler) }
-fn web_put(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("PUT", pattern, handler) }
-fn web_patch(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("PATCH", pattern, handler) }
-fn web_delete(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("DELETE", pattern, handler) }
+fn web_get(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("GET", pattern, handler, false) }
+fn web_post(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("POST", pattern, handler, false) }
+fn web_put(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("PUT", pattern, handler, false) }
+fn web_patch(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("PATCH", pattern, handler, false) }
+fn web_delete(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("DELETE", pattern, handler, false) }
+
+// Let pages on other sites send this request (a public API or a webhook). Such a route must not rely on
+// cookies to decide who is asking: check a token in a header or the body instead.
+fn web_cross_origin(route: Route) -> Route { return route with (cross_origin: true) }
 
 // Serve `routes` on `port` (see http_serve for the address). Requests are handled by the first route whose
 // method and pattern match; a path that matches no route gets 404, a path that matches with another method 405.
@@ -44,8 +54,11 @@ fn web_handle(routes: list[Route], req: HttpRequest) -> HttpResponse uses io {
     match web_match(r.pattern, req.path) {
       Some(params) => {
         if r.method == method {
+          if not r.cross_origin and web_cross_site(req) {
+            return web_secure(req, HttpResponse(403, ["content-type": "text/plain; charset=utf-8"], "cross-site request refused\n"))
+          }
           let handler = r.handler
-          return handler(req with (params: params))
+          return web_secure(req, handler(req with (params: params)))
         }
         path_matched = true
       }
@@ -53,9 +66,66 @@ fn web_handle(routes: list[Route], req: HttpRequest) -> HttpResponse uses io {
     }
   }
   if path_matched {
-    return HttpResponse(405, ["content-type": "text/plain; charset=utf-8"], "method not allowed\n")
+    return web_secure(req, HttpResponse(405, ["content-type": "text/plain; charset=utf-8"], "method not allowed\n"))
   }
-  return HttpResponse(404, ["content-type": "text/plain; charset=utf-8"], "not found\n")
+  return web_secure(req, HttpResponse(404, ["content-type": "text/plain; charset=utf-8"], "not found\n"))
+}
+
+// Whether a request that changes something was sent by a page on another site (cross-site request forgery).
+// Browsers say where a request comes from in Sec-Fetch-Site, older ones in Origin; requests without either
+// (curl, servers, tests) are not from a browser page and are let through.
+fn web_cross_site(req: HttpRequest) -> bool {
+  if contains(["GET", "HEAD", "OPTIONS"], req.method) {
+    return false
+  }
+  match get(req.headers, "sec-fetch-site") {
+    Some(site) => { return site != "same-origin" and site != "none" }
+    None => {}
+  }
+  return match get(req.headers, "origin") {
+    Some(origin) => web_origin_host(origin) != lower(unwrap_or(get(req.headers, "host"), "")),
+    None => false,
+  }
+}
+
+// "https://example.com:8443" -> "example.com:8443"; "" for "null" and anything else that is not an origin.
+fn web_origin_host(origin: str) -> str {
+  let parts = split(origin, "://")
+  return if len(parts) == 2 then lower(parts[1]) else ""
+}
+
+// Whether the request came to this machine by name (localhost), where browsers allow Secure cookies over http.
+fn web_is_local(req: HttpRequest) -> bool {
+  let host = unwrap_or(get(req.headers, "host"), "localhost")
+  let name = if starts_with(host, "[") then split(slice(host, 1, len(host)), "]")[0] else split(host, ":")[0]
+  return contains(["localhost", "127.0.0.1", "::1", ""], lower(name)) or ends_with(lower(name), ".localhost")
+}
+
+// The security headers every std.web response gets unless the handler set them itself, and Secure on cookies
+// when the site is not on localhost (cookies then only travel over https).
+fn web_secure(req: HttpRequest, res: HttpResponse) -> HttpResponse {
+  var hs = res.headers
+  let defaults = [
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "SAMEORIGIN",
+    "referrer-policy": "strict-origin-when-cross-origin",
+    "content-security-policy": "base-uri 'self'; object-src 'none'; frame-ancestors 'self'",
+  ]
+  for name in keys(defaults) {
+    if not has(hs, name) {
+      hs = put(hs, name, defaults[name])
+    }
+  }
+  match get(hs, "set-cookie") {
+    Some(lines) => {
+      if not web_is_local(req) {
+        let secured = map(split(lines, "\n"), fn(l) => if contains(lower(l), "; secure") then l else l + "; Secure")
+        hs = put(hs, "set-cookie", join(secured, "\n"))
+      }
+    }
+    None => {}
+  }
+  return res with (headers: hs)
 }
 
 // Match a path against a pattern: "/todos/:id" matches "/todos/3" giving ["id": "3"];
@@ -144,13 +214,26 @@ fn web_json[T](status: int, value: T) -> HttpResponse {
   return HttpResponse(status: status, headers: ["content-type": "application/json"], body: json_encode(value))
 }
 
-// Redirect after a form post (303 See Other), so a reload does not post again.
-fn web_redirect(url: str) -> HttpResponse {
+// Redirect after a form post (303 See Other), so a reload does not post again. Only to a path on this site
+// ("/home", "/todos?page=2"): any other target, such as a `?next=` value pointing at another site, redirects to
+// "/" instead, so the app cannot be used to send people to a phishing page. Use web_redirect_external for
+// another site.
+fn web_redirect(path: str) -> HttpResponse {
+  let local = starts_with(path, "/") and not starts_with(path, "//") and not starts_with(path, "/\\")
+  return web_redirect_external(if local then path else "/")
+}
+
+// Redirect to any URL, including other sites. Never pass a URL taken from the request.
+fn web_redirect_external(url: str) -> HttpResponse {
   return HttpResponse(303, ["location": url, "content-type": "text/plain; charset=utf-8"], "")
 }
 
-// Add a cookie (Path=/, HttpOnly, SameSite=Lax). Several calls add several cookies.
+// Add a cookie (Path=/, HttpOnly, SameSite=Lax, and Secure when served beyond localhost). Several calls add
+// several cookies. The name must be letters, digits, `-` or `_`.
 fn web_set_cookie(res: HttpResponse, name: str, data: str) -> HttpResponse {
+  if not web_is_token(name) {
+    panic("web_set_cookie: `{name}` is not a valid cookie name (use letters, digits, - and _)")
+  }
   let line = "{name}={web_url_encode(data)}; Path=/; HttpOnly; SameSite=Lax"
   let all = match get(res.headers, "set-cookie") { Some(prev) => prev + "\n" + line, None => line }
   return res with (headers: put(res.headers, "set-cookie", all))
@@ -158,6 +241,9 @@ fn web_set_cookie(res: HttpResponse, name: str, data: str) -> HttpResponse {
 
 // Tell the browser to forget a cookie (logging out).
 fn web_clear_cookie(res: HttpResponse, name: str) -> HttpResponse {
+  if not web_is_token(name) {
+    panic("web_clear_cookie: `{name}` is not a valid cookie name (use letters, digits, - and _)")
+  }
   let line = "{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
   let all = match get(res.headers, "set-cookie") { Some(prev) => prev + "\n" + line, None => line }
   return res with (headers: put(res.headers, "set-cookie", all))
@@ -174,11 +260,26 @@ fn web_static(dir: str) -> fn(HttpRequest) -> HttpResponse uses io {
 }
 
 fn web_static_file(dir: str, req: HttpRequest) -> HttpResponse {
-  let rest = unwrap_or(get(req.params, "*"), "")
-  if contains(split(rest, "/"), "..") or starts_with(rest, "/") {
-    return HttpResponse(404, ["content-type": "text/plain; charset=utf-8"], "not found\n")
+  return match web_safe_path(dir, unwrap_or(get(req.params, "*"), "")) {
+    Some(path) => web_file(path),
+    None => HttpResponse(404, ["content-type": "text/plain; charset=utf-8"], "not found\n"),
   }
-  return web_file(dir + "/" + rest)
+}
+
+// `dir` joined with a relative path taken from a request, or None if the path could leave `dir` (".."),
+// is absolute, names a hidden file or folder (".env", ".git/"), or contains a backslash or NUL.
+// Use it before opening any file whose name comes from a request: web_safe_path("uploads", req.params["name"]).
+fn web_safe_path(dir: str, rel: str) -> Option[str] {
+  let parts = filter(split(rel, "/"), fn(s) => s != "")
+  if len(parts) == 0 or starts_with(rel, "/") or contains(rel, "\\") or contains(rel, "\0")
+    or any(parts, fn(s) => starts_with(s, ".")) {
+    return None
+  }
+  return Some(dir + "/" + join(parts, "/"))
+}
+
+fn web_is_token(name: str) -> bool {
+  return len(name) > 0 and all(chars(name), fn(c) => contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_", c))
 }
 
 // ---- encoding

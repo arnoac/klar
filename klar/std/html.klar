@@ -3,7 +3,10 @@
 // A page or component is a value of type Html[Msg], built with one function per element:
 //   div([class("card")], [h2([], [text("Hello")]), button([on_click(Save)], [text("Save")])])
 // Every element function takes a list of attributes and a list of children (void elements such as `input`
-// take only attributes). Text is escaped when rendered, so user data can never inject markup.
+// take only attributes). Text is escaped when rendered, so user data can never inject markup, and attributes are
+// checked: event-handler attributes (onclick=...) and malformed names are left out (events go through on_click
+// and friends), and a URL attribute (href, src, action, ...) holding a javascript:, vbscript: or non-image data:
+// URL renders as "about:invalid". raw_html is the only way around this.
 // The same values render to a string on the server (html_render, html_page) and drive std.ui apps in the browser.
 // Msg is the message type of a std.ui app; server-rendered pages that have no events use Html[unit].
 
@@ -153,6 +156,39 @@ fn on_key[M](to_msg: fn(str) -> Option[M]) -> Attr[M] { return AttrOn("keydown",
 
 // ---- rendering
 
+// Whether an attribute name is safe to render: not empty, no characters that end a name, and not an event
+// handler (on...), which would run its value as script.
+fn html_attr_ok(name: str) -> bool {
+  if name == "" or starts_with(lower(name), "on") {
+    return false
+  }
+  for bad in [" ", "\"", "'", ">", "<", "/", "=", "\t", "\n", "\r", "\0", "`"] {
+    if contains(name, bad) { return false }
+  }
+  return true
+}
+
+fn html_is_url_attr(name: str) -> bool {
+  return contains(["href", "src", "action", "formaction", "xlink:href", "poster", "cite", "background", "data", "ping"], lower(name))
+}
+
+// A URL for an href/src-like attribute: "about:invalid" if it would run script (javascript:, vbscript:) or is a
+// data: URL other than an image; anything else unchanged.
+fn html_safe_url(url: str) -> str {
+  let t = lower(trim(url.replace("\t", "").replace("\n", "").replace("\r", "").replace("\0", "")))
+  let bad = starts_with(t, "javascript:") or starts_with(t, "vbscript:") or (starts_with(t, "data:") and not starts_with(t, "data:image/"))
+  return if bad then "about:invalid" else url
+}
+
+// A tag name made only of letters, digits and "-" (anything else renders as a div).
+fn html_tag_ok(tag: str) -> bool {
+  if tag == "" { return false }
+  for bad in [" ", "\"", "'", ">", "<", "/", "=", "\t", "\n", "\r", "\0", "`", "&", "!", "?"] {
+    if contains(tag, bad) { return false }
+  }
+  return true
+}
+
 // Escapes text for use in HTML content and attribute values.
 fn html_escape(s: str) -> str {
   return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&#39;")
@@ -170,7 +206,8 @@ fn html_parts[M](node: Html[M], acc: list[str]) -> list[str] {
   match node {
     HtmlText(t) => { return push(acc, html_escape(t)) }
     HtmlRaw(r) => { return push(acc, r) }
-    HtmlNode(tag, attrs, children) => {
+    HtmlNode(tag0, attrs, children) => {
+      let tag = if html_tag_ok(tag0) then tag0 else "div"
       var out = push(acc, "<" + tag)
       var classes: list[str] = []
       var styles: list[str] = []
@@ -181,11 +218,12 @@ fn html_parts[M](node: Html[M], acc: list[str]) -> list[str] {
               if v != "" { classes = push(classes, v) }
             } else if name == "style" {
               if v != "" { styles = push(styles, v) }
-            } else {
-              out = push(out, " {name}=\"{html_escape(v)}\"")
+            } else if html_attr_ok(name) {
+              let safe = if html_is_url_attr(name) then html_safe_url(v) else v
+              out = push(out, " {name}=\"{html_escape(safe)}\"")
             }
           }
-          AttrFlag(name, on) => { if on { out = push(out, " " + name) } }
+          AttrFlag(name, on) => { if on and html_attr_ok(name) { out = push(out, " " + name) } }
           AttrOn(_, _) => {}
         }
       }

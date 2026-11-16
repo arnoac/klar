@@ -1,0 +1,90 @@
+// Security defaults of std.html and std.web; main's output must be identical in every backend.
+use std.html { Html, p, a, img, div, el, text, attr, flag, href, src, html_render, html_safe_url }
+use std.web { Route, web_get, web_post, web_cross_origin, web_handle, web_request, web_redirect, web_redirect_external,
+  web_set_cookie, web_static, web_safe_path, web_cross_site }
+use std.http { HttpRequest, HttpResponse, http_text }
+
+fn routes() -> list[Route] {
+  return [
+    web_get("/", fn(req) => http_text(200, "home")),
+    web_post("/save", fn(req) => http_text(200, "saved")),
+    web_cross_origin(web_post("/hook", fn(req) => http_text(200, "hooked"))),
+    web_post("/login", fn(req) => web_set_cookie(http_text(200, "in"), "session", "abc")),
+  ]
+}
+
+fn from(method: str, path: str, headers: map[str, str]) -> HttpRequest {
+  return web_request(method, path, "") with (headers: headers)
+}
+
+fn show(r: HttpResponse) -> str {
+  return "{r.status} {r.body}"
+}
+
+fn main() uses io {
+  // markup: event handlers, script URLs and malformed names never render
+  let html: Html[unit] = div([attr("onclick", "steal()"), attr("ONMOUSEOVER", "x"), attr("title", "fine"), attr("a b", "x"),
+    flag("onload", true), flag("hidden", true)], [
+    a([href("javascript:alert(1)")], [text("1")]),
+    a([href("  JaVaScRiPt:alert(1)")], [text("2")]),
+    a([href("java\nscript:alert(1)")], [text("3")]),
+    a([href("data:text/html,<script>x</script>")], [text("4")]),
+    a([href("/ok?a=1&b=2")], [text("5")]),
+    a([href("https://example.com/")], [text("6")]),
+    img([src("data:image/png;base64,AAAA")]),
+    el("x\"><script>", [], [text("<b>")]),
+  ])
+  print(html_render(html))
+  print(html_safe_url("vbscript:msgbox"))
+  print(html_safe_url("mailto:a@b.c"))
+
+  // cross-site request forgery: refused for browsers on other sites, allowed for same-origin, non-browser
+  // clients and routes marked web_cross_origin
+  let rs = routes()
+  print(show(web_handle(rs, from("POST", "/save", ["sec-fetch-site": "cross-site"]))))
+  print(show(web_handle(rs, from("POST", "/save", ["sec-fetch-site": "same-site"]))))
+  print(show(web_handle(rs, from("POST", "/save", ["sec-fetch-site": "same-origin"]))))
+  print(show(web_handle(rs, from("POST", "/save", ["origin": "https://evil.example", "host": "app.example"]))))
+  print(show(web_handle(rs, from("POST", "/save", ["origin": "null", "host": "app.example"]))))
+  print(show(web_handle(rs, from("POST", "/save", ["origin": "https://App.example", "host": "app.example"]))))
+  print(show(web_handle(rs, from("POST", "/save", [:]))))
+  print(show(web_handle(rs, from("POST", "/hook", ["sec-fetch-site": "cross-site"]))))
+  print(show(web_handle(rs, from("GET", "/", ["sec-fetch-site": "cross-site"]))))
+  print(web_cross_site(from("DELETE", "/", ["sec-fetch-site": "none"])))
+
+  // security headers on every response, without overriding the handler's own
+  let res = web_handle(rs, from("GET", "/", [:]))
+  print(res.headers["x-content-type-options"])
+  print(res.headers["x-frame-options"])
+  print(res.headers["referrer-policy"])
+  print(res.headers["content-security-policy"])
+  let custom = web_handle([web_get("/", fn(req) => HttpResponse(200, ["x-frame-options": "DENY"], ""))], from("GET", "/", [:]))
+  print(custom.headers["x-frame-options"])
+  print(show(web_handle(rs, from("GET", "/nope", [:]))))
+  print(has(web_handle(rs, from("GET", "/nope", [:])).headers, "x-content-type-options"))
+
+  // cookies: Secure once the site is served beyond localhost
+  print(web_handle(rs, from("POST", "/login", ["host": "localhost:8000"])).headers["set-cookie"])
+  print(web_handle(rs, from("POST", "/login", ["host": "127.0.0.1:8000"])).headers["set-cookie"])
+  print(web_handle(rs, from("POST", "/login", ["host": "app.example"])).headers["set-cookie"])
+
+  // redirects stay on this site unless asked otherwise
+  print(web_redirect("/home?x=1").headers["location"])
+  print(web_redirect("https://evil.example/").headers["location"])
+  print(web_redirect("//evil.example/").headers["location"])
+  print(web_redirect("/\\evil.example/").headers["location"])
+  print(web_redirect_external("https://example.com/").headers["location"])
+
+  // files named by requests stay inside their folder and skip hidden files
+  print(web_safe_path("public", "css/site.css"))
+  print(web_safe_path("public", "../secret"))
+  print(web_safe_path("public", "a/../../secret"))
+  print(web_safe_path("public", "/etc/passwd"))
+  print(web_safe_path("public", ".env"))
+  print(web_safe_path("public", "a/.git/config"))
+  print(web_safe_path("public", "..\\secret"))
+  print(web_safe_path("public", ""))
+  let static = web_static("public")
+  print(static(web_request("GET", "/x", "") with (params: ["*": "x/../../secret"])).status)
+  print(static(web_request("GET", "/x", "") with (params: ["*": ".env"])).status)
+}
