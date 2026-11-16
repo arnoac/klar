@@ -1,0 +1,357 @@
+// Spreadsheet evaluator: reads `CELL: CONTENT` lines from stdin, prints every defined cell's value.
+// Cells are encoded as ints: column index (0..25) * 100 + row (1..99).
+
+enum Expr {
+  Lit(v: int),
+  Ref(c: int),
+  Neg(e: Expr),
+  Bin(op: str, l: Expr, r: Expr),
+  Func(name: str, a: int, b: int),
+}
+
+enum Tok {
+  TNum(n: int),
+  TCell(c: int),
+  TFunc(name: str),
+  TSym(s: str),
+}
+
+struct Parsed { e: Expr, pos: int }
+
+fn letters() -> str { return "ABCDEFGHIJKLMNOPQRSTUVWXYZ" }
+
+fn is_digit(c: str) -> bool { return contains("0123456789", c) }
+
+fn is_alnum(c: str) -> bool {
+  return is_digit(c) or contains(letters(), upper(c)) and c != ""
+}
+
+fn digits_value(s: str) -> int {
+  var n = 0
+  for c in chars(s) { n = n * 10 + (ord(c) - ord("0")) }
+  return n
+}
+
+fn all_digits(s: str) -> bool {
+  if len(s) == 0 { return false }
+  return all(chars(s), fn(c) => is_digit(c))
+}
+
+// Parses a cell name like "A1" or "Z99"; None if invalid.
+fn parse_cell_name(s: str) -> Option[int] {
+  if len(s) < 2 or len(s) > 3 { return None }
+  let col = index_of(chars(letters()), s[0]) else { return None }
+  let rest = slice(s, 1, len(s))
+  if not all_digits(rest) { return None }
+  if rest[0] == "0" { return None }
+  return Some(col * 100 + digits_value(rest))
+}
+
+fn cell_name(c: int) -> str {
+  return letters()[c / 100] + str(c % 100)
+}
+
+fn tokenize(src: str) -> Result[list[Tok], str] {
+  let cs = chars(src)
+  var toks: list[Tok] = []
+  var i = 0
+  while i < len(cs) {
+    let c = cs[i]
+    if c == " " or c == "\t" {
+      i = i + 1
+    } else if is_alnum(c) {
+      var j = i
+      while j < len(cs) and is_alnum(cs[j]) { j = j + 1 }
+      let word = join(slice(cs, i, j), "")
+      i = j
+      if all_digits(word) {
+        toks = push(toks, TNum(digits_value(word)))
+      } else if word == "SUM" or word == "MIN" or word == "MAX" {
+        toks = push(toks, TFunc(word))
+      } else {
+        let cell = parse_cell_name(word) else { return Err("#PARSE") }
+        toks = push(toks, TCell(cell))
+      }
+    } else if contains("+-*/():", c) {
+      toks = push(toks, TSym(c))
+      i = i + 1
+    } else {
+      return Err("#PARSE")
+    }
+  }
+  return Ok(toks)
+}
+
+fn sym_at(toks: list[Tok], pos: int) -> str {
+  return match get(toks, pos) {
+    Some(TSym(s)) => s,
+    _ => "",
+  }
+}
+
+fn parse_expr(toks: list[Tok], pos: int) -> Result[Parsed, str] {
+  var left = parse_term(toks, pos)?
+  while true {
+    let op = sym_at(toks, left.pos)
+    if op != "+" and op != "-" { break }
+    let right = parse_term(toks, left.pos + 1)?
+    left = Parsed(e: Bin(op, left.e, right.e), pos: right.pos)
+  }
+  return Ok(left)
+}
+
+fn parse_term(toks: list[Tok], pos: int) -> Result[Parsed, str] {
+  var left = parse_unary(toks, pos)?
+  while true {
+    let op = sym_at(toks, left.pos)
+    if op != "*" and op != "/" { break }
+    let right = parse_unary(toks, left.pos + 1)?
+    left = Parsed(e: Bin(op, left.e, right.e), pos: right.pos)
+  }
+  return Ok(left)
+}
+
+fn parse_unary(toks: list[Tok], pos: int) -> Result[Parsed, str] {
+  if sym_at(toks, pos) == "-" {
+    let inner = parse_unary(toks, pos + 1)?
+    return Ok(Parsed(e: Neg(inner.e), pos: inner.pos))
+  }
+  return parse_primary(toks, pos)
+}
+
+fn cell_at(toks: list[Tok], pos: int) -> Result[int, str] {
+  return match get(toks, pos) {
+    Some(TCell(c)) => Ok(c),
+    _ => Err("#PARSE"),
+  }
+}
+
+fn parse_primary(toks: list[Tok], pos: int) -> Result[Parsed, str] {
+  let t = get(toks, pos) else { return Err("#PARSE") }
+  match t {
+    TNum(n) => { return Ok(Parsed(e: Lit(n), pos: pos + 1)) }
+    TCell(c) => { return Ok(Parsed(e: Ref(c), pos: pos + 1)) }
+    TFunc(name) => {
+      if sym_at(toks, pos + 1) != "(" { return Err("#PARSE") }
+      let a = cell_at(toks, pos + 2)?
+      if sym_at(toks, pos + 3) != ":" { return Err("#PARSE") }
+      let b = cell_at(toks, pos + 4)?
+      if sym_at(toks, pos + 5) != ")" { return Err("#PARSE") }
+      return Ok(Parsed(e: Func(name, a, b), pos: pos + 6))
+    }
+    TSym(s) => {
+      if s != "(" { return Err("#PARSE") }
+      let inner = parse_expr(toks, pos + 1)?
+      if sym_at(toks, inner.pos) != ")" { return Err("#PARSE") }
+      return Ok(Parsed(e: inner.e, pos: inner.pos + 1))
+    }
+  }
+}
+
+fn parse_formula(src: str) -> Result[Expr, str] {
+  let toks = tokenize(src)?
+  let p = parse_expr(toks, 0)?
+  if p.pos != len(toks) { return Err("#PARSE") }
+  return Ok(p.e)
+}
+
+fn is_plain_int(s: str) -> bool {
+  if starts_with(s, "-") { return all_digits(slice(s, 1, len(s))) }
+  return all_digits(s)
+}
+
+fn plain_int_value(s: str) -> int {
+  if starts_with(s, "-") { return 0 - digits_value(slice(s, 1, len(s))) }
+  return digits_value(s)
+}
+
+// Cells of a range, column by column, top to bottom.
+fn range_cells(a: int, b: int) -> list[int] {
+  let c1 = min(a / 100, b / 100)
+  let c2 = max(a / 100, b / 100)
+  let r1 = min(a % 100, b % 100)
+  let r2 = max(a % 100, b % 100)
+  var out: list[int] = []
+  for col in range(c1, c2 + 1) {
+    for row in range(r1, r2 + 1) {
+      out = push(out, col * 100 + row)
+    }
+  }
+  return out
+}
+
+fn collect_deps(e: Expr, acc: list[int]) -> list[int] {
+  return match e {
+    Lit(_) => acc,
+    Ref(c) => push(acc, c),
+    Neg(inner) => collect_deps(inner, acc),
+    Bin(_, l, r) => collect_deps(r, collect_deps(l, acc)),
+    Func(_, a, b) => acc + range_cells(a, b),
+  }
+}
+
+fn lookup(vals: map[int, Result[int, str]], c: int) -> Result[int, str] {
+  return unwrap_or(get(vals, c), Ok(0))
+}
+
+fn eval_expr(e: Expr, vals: map[int, Result[int, str]]) -> Result[int, str] {
+  match e {
+    Lit(v) => { return Ok(v) }
+    Ref(c) => { return lookup(vals, c) }
+    Neg(inner) => {
+      let v = eval_expr(inner, vals)?
+      return Ok(0 - v)
+    }
+    Bin(op, l, r) => {
+      let x = eval_expr(l, vals)?
+      let y = eval_expr(r, vals)?
+      if op == "+" { return Ok(x + y) }
+      if op == "-" { return Ok(x - y) }
+      if op == "*" { return Ok(x * y) }
+      if y == 0 { return Err("#DIV0") }
+      return Ok(x / y)
+    }
+    Func(name, a, b) => {
+      var first = true
+      var acc = 0
+      for c in range_cells(a, b) {
+        let v = lookup(vals, c)?
+        if first {
+          acc = v
+          first = false
+        } else if name == "SUM" {
+          acc = acc + v
+        } else if name == "MIN" {
+          acc = min(acc, v)
+        } else {
+          acc = max(acc, v)
+        }
+      }
+      return Ok(acc)
+    }
+  }
+}
+
+fn main() uses io {
+  // Read definitions; last one wins.
+  var raw: map[int, str] = [:]
+  let text = read_all()
+  for line in split(text, "\n") {
+    let t = trim(line)
+    if t == "" { continue }
+    let idx = index_of(chars(t), ":") else { continue }
+    let name = trim(slice(t, 0, idx))
+    let content = trim(slice(t, idx + 1, len(t)))
+    let cell = parse_cell_name(name) else { continue }
+    raw = put(raw, cell, content)
+  }
+
+  // Classify cells.
+  var vals: map[int, Result[int, str]] = [:]
+  var formulas: map[int, Expr] = [:]
+  for (c, content) in entries(raw) {
+    if starts_with(content, "=") {
+      match parse_formula(slice(content, 1, len(content))) {
+        Ok(e) => { formulas = put(formulas, c, e) }
+        Err(msg) => { vals = put(vals, c, Err(msg)) }
+      }
+    } else if is_plain_int(content) {
+      vals = put(vals, c, Ok(plain_int_value(content)))
+    } else {
+      vals = put(vals, c, Err("#PARSE"))
+    }
+  }
+
+  // Dependency graph among formula cells (edges cell -> dep), deduplicated.
+  let nodes = keys(formulas)
+  var adj: map[int, list[int]] = [:]
+  var radj: map[int, list[int]] = [:]
+  var self_loop: map[int, bool] = [:]
+  for n in nodes { radj = put(radj, n, []) }
+  for n in nodes {
+    var seen: map[int, bool] = [:]
+    var out: list[int] = []
+    for d in collect_deps(formulas[n], []) {
+      if has(formulas, d) and not has(seen, d) {
+        seen = put(seen, d, true)
+        out = push(out, d)
+        radj = put(radj, d, push(radj[d], n))
+        if d == n { self_loop = put(self_loop, n, true) }
+      }
+    }
+    adj = put(adj, n, out)
+  }
+
+  // Kosaraju pass 1: finish order on adj (iterative DFS).
+  var visited: map[int, bool] = [:]
+  var order: list[int] = []
+  for start in nodes {
+    if has(visited, start) { continue }
+    visited = put(visited, start, true)
+    var stack: list[(int, int)] = [(start, 0)]
+    while len(stack) > 0 {
+      let top = last(stack) else { break }
+      let (node, ei) = top
+      let outs = adj[node]
+      if ei < len(outs) {
+        stack = set_at(stack, len(stack) - 1, (node, ei + 1))
+        let nxt = outs[ei]
+        if not has(visited, nxt) {
+          visited = put(visited, nxt, true)
+          stack = push(stack, (nxt, 0))
+        }
+      } else {
+        order = push(order, node)
+        stack = pop(stack)
+      }
+    }
+  }
+
+  // Pass 2: on radj in decreasing finish order; SCCs come out sources-first.
+  var comp_of: map[int, int] = [:]
+  var comps: list[list[int]] = []
+  var k = len(order) - 1
+  while k >= 0 {
+    let root = order[k]
+    k = k - 1
+    if has(comp_of, root) { continue }
+    let cid = len(comps)
+    comp_of = put(comp_of, root, cid)
+    var members: list[int] = []
+    var st: list[int] = [root]
+    while len(st) > 0 {
+      let node = last(st) else { break }
+      st = pop(st)
+      members = push(members, node)
+      for p in radj[node] {
+        if not has(comp_of, p) {
+          comp_of = put(comp_of, p, cid)
+          st = push(st, p)
+        }
+      }
+    }
+    comps = push(comps, members)
+  }
+
+  // Evaluate SCCs dependencies-first.
+  var ci = len(comps) - 1
+  while ci >= 0 {
+    let members = comps[ci]
+    ci = ci - 1
+    if len(members) > 1 or has(self_loop, members[0]) {
+      for m in members { vals = put(vals, m, Err("#CYCLE")) }
+    } else {
+      let m = members[0]
+      vals = put(vals, m, eval_expr(formulas[m], vals))
+    }
+  }
+
+  for c in sort(keys(raw)) {
+    let v = lookup(vals, c)
+    let shown = match v {
+      Ok(n) => str(n),
+      Err(msg) => msg,
+    }
+    print("{cell_name(c)} = {shown}")
+  }
+}

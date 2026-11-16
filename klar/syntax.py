@@ -706,6 +706,8 @@ class Parser:
                     ann = self.parse_type()
                 self.expect_sym("=", "destructuring form: let (a, b) = pair")
                 value = self.parse_expr()
+                if self.at_kw("else"):
+                    value = self.let_else(value)
                 tmp = f"tuple__{t.line}_{t.col}"
                 first = Node("Let", t.line, t.col, name=tmp, mutable=False, ann=ann, value=value, unpack=len(names))
                 return Node("Destructure", t.line, t.col, stmts=[first] + self.destructure(names, tmp, t, mutable))
@@ -716,6 +718,8 @@ class Parser:
                 ann = self.parse_type()
             self.expect_sym("=", "bindings must be initialised: let x = 1")
             value = self.parse_expr()
+            if self.at_kw("else"):
+                value = self.let_else(value)
             return Node("Let", t.line, t.col, name=name, mutable=mutable, ann=ann, value=value)
         if self.at_kw("if"):
             return self.parse_if_stmt()
@@ -1051,6 +1055,19 @@ class Parser:
             items.append(self.parse_expr())
         self.expect_sym("]", "separate list items with commas")
         return Node("ListLit", t.line, t.col, items=items)
+
+    def let_else(self, value):
+        """`let x = opt else { return ... }`: the value inside Some/Ok, or run the block, which must leave
+        (return, break or continue). It is a match whose first pattern the checker sets to Some or Ok."""
+        e = self.advance()
+        if not self.at_sym("{"):
+            self.error("`let ... else` takes a block", "let x = maybe else { return Err(\"missing\") }")
+        block = self.parse_block()
+        tmp = f"else__{e.line}_{e.col}"
+        some = Node("PVariant", e.line, e.col, name="Some", subs=[Node("PBind", e.line, e.col, name=tmp)])
+        arms = [Node("Arm", e.line, e.col, pattern=some, body=Node("Name", e.line, e.col, name=tmp)),
+                Node("Arm", e.line, e.col, pattern=Node("PWild", e.line, e.col), body=block)]
+        return Node("Match", value.line, value.col, scrutinee=value, arms=arms, let_else=block)
 
     def parse_match(self):
         t = self.expect_kw("match")

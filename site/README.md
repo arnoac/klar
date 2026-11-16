@@ -11,7 +11,7 @@ cd site/_site && python3 -m http.server 8000
 
 | Path | What it is |
 |---|---|
-| `build.klar` | the generator: landing page, guides, references, playground page, `llms.txt`, `site.css` |
+| `build.klar` | the generator: landing page, guides, references, playground page, `llms.txt`, `llms-full.txt`, `site.css` |
 | `md.klar`, `highlight.klar` | Markdown (the subset the docs use) to `std.html`, and Klar syntax highlighting |
 | `stdref.klar` | the standard library reference, read from `klar/std/*.klar` and `klar/prelude.py` |
 | `content/` | the guides (`start.md`, `tutorial.md`); `<!-- include FILE#section -->` pulls in tested code |
@@ -19,8 +19,8 @@ cd site/_site && python3 -m http.server 8000
 | `examples/` | the landing page's code: a sample and a mistake (its errors come from the real checker) |
 | `playground/` | the playground: `playground.js` (editor and runner), `compiler-worker.js`, `examples/` |
 
-The language reference page is `klar/SPEC.md` itself, and `llms.txt` is that reference plus every library
-signature, so nothing is written twice.
+The language reference page is `klar/SPEC.md` itself, `llms.txt` is `klar/QUICK.md` (the one-page version
+for agents), and `llms-full.txt` is the reference plus every library signature, so nothing is written twice.
 
 ## The playground
 

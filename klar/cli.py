@@ -387,6 +387,7 @@ Packages
 
 Learn
   klar spec                 print the complete language reference
+  klar doc [std.MODULE|NAME]   standard library signatures: all, one module, or names matching NAME
   klar explain CODE         explain an error code, e.g. klar explain E306
   klar help COMMAND         options and examples for one command
   klar lsp                  language server for editors (klar debug --dap: their debugger)
@@ -427,6 +428,8 @@ EXAMPLES = {
     "update": "klar update                all git dependencies\n  klar update textkit",
     "bind": "klar bind marked          writes npm/marked.klar",
     "explain": "klar explain E306",
+    "doc": "klar doc                  every std module, one line per function\n  klar doc std.ui            one module\n"
+           "  klar doc ui_save           every name containing ui_save, with its full comment",
     "debug": "klar debug main.klar --break 12          stack and variables each time line 12 runs\n"
              "  klar debug --break store.klar:40,41 --json   any file of the program; JSON lines on stderr\n"
              "  klar debug main.klar                     on an error, the variables of every frame",
@@ -458,13 +461,14 @@ DESCRIPTIONS = {
     "lsp": "Run the language server over stdin/stdout (diagnostics, hover, go to definition, rename, completion).",
     "spec": "Print the complete language reference (about 4,000 words). Read it once before writing Klar.",
     "explain": "Explain an error code in detail.",
+    "doc": "Print standard library signatures with a one-line summary each (much shorter than the sources).",
 }
 
 # What people (and agents) type out of habit, and the Klar command for it.
 GUESSES = {
     "compile": "build", "make": "build", "init": "new", "create": "new", "start": "dev", "serve": "dev",
-    "watch": "dev", "format": "fmt", "lint": "check", "typecheck": "check", "vet": "check", "doc": "spec",
-    "docs": "spec", "reference": "spec", "i": "install", "get": "add", "upgrade": "update", "rm": "remove",
+    "watch": "dev", "format": "fmt", "lint": "check", "typecheck": "check", "vet": "check",
+    "docs": "doc", "reference": "spec", "i": "install", "get": "add", "upgrade": "update", "rm": "remove",
     "uninstall": "remove", "exec": "run", "version": "--version",
 }
 
@@ -663,7 +667,7 @@ def unknown_command(word):
 
 
 COMMANDS = ["new", "run", "dev", "test", "check", "fmt", "build", "add", "remove", "install", "update", "bind",
-            "audit", "spec", "explain", "help", "lsp", "debug"]
+            "audit", "spec", "doc", "explain", "help", "lsp", "debug"]
 
 
 def app_files(arg):
@@ -822,6 +826,8 @@ def parser():
     dg.add_argument("--dap", action="store_true", help="speak the Debug Adapter Protocol on stdin/stdout (editors)")
     dg.add_argument("args", nargs=argparse.REMAINDER, help="arguments for the program (see args())")
     cmd("spec", "the language reference")
+    d = cmd("doc", "standard library signatures")
+    d.add_argument("target", nargs="?", help="std.MODULE, or part of a name")
     x = cmd("explain", "explain an error code")
     x.add_argument("code")
     return p, sub
@@ -932,6 +938,15 @@ def main(argv=None):
         return 0
     if a.cmd == "explain":
         return cmd_explain(a.code)
+    if a.cmd == "doc":
+        from . import stddoc
+        text = stddoc.doc(a.target)
+        if text is None:
+            print(f"error: nothing in the standard library is called {a.target!r} "
+                  f"(modules: {', '.join('std.' + m for m in stddoc.modules())})", file=sys.stderr)
+            return 1
+        print(text, end="")
+        return 0
     return 2
 
 

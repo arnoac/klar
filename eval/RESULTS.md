@@ -1,5 +1,64 @@
 # Results
 
+## Fifth pilot, November 2026: making Klar cheaper for agents
+
+**Question.** Pilot 4 left Klar correct but more expensive than TypeScript. Where does the extra cost go, and
+can changes to Klar remove it?
+
+**Setup.** One model (the strong one), tasks `tickets`, `splitter` and `sheet`. First a baseline of the
+unchanged Klar and a fresh TypeScript run, side by side, with every agent asked to list the files it read.
+Then the changes below, three more Klar trials of each task, and a second TypeScript trial of each so that
+both languages are measured in the same session. Records and programs are in
+[results/pilot5-2026-11](results/pilot5-2026-11) (`base-*` before, `r1-` to `r3-` after; `r1` ran before
+`let ... else`).
+
+**Where the cost was.** The baseline Klar agents read `SPEC.md` in full (about 7,000 tokens), and the browser
+app agent also read `std/ui.klar`, `std/html.klar` and four example apps. The TypeScript agents read only the
+task. Klar code itself was 10 to 40% longer. The extra tokens matched what was read almost exactly.
+
+**What changed in Klar.**
+
+* **`klar/QUICK.md`**: the language on one page (about 1,300 words), written for agents that already know
+  TypeScript or Rust: one annotated program, the rules the checker enforces, every built-in, the library
+  modules and a browser app. The eval footer now points at it first, and at `SPEC.md` for lookups. On the
+  website, `llms.txt` is now this page and the old full file is `llms-full.txt`.
+* **`klar doc [std.NAME | NAME]`**: library signatures with a one-line summary each, generated from the
+  sources (all of std: 30 KB instead of 120 KB of sources; `klar doc std.ui` is about 600 tokens).
+* **`let x = maybe else { return ... }`**: unwraps `Some`/`Ok` or runs a block that must leave. It replaces
+  the four-line `match` that was the most common pattern in agents' Klar, and works with `let (a, b) = ...`.
+
+| task | TypeScript (2 trials) | Klar before | Klar after (3 trials) |
+|---|---|---|---|
+| tickets | 65,950 tokens, 40 s | 80,048 tokens, 43 s | 70,395 tokens, 42 s |
+| splitter | 64,650 tokens, 40 s | 94,155 tokens, 71 s | 75,959 tokens, 56 s |
+| sheet | 67,200 tokens, 64 s | 85,756 tokens, 104 s | 78,395 tokens, 107 s |
+| **all three** | **197,800 tokens, 144 s** | **260,000 (+31%), 218 s (1.52x)** | **224,800 (+14%), 205 s (1.43x)** |
+
+Means per trial. Every trial in both languages passed every hidden test on the first try (9 Klar trials after
+the change, 3 before, 6 TypeScript).
+
+### What this says
+
+* **The token gap more than halved, from +31% to +14%.** No agent after the change read `SPEC.md` in full; they
+  read `QUICK.md`, ran `klar doc` for the one or two modules they used, and grepped `SPEC.md` for a detail at
+  most. On `tickets` Klar is now within 7% of TypeScript's tokens and level on time.
+* **Klar is not yet cheaper than TypeScript**, and these numbers say why: TypeScript costs the agent nothing to
+  learn, so Klar starts about 2,000 tokens behind (QUICK.md), and its programs are still 10 to 20% longer.
+  Beating TypeScript needs Klar programs shorter than TypeScript programs, not only cheaper docs.
+* **`sheet` time did not move** (about 105 s against 64 s). Those agents spent their time designing and
+  testing a graph algorithm; with the docs cost gone, what remains is writing a longer program and one
+  compile-and-fix round (2 of the 3 sheet trials after the change hit a checker error, each fixed in one step).
+* **Compiler errors after the change**: `last(xs)` returning an Option (E301), a local named like a top-level
+  function (E202), and `let (a, b) = x else` (E103, since supported). QUICK.md now states the first two.
+* One `splitter` agent still read an example app in full (82,000 tokens against 73,000 for the other two).
+  The footer no longer lists the examples folder.
+
+### Next
+
+Programs shorter than TypeScript are the remaining lever. Candidates, each a change to how Klar looks and so
+Arno's call: `+=` (SPEC says "no += or ++"), an implicit value for the last expression of a block, and
+string/list helpers that remove loops the agents wrote by hand (`pad_left`, `count`, `group_by`).
+
 ## Fourth pilot, November 2026: Klar after the fixes and the faster interpreter
 
 **Setup.** After fixing the gaps the earlier pilots found and after `klar run` became 10 to 110 times faster

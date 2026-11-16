@@ -67,6 +67,9 @@ class CompiledMatchesInterpreter(unittest.TestCase):
     def test_feature_program_release(self):
         self.check_same(os.path.join(PROGRAMS, "features.klar"), release=True)
 
+    def test_let_else(self):
+        self.check_same(os.path.join(PROGRAMS, "let_else.klar"), stdin="1\nx\n2\n")
+
     def test_tuples_and_error_wrapping(self):
         self.check_same(os.path.join(PROGRAMS, "glue.klar"))
 

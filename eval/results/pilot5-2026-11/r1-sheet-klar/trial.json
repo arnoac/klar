@@ -1,0 +1,38 @@
+{
+  "task": "sheet",
+  "lang": "klar",
+  "model": "strong-agent",
+  "docs": "repo",
+  "max_rounds": 3,
+  "rounds": [
+    {
+      "round": 1,
+      "agent": {
+        "exit": null,
+        "seconds": 105.0,
+        "tokens": 78419,
+        "tool_uses": 12
+      },
+      "build_ok": true,
+      "passed": 22,
+      "total": 22,
+      "failing": []
+    }
+  ],
+  "first_try_pass": true,
+  "first_try_score": 1.0,
+  "rounds_to_pass": 1,
+  "final_score": 1.0,
+  "tools": {
+    "tool_calls": 6,
+    "check_calls": 2,
+    "failed_checks": 1,
+    "run_calls": 4,
+    "error_codes": {
+      "E301": 4,
+      "E202": 1,
+      "E302": 1
+    },
+    "logged": true
+  }
+}

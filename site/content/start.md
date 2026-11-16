@@ -122,4 +122,4 @@ and completion. The VS Code extension and the setup for Neovim and Helix are in
 
 * The [language reference](reference.html) is the whole language on one page.
 * The [standard library](std/index.html) lists every module and function, generated from the source.
-* Working with an AI agent? Give it [llms.txt](llms.txt): the reference and every library signature in one file.
+* Working with an AI agent? Give it [llms.txt](llms.txt): the language on one page. [llms-full.txt](llms-full.txt) adds the complete reference and every library signature.

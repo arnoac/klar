@@ -1318,6 +1318,14 @@ class Checker:
     # ---------------------------------------------------------- match
     def infer_match(self, e, expected):
         st = self.infer(e.scrutinee)
+        if getattr(e, "let_else", None) is not None:
+            pt = prune(st)
+            name = pt.name if isinstance(pt, TCon) else ""
+            if name not in ("Option", "Result"):
+                self.err("E301", f"`let ... else` needs an Option or a Result, not `{show(st)}`", e.scrutinee,
+                         "write `let x = value` (there is nothing to unwrap)")
+                return TVar()
+            e.arms[0].pattern.name = "Some" if name == "Option" else "Ok"
         if not e.arms:
             self.err("E306", "match has no arms", e)
         result = None
@@ -1348,6 +1356,10 @@ class Checker:
             missing = witness[0]
             self.err("E306", f"match is not exhaustive: missing case {missing}", e,
                      f"add an arm `{missing} => ...` or a catch-all `_ => ...`")
+        if getattr(e, "let_else", None) is not None and falls_through:
+            self.err("E301", "the `else` block of `let ... else` can end without leaving", e.let_else,
+                     "it runs when there is no value to bind: end every path with return, break or continue")
+            return result
         if falls_through:
             return UNIT
         return result if result is not None else NEVER

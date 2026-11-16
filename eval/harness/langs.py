@@ -19,13 +19,11 @@ KLAR_FOOTER = """
 ## Language and tools
 
 Write the program in **Klar**, in the file `main.klar` in this folder (you may add more `.klar` modules next
-to it). Klar is a new language: you will not have seen it before. Everything you need to learn it is in this
-folder:
+to it). Klar is a new language: you will not have seen it before. Learn it here:
 
-* `toolchain/klar/SPEC.md`: the complete language reference (read this first).
-* `toolchain/klar/std/*.klar`: the standard library sources, with every signature.
-* `toolchain/README.md`, `toolchain/DESIGN.md` and `toolchain/examples/`: overview, design notes and example
-  programs.
+* `toolchain/klar/QUICK.md`: Klar in one page, written for agents that know TypeScript or Rust (read this first).
+* `klar doc std.NAME` prints a library module's signatures; `toolchain/klar/SPEC.md` is the complete reference
+  (search it when QUICK.md leaves something open).
 
 Commands (run them from this folder, with `bin` on your `PATH`):
 
@@ -40,13 +38,12 @@ KLAR_WEB_FOOTER = """
 ## Language and tools
 
 Write the app in **Klar**, in the file `main.klar` in this folder (you may add more `.klar` modules next to
-it), as a browser app using `std.ui` (see "Web apps" in the reference). Klar is a new language: you will not
-have seen it before. Everything you need to learn it is in this folder:
+it), as a browser app using `std.ui`. Klar is a new language: you will not have seen it before. Learn it here:
 
-* `toolchain/klar/SPEC.md`: the complete language reference (read this first).
-* `toolchain/klar/std/*.klar`: the standard library sources, with every signature.
-* `toolchain/README.md`, `toolchain/DESIGN.md` and `toolchain/examples/`: overview, design notes and example
-  programs (`examples/apps/` has browser apps).
+* `toolchain/klar/QUICK.md`: Klar in one page, written for agents that know TypeScript or Rust, with a browser
+  app (read this first).
+* `klar doc std.NAME` prints a library module's signatures (`klar doc std.html`); `toolchain/klar/SPEC.md` is
+  the complete reference (search it when QUICK.md leaves something open).
 
 Commands (run them from this folder, with `bin` on your `PATH`):
 

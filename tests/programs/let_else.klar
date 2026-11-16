@@ -1,0 +1,25 @@
+fn half(s: str) -> Result[int, str] {
+  let n = parse_int(s) else { return Err("bad number: {s}") }
+  if n % 2 != 0 { return Err("odd") }
+  return Ok(n / 2)
+}
+
+fn quarter(s: str) -> Result[int, str] {
+  let h = half(s) else { return Err("no half") }
+  let q: int = half(str(h)) else { return Err("no quarter") }
+  return Ok(q)
+}
+
+fn main() uses io {
+  var total = 0
+  while true {
+    let line = read_line() else { break }
+    let n = parse_int(line) else { continue }
+    total = total + n
+  }
+  print(total)
+  print(half("8"))
+  print(half("x"))
+  print(quarter("8"))
+  print(quarter("6"))
+}

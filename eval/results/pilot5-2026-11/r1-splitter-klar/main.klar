@@ -1,0 +1,185 @@
+use std.ui { Next, ui_run, ui_save, ui_load }
+use std.json { json_encode, json_decode }
+use std.html { Html, div, form, button, input, ul, li, text, id, value, input_type, on_submit, on_input, on_click, class, h1, p, placeholder, nothing }
+
+struct Expense { name: str, cents: int, desc: str }
+
+struct Model { name: str, amount: str, desc: str, items: list[Expense], error: Option[str] }
+
+enum Msg { SetName(t: str), SetAmount(t: str), SetDesc(t: str), Add, Remove(i: int) }
+
+fn is_digit(c: str) -> bool {
+  return c >= "0" and c <= "9"
+}
+
+fn digits_value(s: str) -> int {
+  var n = 0
+  for c in chars(s) {
+    n = n * 10 + (ord(c) - ord("0"))
+  }
+  return n
+}
+
+fn all_digits(s: str) -> bool {
+  return all(chars(s), fn(c) => is_digit(c))
+}
+
+fn parse_amount(raw: str) -> Option[int] {
+  let s = trim(raw)
+  let parts = split(s, ".")
+  if len(parts) == 1 {
+    let a = parts[0]
+    if len(a) == 0 or not all_digits(a) { return None }
+    let v = digits_value(a) * 100
+    if v <= 0 { return None }
+    return Some(v)
+  }
+  if len(parts) != 2 { return None }
+  let w = parts[0]
+  let f = parts[1]
+  if len(w) == 0 or not all_digits(w) { return None }
+  if len(f) == 0 or len(f) > 2 or not all_digits(f) { return None }
+  let fc = if len(f) == 1 then digits_value(f) * 10 else digits_value(f)
+  let v = digits_value(w) * 100 + fc
+  if v <= 0 { return None }
+  return Some(v)
+}
+
+fn fmt_cents(c: int) -> str {
+  let a = abs(c)
+  let whole = a / 100
+  let frac = a % 100
+  let pad = if frac < 10 then "0" else ""
+  let sign = if c < 0 then "-" else ""
+  return "{sign}{whole}.{pad}{frac}"
+}
+
+fn fmt_signed(c: int) -> str {
+  if c > 0 { return "+" + fmt_cents(c) }
+  return fmt_cents(c)
+}
+
+fn total_cents(items: list[Expense]) -> int {
+  return fold(items, 0, fn(acc, e) => acc + e.cents)
+}
+
+fn people(items: list[Expense]) -> list[str] {
+  var ns: list[str] = []
+  for e in items {
+    if not contains(ns, e.name) { ns = push(ns, e.name) }
+  }
+  return sort(ns)
+}
+
+fn balances(items: list[Expense]) -> list[(str, int)] {
+  let ns = people(items)
+  let n = len(ns)
+  if n == 0 { return [] }
+  let t = total_cents(items)
+  let share = (2 * t + n) / (2 * n)
+  var out: list[(str, int)] = []
+  for nm in ns {
+    let paid = fold(filter(items, fn(e) => e.name == nm), 0, fn(acc, e) => acc + e.cents)
+    out = push(out, (nm, paid - share))
+  }
+  return out
+}
+
+fn expense_text(e: Expense) -> str {
+  let d = trim(e.desc)
+  if d == "" { return "{e.name} paid {fmt_cents(e.cents)}" }
+  return "{e.name} paid {fmt_cents(e.cents)} for {d}"
+}
+
+fn remove_at(items: list[Expense], i: int) -> list[Expense] {
+  var out: list[Expense] = []
+  var k = 0
+  for e in items {
+    if k != i { out = push(out, e) }
+    k = k + 1
+  }
+  return out
+}
+
+fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
+  return match msg {
+    SetName(t) => Next(m with (name: t), []),
+    SetAmount(t) => Next(m with (amount: t), []),
+    SetDesc(t) => Next(m with (desc: t), []),
+    Add => {
+      let nm = trim(m.name)
+      if nm == "" { return Next(m with (error: Some("Please enter a name.")), []) }
+      let cents = match parse_amount(m.amount) {
+        Some(c) => c,
+        None => { return Next(m with (error: Some("Please enter a valid amount greater than zero.")), []) }
+      }
+      let items = push(m.items, Expense(name: nm, cents: cents, desc: trim(m.desc)))
+      let m2 = m with (amount: "", desc: "", items: items, error: None)
+      return Next(m2, [ui_save("expenses", json_encode(items))])
+    }
+    Remove(i) => {
+      let items = remove_at(m.items, i)
+      return Next(m with (items: items), [ui_save("expenses", json_encode(items))])
+    }
+  }
+}
+
+fn view(m: Model) -> Html[Msg] {
+  var rows: list[Html[Msg]] = []
+  var i = 0
+  for e in m.items {
+    let k = i
+    rows = push(rows, li([], [text(expense_text(e) + " "), button([class("remove"), input_type("button"), on_click(Remove(k))], [text("Remove")])]))
+    i = i + 1
+  }
+  let bal = map(balances(m.items), fn(b) => li([], [text("{b.0}: {fmt_signed(b.1)}")]))
+  let err = match m.error {
+    Some(e) => p([id("error"), class("error")], [text(e)]),
+    None => nothing(),
+  }
+  return div([], [
+    h1([], [text("Splitter")]),
+    form([on_submit(Add)], [
+      input([id("name"), placeholder("Who paid"), value(m.name), on_input(fn(t) => SetName(t))]),
+      input([id("amount"), placeholder("Amount"), value(m.amount), on_input(fn(t) => SetAmount(t))]),
+      input([id("desc"), placeholder("Description"), value(m.desc), on_input(fn(t) => SetDesc(t))]),
+      button([id("add"), input_type("submit")], [text("Add")]),
+    ]),
+    err,
+    ul([id("expenses")], rows),
+    p([id("total")], [text("Total: " + fmt_cents(total_cents(m.items)))]),
+    ul([id("balances")], bal),
+  ])
+}
+
+fn main() uses io {
+  let saved: list[Expense] = match ui_load("expenses") {
+    Some(t) => match json_decode(t) {
+      Ok(xs) => xs,
+      Err(_) => [],
+    },
+    None => [],
+  }
+  ui_run(Next(Model(name: "", amount: "", desc: "", items: saved, error: None), []), update, view)
+}
+
+test "amounts" {
+  assert parse_amount("5") == Some(500)
+  assert parse_amount(" 5.5 ") == Some(550)
+  assert parse_amount("0.01") == Some(1)
+  assert parse_amount("0") == None
+  assert parse_amount("-1") == None
+  assert parse_amount("1.234") == None
+  assert parse_amount("abc") == None
+  assert parse_amount("") == None
+  assert parse_amount("5.") == None
+  assert parse_amount(".5") == None
+}
+
+test "balances" {
+  let items = [Expense(name: "Bob", cents: 1000, desc: ""), Expense(name: "Ann", cents: 3000, desc: "x")]
+  assert balances(items) == [("Ann", 1000), ("Bob", -1000)]
+  assert fmt_signed(-333) == "-3.33"
+  assert fmt_signed(0) == "0.00"
+  assert fmt_signed(1250) == "+12.50"
+}

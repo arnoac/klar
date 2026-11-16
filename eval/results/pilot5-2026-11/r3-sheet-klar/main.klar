@@ -1,0 +1,352 @@
+// sheet: evaluate a small spreadsheet read from stdin.
+
+enum Expr {
+  Lit(n: int),
+  Ref(c: int),
+  Neg(e: Expr),
+  Bin(op: str, l: Expr, r: Expr),
+  Call(name: str, a: int, b: int),
+}
+
+enum Tok {
+  TNum(n: int),
+  TCell(c: int),
+  TFunc(name: str),
+  TSym(s: str),
+}
+
+enum Val {
+  Num(n: int),
+  Bad(e: str),
+}
+
+enum Content {
+  Plain(n: int),
+  Formula(e: Expr),
+  Invalid,
+}
+
+struct P { e: Expr, pos: int }
+
+fn ncells() -> int { return 2600 }
+
+fn is_digit(c: str) -> bool { return contains("0123456789", c) }
+
+fn is_upper(c: str) -> bool { return contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ", c) }
+
+fn is_alnum(c: str) -> bool {
+  return is_digit(c) or is_upper(c) or contains("abcdefghijklmnopqrstuvwxyz_", c)
+}
+
+fn all_digits(s: str) -> bool {
+  if len(s) == 0 { return false }
+  for c in chars(s) {
+    if not is_digit(c) { return false }
+  }
+  return true
+}
+
+// Parse a cell name like "A1" or "Z99" into col*100+row.
+fn parse_cell(w: str) -> Option[int] {
+  if len(w) < 2 or len(w) > 3 { return None }
+  let c = w[0]
+  if not is_upper(c) { return None }
+  let digits = slice(w, 1, len(w))
+  if not all_digits(digits) { return None }
+  if digits[0] == "0" { return None }
+  let row = parse_int(digits)?
+  if row < 1 or row > 99 { return None }
+  return Some((ord(c) - ord("A")) * 100 + row)
+}
+
+fn cell_name(c: int) -> str {
+  return chr(ord("A") + c / 100) + str(c % 100)
+}
+
+fn tokenize(src: str) -> Option[list[Tok]] {
+  var toks: list[Tok] = []
+  let cs = chars(src)
+  var i = 0
+  while i < len(cs) {
+    let c = cs[i]
+    if c == " " or c == "\t" {
+      i = i + 1
+    } else if is_alnum(c) {
+      var w = ""
+      while i < len(cs) and is_alnum(cs[i]) {
+        w = w + cs[i]
+        i = i + 1
+      }
+      if all_digits(w) {
+        toks = push(toks, TNum(parse_int(w)?))
+      } else if w == "SUM" or w == "MIN" or w == "MAX" {
+        toks = push(toks, TFunc(w))
+      } else {
+        let cell = parse_cell(w)?
+        toks = push(toks, TCell(cell))
+      }
+    } else if contains("+-*/():", c) {
+      toks = push(toks, TSym(c))
+      i = i + 1
+    } else {
+      return None
+    }
+  }
+  return Some(toks)
+}
+
+fn sym_at(toks: list[Tok], pos: int) -> str {
+  return match get(toks, pos) {
+    Some(TSym(s)) => s,
+    _ => "",
+  }
+}
+
+fn parse_expr(toks: list[Tok], pos: int) -> Option[P] {
+  var left = parse_term(toks, pos)?
+  while true {
+    let op = sym_at(toks, left.pos)
+    if op != "+" and op != "-" { break }
+    let right = parse_term(toks, left.pos + 1)?
+    left = P(e: Bin(op, left.e, right.e), pos: right.pos)
+  }
+  return Some(left)
+}
+
+fn parse_term(toks: list[Tok], pos: int) -> Option[P] {
+  var left = parse_unary(toks, pos)?
+  while true {
+    let op = sym_at(toks, left.pos)
+    if op != "*" and op != "/" { break }
+    let right = parse_unary(toks, left.pos + 1)?
+    left = P(e: Bin(op, left.e, right.e), pos: right.pos)
+  }
+  return Some(left)
+}
+
+fn parse_unary(toks: list[Tok], pos: int) -> Option[P] {
+  if sym_at(toks, pos) == "-" {
+    let inner = parse_unary(toks, pos + 1)?
+    return Some(P(e: Neg(inner.e), pos: inner.pos))
+  }
+  return parse_primary(toks, pos)
+}
+
+fn parse_primary(toks: list[Tok], pos: int) -> Option[P] {
+  let t = get(toks, pos)?
+  match t {
+    TNum(n) => { return Some(P(e: Lit(n), pos: pos + 1)) }
+    TCell(c) => { return Some(P(e: Ref(c), pos: pos + 1)) }
+    TFunc(name) => {
+      if sym_at(toks, pos + 1) != "(" { return None }
+      let a = match get(toks, pos + 2) { Some(TCell(c)) => c, _ => -1 }
+      if a < 0 { return None }
+      if sym_at(toks, pos + 3) != ":" { return None }
+      let b = match get(toks, pos + 4) { Some(TCell(c)) => c, _ => -1 }
+      if b < 0 { return None }
+      if sym_at(toks, pos + 5) != ")" { return None }
+      return Some(P(e: Call(name, a, b), pos: pos + 6))
+    }
+    TSym(s) => {
+      if s != "(" { return None }
+      let inner = parse_expr(toks, pos + 1)?
+      if sym_at(toks, inner.pos) != ")" { return None }
+      return Some(P(e: inner.e, pos: inner.pos + 1))
+    }
+  }
+}
+
+fn parse_formula(src: str) -> Option[Expr] {
+  let toks = tokenize(src)?
+  let p = parse_expr(toks, 0)?
+  if p.pos != len(toks) { return None }
+  return Some(p.e)
+}
+
+fn parse_content(s: str) -> Content {
+  if starts_with(s, "=") {
+    return match parse_formula(slice(s, 1, len(s))) {
+      Some(e) => Formula(e),
+      None => Invalid,
+    }
+  }
+  let body = if starts_with(s, "-") then slice(s, 1, len(s)) else s
+  if not all_digits(body) { return Invalid }
+  return match parse_int(s) {
+    Some(n) => Plain(n),
+    None => Invalid,
+  }
+}
+
+// Cells of a range, column by column, top to bottom.
+fn range_cells(a: int, b: int) -> list[int] {
+  let c1 = min(a / 100, b / 100)
+  let c2 = max(a / 100, b / 100)
+  let r1 = min(a % 100, b % 100)
+  let r2 = max(a % 100, b % 100)
+  var out: list[int] = []
+  for col in range(c1, c2 + 1) {
+    for row in range(r1, r2 + 1) {
+      out = push(out, col * 100 + row)
+    }
+  }
+  return out
+}
+
+fn deps_of(e: Expr, acc: list[int]) -> list[int] {
+  return match e {
+    Lit(_) => acc,
+    Ref(c) => push(acc, c),
+    Neg(x) => deps_of(x, acc),
+    Bin(_, l, r) => deps_of(r, deps_of(l, acc)),
+    Call(_, a, b) => {
+      var out = acc
+      for c in range_cells(a, b) { out = push(out, c) }
+      return out
+    }
+  }
+}
+
+fn eval_expr(e: Expr, vals: list[Val]) -> Val {
+  match e {
+    Lit(n) => { return Num(n) }
+    Ref(c) => { return vals[c] }
+    Neg(x) => {
+      return match eval_expr(x, vals) {
+        Num(n) => Num(0 - n),
+        Bad(m) => Bad(m),
+      }
+    }
+    Bin(op, l, r) => {
+      let lv = match eval_expr(l, vals) { Num(n) => n, Bad(m) => { return Bad(m) } }
+      let rv = match eval_expr(r, vals) { Num(n) => n, Bad(m) => { return Bad(m) } }
+      if op == "+" { return Num(lv + rv) }
+      if op == "-" { return Num(lv - rv) }
+      if op == "*" { return Num(lv * rv) }
+      if rv == 0 { return Bad("#DIV0") }
+      return Num(lv / rv)
+    }
+    Call(name, a, b) => {
+      var acc = 0
+      var first = true
+      for c in range_cells(a, b) {
+        let v = match vals[c] { Num(n) => n, Bad(m) => { return Bad(m) } }
+        if first {
+          acc = v
+          first = false
+        } else if name == "SUM" {
+          acc = acc + v
+        } else if name == "MIN" {
+          acc = min(acc, v)
+        } else {
+          acc = max(acc, v)
+        }
+      }
+      return Num(acc)
+    }
+  }
+}
+
+fn main() uses io {
+  let n = ncells()
+  var contents: list[Option[Content]] = map(range(0, n), fn(i) => None)
+  while true {
+    let raw = read_line() else { break }
+    let line = trim(raw)
+    if line == "" { continue }
+    let parts = split(line, ":")
+    let name = trim(parts[0])
+    let rest = trim(slice(line, len(parts[0]) + 1, len(line)))
+    let cell = parse_cell(name) else { continue }
+    contents = set_at(contents, cell, Some(parse_content(rest)))
+  }
+
+  // adjacency
+  var adj: list[list[int]] = map(range(0, n), fn(i) => [])
+  var defined: list[int] = []
+  for c in range(0, n) {
+    match contents[c] {
+      Some(Formula(e)) => {
+        adj = set_at(adj, c, deps_of(e, []))
+        defined = push(defined, c)
+      }
+      Some(_) => { defined = push(defined, c) }
+      None => { }
+    }
+  }
+
+  // iterative Tarjan; SCCs come out dependencies-first
+  var idx: list[int] = map(range(0, n), fn(i) => -1)
+  var low: list[int] = map(range(0, n), fn(i) => 0)
+  var onst: list[bool] = map(range(0, n), fn(i) => false)
+  var stk: list[int] = []
+  var counter = 0
+  var vals: list[Val] = map(range(0, n), fn(i) => Num(0))
+  for s in defined {
+    if idx[s] != -1 { continue }
+    var cs: list[(int, int)] = [(s, 0)]
+    idx = set_at(idx, s, counter)
+    low = set_at(low, s, counter)
+    counter = counter + 1
+    stk = push(stk, s)
+    onst = set_at(onst, s, true)
+    while len(cs) > 0 {
+      let top = cs[len(cs) - 1]
+      let v = top.0
+      let ei = top.1
+      let edges = adj[v]
+      if ei < len(edges) {
+        cs = set_at(cs, len(cs) - 1, (v, ei + 1))
+        let w = edges[ei]
+        if idx[w] == -1 {
+          idx = set_at(idx, w, counter)
+          low = set_at(low, w, counter)
+          counter = counter + 1
+          stk = push(stk, w)
+          onst = set_at(onst, w, true)
+          cs = push(cs, (w, 0))
+        } else if onst[w] {
+          low = set_at(low, v, min(low[v], idx[w]))
+        }
+      } else {
+        cs = pop(cs)
+        if low[v] == idx[v] {
+          var comp: list[int] = []
+          while true {
+            let x = stk[len(stk) - 1]
+            stk = pop(stk)
+            onst = set_at(onst, x, false)
+            comp = push(comp, x)
+            if x == v { break }
+          }
+          let cyclic = len(comp) > 1 or contains(edges, v)
+          for x in comp {
+            if cyclic {
+              vals = set_at(vals, x, Bad("#CYCLE"))
+            } else {
+              let val = match contents[x] {
+                Some(Plain(k)) => Num(k),
+                Some(Formula(e)) => eval_expr(e, vals),
+                Some(Invalid) => Bad("#PARSE"),
+                None => Num(0),
+              }
+              vals = set_at(vals, x, val)
+            }
+          }
+        }
+        if len(cs) > 0 {
+          let p = cs[len(cs) - 1].0
+          low = set_at(low, p, min(low[p], low[v]))
+        }
+      }
+    }
+  }
+
+  for c in defined {
+    let text = match vals[c] {
+      Num(k) => str(k),
+      Bad(m) => m,
+    }
+    print("{cell_name(c)} = {text}")
+  }
+}

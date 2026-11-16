@@ -1,0 +1,202 @@
+// Splitter: split shared expenses between friends, entirely in the browser.
+
+use std.ui { Next, ui_run, ui_save, ui_load }
+use std.html { Html, div, h1, p, form, button, input, ul, li, span, text, nothing, id, class, value,
+  placeholder, input_type, on_submit, on_input, on_click, html_render }
+use std.json { json_encode, json_decode }
+
+struct Expense { name: str, cents: int, desc: str }
+
+struct Model { name: str, amount: str, desc: str, error: str, expenses: list[Expense] }
+
+enum Msg { TypedName(t: str), TypedAmount(t: str), TypedDesc(t: str), Add, Remove(index: int) }
+
+// ---- amounts
+
+fn is_digit(c: str) -> bool {
+  return c >= "0" and c <= "9"
+}
+
+fn all_digits(s: str) -> bool {
+  return all(chars(s), fn(c) => is_digit(c))
+}
+
+// "12.50" -> Some(1250); None when the text is not a valid positive amount.
+fn parse_amount(raw: str) -> Option[int] {
+  let s = trim(raw)
+  let parts = split(s, ".")
+  if len(parts) > 2 { return None }
+  let whole = parts[0]
+  if len(whole) == 0 or not all_digits(whole) { return None }
+  var frac = ""
+  if len(parts) == 2 {
+    frac = parts[1]
+    if len(frac) < 1 or len(frac) > 2 or not all_digits(frac) { return None }
+  }
+  let w = parse_int(whole) else { return None }
+  var f = 0
+  if len(frac) == 1 {
+    let a = parse_int(frac) else { return None }
+    f = a * 10
+  }
+  if len(frac) == 2 {
+    let b = parse_int(frac) else { return None }
+    f = b
+  }
+  let cents = w * 100 + f
+  if cents <= 0 { return None }
+  return Some(cents)
+}
+
+fn fmt_cents(c: int) -> str {
+  let a = abs(c)
+  let r = a % 100
+  let pad = if r < 10 then "0" else ""
+  let sign = if c < 0 then "-" else ""
+  return "{sign}{a / 100}.{pad}{r}"
+}
+
+fn fmt_balance(c: int) -> str {
+  if c > 0 { return "+" + fmt_cents(c) }
+  return fmt_cents(c)
+}
+
+// ---- totals and balances
+
+fn total_cents(xs: list[Expense]) -> int {
+  return fold(xs, 0, fn(acc, e) => acc + e.cents)
+}
+
+fn people(xs: list[Expense]) -> list[str] {
+  var names: list[str] = []
+  for e in xs {
+    if not contains(names, e.name) { names = push(names, e.name) }
+  }
+  return sort(names)
+}
+
+fn share_cents(total: int, n: int) -> int {
+  // nearest cent, half rounds up (total is never negative)
+  return (2 * total + n) / (2 * n)
+}
+
+fn balances(xs: list[Expense]) -> list[(str, int)] {
+  let names = people(xs)
+  if len(names) == 0 { return [] }
+  let share = share_cents(total_cents(xs), len(names))
+  var out: list[(str, int)] = []
+  for nm in names {
+    let paid = fold(filter(xs, fn(e) => e.name == nm), 0, fn(acc, e) => acc + e.cents)
+    out = push(out, (nm, paid - share))
+  }
+  return out
+}
+
+fn expense_text(e: Expense) -> str {
+  let d = trim(e.desc)
+  if d == "" { return "{e.name} paid {fmt_cents(e.cents)}" }
+  return "{e.name} paid {fmt_cents(e.cents)} for {d}"
+}
+
+// ---- update
+
+fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
+  return match msg {
+    TypedName(t) => Next(m with (name: t), []),
+    TypedAmount(t) => Next(m with (amount: t), []),
+    TypedDesc(t) => Next(m with (desc: t), []),
+    Add => add_expense(m),
+    Remove(i) => {
+      var kept: list[Expense] = []
+      var k = 0
+      for e in m.expenses {
+        if k != i { kept = push(kept, e) }
+        k = k + 1
+      }
+      return Next(m with (expenses: kept), [ui_save("expenses", json_encode(kept))])
+    }
+  }
+}
+
+fn add_expense(m: Model) -> Next[Model, Msg] {
+  let nm = trim(m.name)
+  if nm == "" { return Next(m with (error: "Please enter who paid."), []) }
+  let cents = parse_amount(m.amount) else {
+    return Next(m with (error: "Please enter a valid amount, such as 12.50."), [])
+  }
+  let xs = push(m.expenses, Expense(name: nm, cents: cents, desc: trim(m.desc)))
+  return Next(m with (amount: "", desc: "", error: "", expenses: xs), [ui_save("expenses", json_encode(xs))])
+}
+
+// ---- view
+
+fn view(m: Model) -> Html[Msg] {
+  var rows: list[Html[Msg]] = []
+  var i = 0
+  for e in m.expenses {
+    let idx = i
+    rows = push(rows, li([], [
+      span([], [text(expense_text(e))]),
+      text(" "),
+      button([class("remove"), input_type("button"), on_click(Remove(idx))], [text("Remove")]),
+    ]))
+    i = i + 1
+  }
+  return div([], [
+    h1([], [text("Splitter")]),
+    form([on_submit(Add)], [
+      input([id("name"), placeholder("Who paid"), value(m.name), on_input(fn(t) => TypedName(t))]),
+      input([id("amount"), placeholder("Amount"), value(m.amount), on_input(fn(t) => TypedAmount(t))]),
+      input([id("desc"), placeholder("What for"), value(m.desc), on_input(fn(t) => TypedDesc(t))]),
+      button([id("add"), input_type("submit")], [text("Add")]),
+    ]),
+    if m.error == "" then nothing() else p([id("error")], [text(m.error)]),
+    ul([id("expenses")], rows),
+    p([id("total")], [text("Total: " + fmt_cents(total_cents(m.expenses)))]),
+    ul([id("balances")], map(balances(m.expenses), fn(b) => li([], [text("{b.0}: {fmt_balance(b.1)}")]))),
+  ])
+}
+
+fn main() uses io {
+  let saved: list[Expense] = match ui_load("expenses") {
+    Some(t) => match json_decode(t) {
+      Ok(xs) => xs,
+      Err(_) => [],
+    },
+    None => [],
+  }
+  ui_run(Next(Model(name: "", amount: "", desc: "", error: "", expenses: saved), []), update, view)
+}
+
+// ---- tests
+
+test "amount parsing" {
+  assert parse_amount("5") == Some(500)
+  assert parse_amount("5.5") == Some(550)
+  assert parse_amount(" 0.01 ") == Some(1)
+  assert parse_amount("12.50") == Some(1250)
+  assert parse_amount("0") == None
+  assert parse_amount("-1") == None
+  assert parse_amount("1.234") == None
+  assert parse_amount("abc") == None
+  assert parse_amount("") == None
+  assert parse_amount("5.") == None
+  assert parse_amount(".5") == None
+  assert parse_amount("0.00") == None
+}
+
+test "balances" {
+  let xs = [Expense("Ann", 3000, "pizza"), Expense("Bob", 1000, "")]
+  assert balances(xs) == [("Ann", 1000), ("Bob", -1000)]
+  assert fmt_balance(1000) == "+10.00"
+  assert fmt_balance(-333) == "-3.33"
+  assert fmt_balance(0) == "0.00"
+  assert share_cents(1000, 3) == 333
+  assert share_cents(5, 2) == 3
+  assert expense_text(Expense("Ann", 1250, "pizza")) == "Ann paid 12.50 for pizza"
+  assert expense_text(Expense("Ann", 1250, "")) == "Ann paid 12.50"
+}
+
+test "sorting by code point" {
+  assert people([Expense("bob", 1, ""), Expense("Zed", 1, ""), Expense("ann", 1, "")]) == ["Zed", "ann", "bob"]
+}

@@ -10,7 +10,8 @@ write and repair. The complete language reference is [klar/SPEC.md](klar/SPEC.md
 reasoning behind each design choice is in [DESIGN.md](DESIGN.md), and what comes next is in
 [ROADMAP.md](ROADMAP.md). The website, **https://arnoac.github.io/klar/**, has a guide, a tutorial, the standard
 library reference and a [playground](https://arnoac.github.io/klar/playground.html) that runs Klar in your
-browser; AI agents can read the whole language in one file, [llms.txt](https://arnoac.github.io/klar/llms.txt).
+browser; AI agents learn the whole language from one page, [llms.txt](https://arnoac.github.io/klar/llms.txt)
+([klar/QUICK.md](klar/QUICK.md) in the repository).
 
 Whether agents really make fewer mistakes in Klar is measured in [eval/](eval/README.md): the same tasks with
 hidden tests, given to an AI agent in Klar and in TypeScript. The first pilot's results, including where Klar

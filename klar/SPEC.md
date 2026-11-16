@@ -1,7 +1,7 @@
 # Klar Language Reference (v0.15)
 
 Klar is a small, statically typed language designed so that an AI agent can learn it from this page, write
-correct code first time, and fix mistakes from the compiler's structured feedback. Files end in `.klar`. This page is the complete language.
+correct code first time, and fix mistakes from the compiler's structured feedback. Files end in `.klar`. This page is the complete language; `QUICK.md` is a one-page summary.
 
 ## 1. Program structure
 
@@ -15,9 +15,8 @@ fn main() uses io {
 }
 ```
 
-Comments: `// to end of line` (no block comments). Statements end at the end of a line; `;` is
-an optional separator. Whitespace and indentation are not significant, with one rule: the `(` of a call and
-the `[` of an index must be on the same line as the expression before them.
+Comments: `//` to end of line. Statements end at the end of a line (or `;`). Indentation is not
+significant, but the `(` of a call and the `[` of an index must be on the expression's line.
 
 ## 2. Names
 
@@ -101,7 +100,6 @@ test "area of a rectangle" {
 * Structs and enums may be generic: `struct Pair[A, B] { first: A, second: B }`,
   `enum Tree[T] { Leaf, Node(left: Tree[T], value: T, right: Tree[T]) }`. Type arguments are inferred:
   `Pair(first: 1, second: "a")` is a `Pair[int, str]`.
-* Fields are separated by commas; a trailing comma is allowed.
 * `test "name" { ... }` blocks are run by `klar test file.klar`. They may use io.
 
 ### Traits
@@ -140,7 +138,7 @@ use geometry.shapes { Shape, Circle, area }   // loads geometry/shapes.klar next
 use std.json { Json, json_parse }             // standard library module
 ```
 
-There is no `pub`: everything top-level can be imported. Tests in imported modules are not run.
+There is no `pub`: everything top-level can be imported.
 
 ### Packages
 
@@ -191,6 +189,7 @@ let name: Type = expr           // with annotation (needed for empty [] / [:] wh
 var count = 0                   // mutable binding
 count = count + 1               // reassignment (only `var`; no += or ++)
 let _ = expr                    // evaluate and discard on purpose
+let x = opt else { return e }   // Some/Ok's value, or a block that returns, breaks or continues
 
 if cond { ... } else if cond { ... } else { ... }
 while cond { ... }
@@ -328,7 +327,7 @@ Option/Result: `unwrap(o)`\* (runtime error on None/Err) · `unwrap_or(o, defaul
 
 ### Standard library
 
-Import with `use std.NAME { ... }`. Full signatures are in each module's source (`klar/std/NAME.klar`).
+Import with `use std.NAME { ... }`. `klar doc std.NAME` prints a module's signatures.
 
 | Module | Contents |
 |---|---|
@@ -470,6 +469,7 @@ klar dev [FILE...]               serve app and/or backend; rebuild and reload on
 klar add|remove|install|update   packages (see Packages)
 klar audit [--json]              check dependencies for known vulnerabilities
 klar lsp | debug | spec | explain CODE   language server | debugger (--break LINE) | this reference | explain an error code
+klar doc [std.NAME]              library signatures
 FILE defaults to the project's main.klar; test, check and fmt cover the whole project.
 ```
 

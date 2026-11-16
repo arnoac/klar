@@ -33,6 +33,10 @@ structured errors).
 
 ## Next
 
+0. **Cheaper for agents than TypeScript.** Agents now pay about 14% more tokens and 1.4 times the time in Klar
+   (eval/RESULTS.md, pilot 5); the rest is mostly longer programs. Shorter code is the lever: `+=`, a value
+   for a block's last expression, and more string and list helpers. These change how Klar reads, so each is
+   measured first.
 1. **More components.** Date picker, multi-select, a command palette, keyed list diffing for long tables, and
    touch drag and drop (HTML drag and drop does not fire on phones; the board keeps its arrow buttons there).
 2. **More real apps** written in Klar end to end, to find what hurts at scale.

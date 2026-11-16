@@ -210,6 +210,20 @@ class CheckErrorsTest(unittest.TestCase):
                 self.assertTrue(e.message)
 
 
+class LetElseTest(unittest.TestCase):
+    def test_unwraps_or_leaves(self):
+        src = ('fn f(s: str) -> str {\n  let n = parse_int(s) else { return "none" }\n  return str(n + 1)\n}\n'
+               + main_wrap('print(f("4"))\nprint(f("x"))'))
+        self.assertEqual(run(src), "5\nnone\n")
+        pair = ('fn g(m: map[str, (int, str)]) -> str {\n  let (n, s) = get(m, "a") else { return "none" }\n'
+                '  return "{n}{s}"\n}\n' + main_wrap('print(g(["a": (1, "x")]))\nprint(g([:]))'))
+        self.assertEqual(run(pair), "1x\nnone\n")
+
+    def test_else_must_leave_and_value_must_unwrap(self):
+        self.assertEqual(errors_of(main_wrap('let n = parse_int("1") else { print("no") }\nprint(n)')), [("E301", 2)])
+        self.assertEqual(errors_of(main_wrap('let n = 3 else { return }\nprint(n)')), [("E301", 2)])
+
+
 class ParseErrorsTest(unittest.TestCase):
     CASES = {
         "unterminated string": ('fn main() uses io { print("hi) }', "E102"),

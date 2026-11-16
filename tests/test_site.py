@@ -50,7 +50,7 @@ class Site(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         mods = [os.path.basename(f)[:-5] for f in glob.glob(os.path.join(ROOT, "klar/std/*.klar"))]
         for page in ["index.html", "start.html", "tutorial.html", "reference.html", "playground.html", "404.html",
-                     "std/index.html", "std/builtins.html", "site.css", "llms.txt", "playground/examples.json"] \
+                     "std/index.html", "std/builtins.html", "site.css", "llms.txt", "llms-full.txt", "playground/examples.json"] \
                 + [f"std/{m}.html" for m in mods]:
             self.assertTrue(os.path.exists(os.path.join(out, page)), page)
 
@@ -78,8 +78,13 @@ class Site(unittest.TestCase):
         index = open(os.path.join(out, "index.html"), encoding="utf-8").read()
         self.assertIn("error[E306] mistake.klar:4:10", index)
 
-        # llms.txt holds the whole reference and every module
-        llms = open(os.path.join(out, "llms.txt"), encoding="utf-8").read()
+        # llms.txt is the one-page language (QUICK.md); llms-full.txt the whole reference and every module
+        quick = open(os.path.join(out, "llms.txt"), encoding="utf-8").read()
+        self.assertTrue(quick.startswith("# Klar\n\n> "))
+        self.assertEqual(quick.count("\n# "), 0)
+        self.assertIn("## Rules the checker enforces", quick)
+        self.assertIn("llms-full.txt", quick)
+        llms = open(os.path.join(out, "llms-full.txt"), encoding="utf-8").read()
         self.assertTrue(llms.startswith("# Klar\n"))
         self.assertEqual(llms.count("\n# "), 0)
         self.assertIn("## 10. Coming from another language".replace("## ", "### "), llms)

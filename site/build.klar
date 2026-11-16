@@ -19,6 +19,7 @@ use highlight { highlight_klar }
 use stdref { StdItem, StdModule, std_parse, std_prelude, std_doc_markdown, std_summary }
 
 fn repo() -> str { return "https://github.com/arnoac/klar" }
+fn site_url() -> str { return "https://arnoac.github.io/klar/" }
 fn repo_file(path: str) -> str { return repo() + "/blob/main/" + path }
 
 // Where links in the Markdown sources lead on the site.
@@ -299,7 +300,7 @@ fn landing(root: str, sample: str, mistake: str, checked: str) -> Html[unit] {
         container([max_width(Wide)], [
           h2([], [text("Built so that code comes out right")]),
           grid([cols(1), cols_at(Tablet, 2), cols_at(Laptop, 3), gap(Lg)], [
-            feature("One page to learn", "The complete language reference is about 4,000 words. An agent reads it once, and llms.txt adds every library signature in a single file."),
+            feature("One page to learn", "llms.txt is the whole language on one page, about 1,300 words, for agents that already know TypeScript or Rust. The complete reference is about 4,000 words, and klar doc prints any library's signatures."),
             feature("Mistakes caught before running", "Static types, no null, exhaustive match, and side effects declared in signatures (uses io). Every error has a stable code, line and column, and usually a hint; klar check --json gives it to tools."),
             feature("One obvious way", "No shadowing, no overloading, immutable values and one name for each thing across a program, so reading and changing code holds fewer surprises."),
             feature("Front end to back end", "Typed HTML, layouts and accessible components for the browser, routes and typed calls for the server, SQLite rows as records, live updates. Both sides share their types."),
@@ -313,7 +314,7 @@ fn landing(root: str, sample: str, mistake: str, checked: str) -> Html[unit] {
           h2([], [text("Where Klar stands today")]),
           p([class("lead narrow")], [text("Klar is new, and we measure it rather than promise. Here is what the numbers say so far.")]),
           grid([cols(1), cols_at(Laptop, 3), gap(Lg)], [
-            feature("Agents: as correct, not yet as cheap", "Across three pilots with hidden tests, agents passed tasks in Klar as often as in TypeScript, but took longer and used more tokens; with a smaller model, about 2.4 times the time and 54% more tokens. The tasks so far are too easy to separate the languages on correctness."),
+            feature("Agents: as correct, not yet as cheap", "Across five pilots with hidden tests, agents passed tasks in Klar as often as in TypeScript. Since the one-page primer and klar doc, Klar costs about 14% more tokens and 1.4 times the time (it was 31% and 1.5 times). The tasks so far are too easy to separate the languages on correctness."),
             feature("Speed: depends on the backend", "Compiled with --release, Klar runs within 1 to 3 times of C and Go on the Benchmarks Game. The interpreter behind klar run is slow, 20 to 100 times slower than Python; build anything that computes a lot."),
             feature("Ecosystem: borrowed for now", "There is no package registry yet. Klar packages come from git or local folders, and npm and Python libraries fill the gaps with typed bindings."),
           ]),
@@ -329,7 +330,7 @@ fn landing(root: str, sample: str, mistake: str, checked: str) -> Html[unit] {
           grid([cols(1), cols_at(Laptop, 2), gap(Lg)], [
             stack([gap(Sm)], [
               h2([], [text("Working with an agent?")]),
-              p([], [text("Give it llms.txt: the complete language reference followed by the signature and summary of every standard library function, in one plain text file. Then let it run klar check --json and klar test, and read the hints.")]),
+              p([], [text("Give it llms.txt: the language on one page, written for agents. llms-full.txt is the complete reference with every library signature, for looking things up. Then let it run klar check --json and klar test, and read the hints.")]),
               row([gap(Sm)], [a([class("button"), variant(Outline), href(root + "llms.txt")], [text("Open llms.txt")])]),
             ]),
             box([], [code_block("text", "Read https://arnoac.github.io/klar/llms.txt before writing Klar.\nCheck your work with: klar check --json && klar test")]),
@@ -395,6 +396,19 @@ fn playground(root: str, exs: list[Example]) -> Html[unit] {
 }
 
 // ---- llms.txt
+
+// What agents read first: QUICK.md, the one-page language, under the llms.txt header. llms-full.txt is the
+// whole reference with every library signature, for looking things up.
+fn llms_quick(quick: str) -> str {
+  let lines = split(quick, "\n")
+  return join([
+    "# Klar",
+    "",
+    "> Klar is a statically typed, general-purpose programming language designed to be easy for AI agents to learn, read, write and repair. Files end in .klar. This page is enough to write Klar; the complete reference with every library signature is " + site_url() + "llms-full.txt.",
+    "",
+    "Workflow: `klar check --json FILE`, `klar test`, `klar run FILE`, `klar build`; `klar doc std.NAME` prints a library module's signatures. Source: " + repo(),
+  ] + slice(lines, 1, len(lines)), "\n")
+}
 
 fn llms_txt(spec: str, mods: list[StdModule], groups: list[StdModule]) -> str {
   var out: list[str] = [
@@ -581,7 +595,8 @@ fn build(out: str) -> Result[int, str] uses io {
   ])])
   fs_write(out + "/404.html", page_html("/klar/", "Not found · Klar", "Page not found.", page_csp(), not_found, []))?
 
-  fs_write(out + "/llms.txt", llms_txt(fs_read("klar/SPEC.md")?, mods, groups))?
+  fs_write(out + "/llms-full.txt", llms_txt(fs_read("klar/SPEC.md")?, mods, groups))?
+  fs_write(out + "/llms.txt", llms_quick(fs_read("klar/QUICK.md")?))?
   return Ok(pages)
 }
 
