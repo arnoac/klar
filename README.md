@@ -1,4 +1,9 @@
-# Klar
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/logo-dark.svg">
+    <img src="assets/logo/logo-light.svg" alt="Klar" height="56">
+  </picture>
+</h1>
 
 A statically typed, general-purpose programming language designed to be easy for AI agents to learn, read,
 write and repair. The complete language reference is [klar/SPEC.md](klar/SPEC.md) (about 4,000 words); the
@@ -188,3 +193,7 @@ reach you, and the known limits.
 | `editors/` | VS Code extension (highlighting + language server) and Neovim / Helix setup |
 | `bench/` | benchmarks against C, Go and Python (`python3 bench/run.py`), the Benchmarks Game programs (`bench/benchmarksgame`), and WebAssembly vs JavaScript in the browser (`bench/wasm`) |
 | `tests/` | 172 tests: `python3 -m unittest discover tests` |
+
+## License
+
+Klar is released under the [MIT License](LICENSE).

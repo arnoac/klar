@@ -4,6 +4,7 @@
   "description": "Klar language support: diagnostics with fixes, hover types, go to definition, rename, completion and formatting",
   "version": "0.10.0",
   "publisher": "klar-lang",
+  "license": "MIT",
   "icon": "icon.png",
   "engines": { "vscode": "^1.82.0" },
   "categories": ["Programming Languages", "Linters", "Formatters"],
