@@ -3,6 +3,7 @@
 import os
 import sys
 
+from . import __version__
 from .checker import check_source
 from .errors import KlarError, CATALOG, to_json
 
@@ -308,6 +309,7 @@ def main(argv=None):
         return cmd_build(opts["file"], opts["out"], opts["release"], opts["emit_c"], opts["json"])
     import argparse
     p = argparse.ArgumentParser(prog="klar", description="The Klar language: run, check and test .klar files.")
+    p.add_argument("--version", action="version", version=f"klar {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run", help="check and run a program's main()")
     r.add_argument("file")
@@ -352,6 +354,8 @@ def main(argv=None):
     sub.add_parser("install", help="fetch the dependencies klar.toml and klar.lock name")
     up = sub.add_parser("update", help="move git dependencies to the newest commit their tag/branch allows")
     up.add_argument("names", nargs="*", help="only these dependencies (default: all)")
+    au = sub.add_parser("audit", help="check dependencies and Klar itself against known vulnerabilities")
+    au.add_argument("--json", action="store_true", help="machine-readable report")
     sub.add_parser("lsp", help="run the language server (LSP over stdin/stdout) for editors")
     sub.add_parser("spec", help="print the complete language reference")
     x = sub.add_parser("explain", help="explain an error code, e.g. klar explain E306")
@@ -367,6 +371,9 @@ def main(argv=None):
         return cmd_build(a.file, a.output, a.release, a.emit_c, a.json)
     if a.cmd == "check":
         return cmd_check(a.file, a.json)
+    if a.cmd == "audit":
+        from .audit import cmd_audit
+        return cmd_audit(a.json)
     if a.cmd == "lsp":
         from .lsp import cmd_lsp
         return cmd_lsp()
