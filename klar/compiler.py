@@ -9,7 +9,7 @@ The generated C is self-contained (the runtime is inlined) and compiles with tcc
 import os
 
 from .errors import KlarError
-from .ownership import self_update, is_fresh
+from .ownership import self_update, is_fresh, LIST_UPDATES, MAP_UPDATES
 from .syntax import Node, is_tuple_name
 from .types import TCon, TFn, TVar, INT, prune, resolve, substitute, show
 
@@ -461,12 +461,14 @@ class Compiler:
             else:
                 self.ctx.locals[s.name] = t
                 out.append(f"{self.ctype(t)} v_{s.name} = {code};")
-                if s.mutable and self.kind(t) == "list":
+                if s.mutable and self.kind(t) in ("list", "map"):
                     self.ctx.owned.add(s.name)
                     out.append(f"int o_{s.name} = {1 if is_fresh(s.value, self.fns) else 0}; (void)o_{s.name};")
         elif k == "Assign":
             t = self.ctx.locals[s.name]
-            upd = self_update(s, self.fns) if s.name in self.ctx.owned else None
+            upd = None
+            if s.name in self.ctx.owned:
+                upd = self_update(s, self.fns, MAP_UPDATES if self.kind(t) == "map" else LIST_UPDATES)
             if upd is not None:
                 self.owned_update(s, upd, t, out)
                 return
@@ -534,6 +536,19 @@ class Compiler:
 
     def owned_update(self, s, steps, t, out):
         v, o = f"v_{s.name}", f"o_{s.name}"
+        if self.kind(t) == "map":
+            out.append("{")
+            vals = []
+            for _, call in steps:
+                key, x = self.tmp(), self.tmp()
+                out.append(f"KS {key} = {self.to_s(self.expr(call.args[1]), t.args[0])}; "
+                           f"KS {x} = {self.to_s(self.expr(call.args[2]), t.args[1])};")
+                vals.append((key, x))
+            for key, x in vals:
+                out.append(f"if ({o}) k_map_put_owned({v}, {key}, {x}); "
+                           f"else {{ {v} = k_map_put_shared({v}, {key}, {x}); {o} = 1; }}")
+            out.append("}")
+            return
         et = t.args[0]
         vals = []
         out.append("{")
@@ -892,7 +907,8 @@ class Compiler:
                 return f"{inst}({', '.join(codes)})"
             sig = self.c.fns[name]
             args = self.ordered_args(e, [p for p, _ in sig.params])
-            if name == "len" and args and args[0].kind == "Name":
+            if (name == "len" or (name in ("get", "has") and self.kind(self.T(args[0].ty)) == "map")) \
+                    and args and args[0].kind == "Name":
                 args[0].safe_read = True
             return self.builtin(name, [self.expr(a) for a in args], [self.T(a.ty) for a in args], self.T(e.ty), e)
         ct = self.T(e.callee.ty)

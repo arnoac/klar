@@ -258,6 +258,12 @@ function $mput(m, k, v) {
   m.d = null; m.dk = k2; m.dv = prev; m.next = n;
   return n;
 }
+// `v = put(v, k, x)` while v is owned (see ownership.py): v is the newest version and nothing else refers to it,
+// so its Map is updated in place.
+function $mput_owned(m, k, v) {
+  const k2 = $key(k), e = m.d.get(k2);
+  if (e === undefined) { m.d.set(k2, [k, v]); m.size++; } else e[1] = v;
+}
 function $mremove(m, k) {
   const d = $reroot(m), k2 = $key(k);
   if (!d.has(k2)) return m;

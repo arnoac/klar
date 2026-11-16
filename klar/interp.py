@@ -8,7 +8,7 @@ import threading
 from dataclasses import dataclass
 
 from .errors import KlarError
-from .ownership import self_update
+from .ownership import self_update, LIST_UPDATES, MAP_UPDATES
 from .syntax import Node, MAX_TUPLE, tuple_name, is_tuple_name
 from .interop import Converter, Opaque, PyFn, InteropError, resolve_target
 from .types import TCon, prune, resolve, substitute
@@ -59,6 +59,11 @@ class FnRef:
 class FrozenMap(dict):
     def __hash__(self):
         return hash(tuple(sorted(self.items(), key=repr)))
+
+
+class OwnedMap(dict):
+    """A map held only by one var and updated in place (see Interpreter.update_in_place). It never leaves that
+    var: any read other than m[k], len(m), get(m, k) and has(m, k) turns it into a FrozenMap first."""
 
 
 NONE = EnumVal("None", ())
@@ -340,7 +345,7 @@ class Interpreter:
         if k == "Let":
             env.vars[s.name] = self.eval(s.value, env)
         elif k == "Assign":
-            steps = self_update(s, self.fns)
+            steps = self_update(s, self.fns, LIST_UPDATES) or self_update(s, self.fns, MAP_UPDATES)
             if steps is not None:
                 self.update_in_place(s.name, steps, env)
             else:
@@ -407,8 +412,9 @@ class Interpreter:
             except KeyError:
                 pass
             else:
-                if type(v) is list:     # an owned list var (see update_in_place): hand out a snapshot
-                    v = tuple(v)
+                tv = type(v)
+                if tv is list or tv is OwnedMap:    # an owned var (see update_in_place): hand out a snapshot
+                    v = tuple(v) if tv is list else FrozenMap(v)
                     env.set(e.name, v)
                 return v
             if e.name in self.variants:
@@ -521,6 +527,13 @@ class Interpreter:
         into an immutable tuple first (eval of Name), so no other value can see a write."""
         vals = [[self.eval(a, env) for a in call.args[1:]] for _, call in steps]
         cur = env.get(name)
+        if steps[0][0] == "put":
+            if type(cur) is not OwnedMap:
+                cur = OwnedMap(cur)
+            for k, x in vals:
+                cur[k] = x
+            env.set(name, cur)
+            return
         if type(cur) is not list:
             cur = list(cur)
         for (op, call), args in zip(steps, vals):
@@ -535,9 +548,13 @@ class Interpreter:
 
     def eval_call(self, e, env):
         tk = getattr(e, "target_kind", "value")
-        if (tk == "fn" and not e.named and len(e.args) == 1 and e.callee.kind == "Name" and e.callee.name == "len"
-                and "len" not in self.fns):
-            return len(self.raw_read(e.args[0], env))
+        if (tk == "fn" and not e.named and e.args and e.callee.kind == "Name" and e.callee.name in ("len", "get", "has")
+                and e.callee.name not in self.fns):
+            first = self.raw_read(e.args[0], env)
+            if e.callee.name == "len":
+                return len(first)
+            rest = [self.eval(a, env) for a in e.args[1:]]
+            return (self.b_get if e.callee.name == "get" else self.b_has)(e, first, *rest)
         if e.named:
             # reorder to declaration order
             if tk == "struct":

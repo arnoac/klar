@@ -515,7 +515,12 @@ typedef KS (*KF4)(KClo *, KS, KS, KS, KS);
  * copies first. The log is compacted when it holds many stale versions.
  * key kind: 0 = int/bool (slot compared directly), 1 = str.
  */
-typedef struct { KS *keys, *vals; int64_t *prev, *next; int64_t used, cap; int64_t *index; int64_t icap; int kind; } KMapData;
+/* frozen: entries below this index may be visible to map values other than an owned var's (see k_map_put_owned) */
+typedef struct { KS *keys, *vals; int64_t *prev, *next; int64_t used, cap; int64_t *index; int64_t icap; int kind; int64_t frozen;
+                KS memo_key; int64_t *memo_index; int64_t memo_slot; int64_t memo_tag, last_tag; } KMapData;
+/* an index slot holds (entry + 1) in its low 40 bits and the top 24 bits of the key's hash above them, so
+ * probing past other keys rarely has to load and compare the key itself */
+#define K_IX_ENTRY(v) (((v) & ((INT64_C(1) << 40) - 1)) - 1)
 typedef struct { KMapData *d; int64_t len; int64_t count; } KMap;
 
 static inline uint64_t k_hash(int kind, KS k) {
@@ -541,7 +546,7 @@ static KMapData *k_mapdata_new(int64_t cap, int kind) {
     d->vals = (KS *)K_ALLOC(sizeof(KS) * cap);
     d->prev = (int64_t *)K_ALLOC_ATOMIC(sizeof(int64_t) * cap);
     d->next = (int64_t *)K_ALLOC_ATOMIC(sizeof(int64_t) * cap);
-    d->used = 0; d->cap = cap; d->kind = kind;
+    d->used = 0; d->cap = cap; d->kind = kind; d->frozen = 0; d->memo_index = NULL;
     d->icap = 8;
     while (d->icap < cap * 2) d->icap *= 2;
     d->index = (int64_t *)K_ALLOC_ATOMIC(sizeof(int64_t) * d->icap);
@@ -550,8 +555,14 @@ static KMapData *k_mapdata_new(int64_t cap, int kind) {
 }
 /* index slot holding (latest entry + 1) for key, or the empty slot where it would go */
 static int64_t k_map_slot(KMapData *d, KS key) {
-    uint64_t m = d->icap - 1, h = k_hash(d->kind, key) & m;
-    while (d->index[h] && !k_key_eq(d->kind, d->keys[d->index[h] - 1], key)) h = (h + 1) & m;
+    /* `put(m, k, f(get(m, k)))` looks the same key up twice in a row: remember the last slot until the index
+     * is rebuilt (a key's slot never moves otherwise). Klar code runs one task at a time, so this is safe. */
+    if (d->memo_index == d->index && d->memo_key == key) { d->last_tag = d->memo_tag; return d->memo_slot; }
+    uint64_t full = k_hash(d->kind, key), m = d->icap - 1, h = full & m;
+    int64_t tag = (int64_t)(full & ~((UINT64_C(1) << 40) - 1)), e;
+    while ((e = d->index[h]) && !((e & ~((INT64_C(1) << 40) - 1)) == tag && k_key_eq(d->kind, d->keys[K_IX_ENTRY(e)], key)))
+        h = (h + 1) & m;
+    d->memo_key = key; d->memo_index = d->index; d->memo_slot = (int64_t)h; d->memo_tag = d->last_tag = tag;
     return (int64_t)h;
 }
 static void k_map_rehash(KMapData *d) {
@@ -559,7 +570,7 @@ static void k_map_rehash(KMapData *d) {
     d->icap *= 2;
     d->index = (int64_t *)K_ALLOC_ATOMIC(sizeof(int64_t) * d->icap);
     memset(d->index, 0, sizeof(int64_t) * d->icap);
-    for (int64_t i = 0; i < oc; i++) if (old[i]) d->index[k_map_slot(d, d->keys[old[i] - 1])] = old[i];
+    for (int64_t i = 0; i < oc; i++) if (old[i]) d->index[k_map_slot(d, d->keys[K_IX_ENTRY(old[i])])] = old[i];
 }
 static KMap *k_map_view(KMapData *d, int64_t count) {
     KMap *m = (KMap *)K_ALLOC(sizeof(KMap));
@@ -570,7 +581,7 @@ static KMap *k_map_empty(int kind) { return k_map_view(k_mapdata_new(4, kind), 0
 /* entry index of the version of `key` visible in m, or -1 */
 static int64_t k_map_find(KMap *m, KS key) {
     KMapData *d = m->d;
-    int64_t j = d->index[k_map_slot(d, key)] - 1;
+    int64_t j = K_IX_ENTRY(d->index[k_map_slot(d, key)]);
     while (j >= m->len) j = d->prev[j];
     return j;
 }
@@ -585,10 +596,10 @@ static void k_map_append(KMapData *d, KS key, KS val, int64_t *count) {
         d->next = (int64_t *)K_REALLOC(d->next, sizeof(int64_t) * d->cap);
     }
     if ((d->used + 1) * 2 > d->icap) k_map_rehash(d);
-    int64_t slot = k_map_slot(d, key), j = d->index[slot] - 1, n = d->used;
+    int64_t slot = k_map_slot(d, key), j = K_IX_ENTRY(d->index[slot]), n = d->used;
     d->keys[n] = key; d->vals[n] = val; d->prev[n] = j; d->next[n] = -1;
     if (j >= 0) d->next[j] = n; else (*count)++;
-    d->index[slot] = n + 1;
+    d->index[slot] = (n + 1) | d->last_tag;
     d->used++;
 }
 /* a fresh log holding exactly the entries visible in m (optionally without one key) */
@@ -617,6 +628,25 @@ static KMap *k_map_put(KMap *m, KS key, KS val) {
     KMap *r = k_map_view(d, count);
     if (d->used > 64 && d->used > 4 * count) r = k_map_compact_skip(r, 0, 0);
     return r;
+}
+/* `v = put(v, k, x)` on a map var that may share its entries with other values. The result is a view only v
+ * holds; everything visible to anyone else (at most m's entries, since only the newest view appends in
+ * place) is frozen, so k_map_put_owned can then update v in place. */
+static KMap *k_map_put_shared(KMap *m, KS key, KS val) {
+    if (m->len == m->d->used && m->d->frozen < m->len) m->d->frozen = m->len;
+    return k_map_put(m, key, val);
+}
+/* `v = put(v, k, x)` while v is owned: its KMap is referenced only by v. An existing key's newest entry is
+ * overwritten when no other value can see it; otherwise this appends, without allocating a new map value. */
+static void k_map_put_owned(KMap *m, KS key, KS val) {
+    KMapData *d = m->d;
+    if (m->len != d->used) { *m = *k_map_put_shared(m, key, val); return; }
+    int64_t j = K_IX_ENTRY(d->index[k_map_slot(d, key)]);
+    if (j >= d->frozen) { d->vals[j] = val; return; }
+    int64_t count = m->count;
+    k_map_append(d, key, val, &count);
+    m->len = d->used; m->count = count;
+    if (d->used > 64 && d->used > 4 * count) *m = *k_map_compact_skip(m, 0, 0);
 }
 static KMap *k_map_remove(KMap *m, KS key) {
     if (k_map_find(m, key) < 0) return m;

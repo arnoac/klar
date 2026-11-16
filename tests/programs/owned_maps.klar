@@ -1,0 +1,28 @@
+// Maps held by one var are updated in place (`m = put(m, k, v)`), but no other value may ever see a change.
+fn total(m: map[str, int]) -> int {
+  var t = 0
+  for k in keys(m) { t = t + m[k] }
+  return t
+}
+fn main() uses io {
+  var m: map[str, int] = [:]
+  for i in range(0, 300000) {
+    let k = "k{i % 1000}"
+    m = put(m, k, unwrap_or(get(m, k), 0) + 1)
+  }
+  let snap = m
+  m = put(m, "k1", 0)
+  m = put(m, "new", 5)
+  print("{len(m)} {m["k1"]} {snap["k1"]} {has(snap, "new")} {m["new"]} {total(snap)} {total(m)}")
+  var n = snap
+  n = put(put(n, "k2", 1), "k3", n["k2"])
+  print("{n["k2"]} {n["k3"]} {snap["k2"]} {snap["k3"]} {len(n)}")
+  // snapshot taken mid-loop
+  var a: map[int, int] = [:]
+  var olds: list[map[int, int]] = []
+  for i in range(0, 50) {
+    a = put(a, i % 7, i)
+    if i % 10 == 0 { olds = push(olds, a) }
+  }
+  print("{a[0]} {olds[0][0]} {len(olds[0])} {olds[2][6]} {len(olds[4])} {a}")
+}

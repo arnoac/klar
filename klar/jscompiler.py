@@ -15,7 +15,7 @@ import os
 import re
 
 from .errors import KlarError
-from .ownership import is_fresh, self_update
+from .ownership import is_fresh, self_update, LIST_UPDATES, MAP_UPDATES
 from .syntax import is_tuple_name
 from .types import TCon, TFn, TVar, INT, prune, resolve, substitute, show
 
@@ -201,11 +201,14 @@ class JSCompiler:
                 t = self.T(s.ty)
                 self.ctx.locals[s.name] = t
                 self.emit(f"{'let' if s.mutable else 'const'} v_{s.name} = {code};")
-                if s.mutable and self.kind(t) == "list":
+                if s.mutable and self.kind(t) in ("list", "map"):
                     self.ctx.owned.add(s.name)
                     self.emit(f"let o_{s.name} = {'true' if is_fresh(s.value, self.fns) else 'false'};")
         elif k == "Assign":
-            steps = self_update(s, self.fns) if s.name in self.ctx.owned else None
+            steps = None
+            if s.name in self.ctx.owned:
+                kind = self.kind(self.ctx.locals[s.name])
+                steps = self_update(s, self.fns, MAP_UPDATES if kind == "map" else LIST_UPDATES)
             if steps is not None:
                 self.owned_update(s, steps)
                 return
@@ -371,6 +374,17 @@ class JSCompiler:
         and value first, then write straight into the array while the flag is set."""
         v, o = f"v_{s.name}", f"o_{s.name}"
         vals = []
+        if steps[0][0] == "put":
+            # maps: in place while owned; otherwise an ordinary persistent put, and the var stays unowned
+            for _, call in steps:
+                key, x = self.tmp(), self.tmp()
+                ck, cx = self.seq([call.args[1], call.args[2]])
+                self.emit(f"const {key} = {ck};")
+                self.emit(f"const {x} = {cx};")
+                vals.append((key, x))
+            for key, x in vals:
+                self.emit(f"if ({o}) $mput_owned({v}, {key}, {x}); else {v} = $mput({v}, {key}, {x});")
+            return
         for name, call in steps:
             if name == "set_at":
                 i, x = self.tmp(), self.tmp()
@@ -605,7 +619,8 @@ class JSCompiler:
                 inst = self.request_fn(name, targs)
                 call = f"{inst}({', '.join(self.seq(args))})"
                 return f"(await {call})" if "io" in sig.effects else call
-            if name == "len" and args and args[0].kind == "Name":
+            if (name == "len" or (name in ("get", "has") and self.kind(self.T(args[0].ty)) == "map")) \
+                    and args and args[0].kind == "Name":
                 args[0].safe_read = True
             codes = self.seq(args)
             return self.builtin(name, codes, [self.T(a.ty) for a in args], self.T(e.ty), e)
