@@ -988,10 +988,15 @@ class Checker:
 
     def check_sql_text(self, a, fn_name):
         """SQL handed to a parameter named `sql` must not be assembled from values (SQL injection): values go in
-        `?` parameters. Interpolation or `+` with a non-literal in the argument itself is an error."""
+        `?` parameters. Interpolating a string, or `+` with a non-literal, in the argument itself is an error;
+        interpolated numbers and bools are allowed (they cannot change the query: `pragma user_version = {n}`)."""
+        def text_part(x):            # a number or bool cannot change the query; a string can
+            t = prune(getattr(x, "ty", None)) if getattr(x, "ty", None) is not None else None
+            return not (isinstance(t, TCon) and t.name in ("int", "float", "bool"))
+
         def built(x):
             if x.kind == "Interp":
-                return any(isinstance(p, Node) for p in x.parts)
+                return any(isinstance(p, Node) and text_part(p) for p in x.parts)
             if x.kind == "Binary" and x.op == "+":
                 return built(x.left) or built(x.right) or x.left.kind != "Str" or x.right.kind != "Str"
             return False

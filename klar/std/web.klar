@@ -273,8 +273,8 @@ fn web_safe_path(dir: str, rel: str) -> Option[str] {
   let parts = filter(split(rel, "/"), fn(s) => s != "")
   if len(parts) == 0 or starts_with(rel, "/") or contains(rel, "\\") or contains(rel, "\0")
     or any(parts, fn(s) => starts_with(s, ".")) {
-    return None
-  }
+      return None
+    }
   return Some(dir + "/" + join(parts, "/"))
 }
 

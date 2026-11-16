@@ -145,7 +145,7 @@ class CompileTimeChecks(unittest.TestCase):
         return klar("check", write(src))
 
     def test_sql_built_from_values_is_an_error(self):
-        for body in ['  let r = sqlite_query(db, "select * from t where id = {id}", [])',
+        for body in ['  let r = sqlite_query(db, "select * from t where name = \\"{name}\\"", [])',
                      '  let r = sqlite_exec(db, "delete from t where name = \'" + name + "\'", [])',
                      '  let r = sqlite_query(db, "select * from t where id = " + str(id), [])']:
             with self.subTest(body=body):
@@ -156,7 +156,8 @@ class CompileTimeChecks(unittest.TestCase):
     def test_parameters_and_constant_sql_are_fine(self):
         for body in ['  let r = sqlite_query(db, "select * from t where id = ? and name = ?", [SqlInt(id), SqlText(name)])',
                      '  let r = sqlite_exec(db, "create table t (id integer, " + "name text)", [])',
-                     '  let q = "select 1"\n  let r = sqlite_query(db, q, [])']:
+                     '  let q = "select 1"\n  let r = sqlite_query(db, q, [])',
+                     '  let r = sqlite_exec(db, "pragma user_version = {id + 1}", [])']:
             with self.subTest(body=body):
                 r = self.check(body)
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
