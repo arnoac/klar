@@ -1,0 +1,434 @@
+// Spreadsheet evaluator: reads "CELL: CONTENT" lines from stdin and prints every defined cell's value.
+// Cells are keyed by idx = column * 100 + row (A1 = 1, B1 = 101, Z99 = 2599), so sorting idx sorts by column then row.
+
+enum Ex {
+  Lit(value: int),
+  Ref(at: int),
+  Neg(inner: Ex),
+  Bin(op: str, left: Ex, right: Ex),
+  Agg(name: str, cells: list[int]),
+}
+
+enum Slot {
+  Broken,
+  Formula(expr: Ex),
+}
+
+enum Outcome {
+  Good(n: int),
+  Failed(code: str),
+}
+
+struct Parsed { expr: Ex, pos: int }
+
+// ---------- cell names ----------
+
+fn all_digits(s: str) -> bool {
+  if len(s) == 0 { return false }
+  for c in chars(s) {
+    let o = ord(c)
+    if o < 48 or o > 57 { return false }
+  }
+  return true
+}
+
+// "A1" .. "Z99" (no leading zeros) -> idx; anything else -> None
+fn cell_index(t: str) -> Option[int] {
+  let n = len(t)
+  if n < 2 or n > 3 { return None }
+  let col = ord(t[0]) - 65
+  if col < 0 or col > 25 { return None }
+  let digits = slice(t, 1, n)
+  if not all_digits(digits) { return None }
+  if t[1] == "0" { return None }
+  let row = unwrap(parse_int(digits))
+  return Some(col * 100 + row)
+}
+
+fn cell_name(i: int) -> str {
+  let letter = chr(65 + i / 100)
+  return letter + str(i % 100)
+}
+
+// ---------- parsing ----------
+
+fn is_alnum(o: int) -> bool {
+  return (o >= 48 and o <= 57) or (o >= 65 and o <= 90) or (o >= 97 and o <= 122)
+}
+
+fn tokenize(s: str) -> Option[list[str]] {
+  var toks: list[str] = []
+  var cur = ""
+  for c in chars(s) {
+    if is_alnum(ord(c)) {
+      cur = cur + c
+    } else {
+      if len(cur) > 0 {
+        toks = push(toks, cur)
+        cur = ""
+      }
+      if c == " " or c == "\t" {
+        continue
+      }
+      if contains("+-*/():", c) {
+        toks = push(toks, c)
+      } else {
+        return None
+      }
+    }
+  }
+  if len(cur) > 0 { toks = push(toks, cur) }
+  return Some(toks)
+}
+
+fn tok_at(toks: list[str], p: int) -> str {
+  if p >= len(toks) { return "" }
+  return toks[p]
+}
+
+fn is_func(t: str) -> bool {
+  return t == "SUM" or t == "MIN" or t == "MAX"
+}
+
+fn range_cells(a: int, b: int) -> list[int] {
+  let lo_c = min(a / 100, b / 100)
+  let hi_c = max(a / 100, b / 100)
+  let lo_r = min(a % 100, b % 100)
+  let hi_r = max(a % 100, b % 100)
+  var out: list[int] = []
+  for c in range(lo_c, hi_c + 1) {
+    for r in range(lo_r, hi_r + 1) {
+      out = push(out, c * 100 + r)
+    }
+  }
+  return out
+}
+
+fn parse_primary(toks: list[str], p: int) -> Option[Parsed] {
+  let t = tok_at(toks, p)
+  if all_digits(t) {
+    return Some(Parsed(expr: Lit(unwrap(parse_int(t))), pos: p + 1))
+  }
+  if t == "(" {
+    let inner = parse_expr(toks, p + 1)?
+    if tok_at(toks, inner.pos) == ")" {
+      return Some(Parsed(expr: inner.expr, pos: inner.pos + 1))
+    }
+    return None
+  }
+  if is_func(t) and tok_at(toks, p + 1) == "(" {
+    let a = cell_index(tok_at(toks, p + 2))?
+    if tok_at(toks, p + 3) != ":" { return None }
+    let b = cell_index(tok_at(toks, p + 4))?
+    if tok_at(toks, p + 5) != ")" { return None }
+    return Some(Parsed(expr: Agg(t, range_cells(a, b)), pos: p + 6))
+  }
+  let c = cell_index(t)
+  if is_some(c) {
+    return Some(Parsed(expr: Ref(unwrap(c)), pos: p + 1))
+  }
+  return None
+}
+
+fn parse_unary(toks: list[str], p: int) -> Option[Parsed] {
+  if tok_at(toks, p) == "-" {
+    let inner = parse_unary(toks, p + 1)?
+    return Some(Parsed(expr: Neg(inner.expr), pos: inner.pos))
+  }
+  return parse_primary(toks, p)
+}
+
+fn term_rest(toks: list[str], p: int, left: Ex) -> Option[Parsed] {
+  let t = tok_at(toks, p)
+  if t == "*" or t == "/" {
+    let right = parse_unary(toks, p + 1)?
+    return term_rest(toks, right.pos, Bin(t, left, right.expr))
+  }
+  return Some(Parsed(expr: left, pos: p))
+}
+
+fn parse_term(toks: list[str], p: int) -> Option[Parsed] {
+  let first = parse_unary(toks, p)?
+  return term_rest(toks, first.pos, first.expr)
+}
+
+fn expr_rest(toks: list[str], p: int, left: Ex) -> Option[Parsed] {
+  let t = tok_at(toks, p)
+  if t == "+" or t == "-" {
+    let right = parse_term(toks, p + 1)?
+    return expr_rest(toks, right.pos, Bin(t, left, right.expr))
+  }
+  return Some(Parsed(expr: left, pos: p))
+}
+
+fn parse_expr(toks: list[str], p: int) -> Option[Parsed] {
+  let first = parse_term(toks, p)?
+  return expr_rest(toks, first.pos, first.expr)
+}
+
+fn parse_formula(s: str) -> Option[Ex] {
+  let toks = tokenize(s)?
+  let whole = parse_expr(toks, 0)?
+  if whole.pos == len(toks) {
+    return Some(whole.expr)
+  }
+  return None
+}
+
+fn parse_plain(s: str) -> Option[int] {
+  if len(s) == 0 { return None }
+  let neg = s[0] == "-"
+  let digits = if neg then slice(s, 1, len(s)) else s
+  if not all_digits(digits) { return None }
+  let n = unwrap(parse_int(digits))
+  if neg { return Some(-n) }
+  return Some(n)
+}
+
+fn parse_content(body: str) -> Option[Ex] {
+  if starts_with(body, "=") {
+    return parse_formula(slice(body, 1, len(body)))
+  }
+  let n = parse_plain(body)?
+  return Some(Lit(n))
+}
+
+fn to_slot(body: str) -> Slot {
+  let r = parse_content(body)
+  if is_some(r) {
+    return Formula(unwrap(r))
+  }
+  return Broken
+}
+
+// ---------- dependencies ----------
+
+fn refs(e: Ex) -> list[int] {
+  return match e {
+    Lit(_) => range(0, 0),
+    Ref(i) => [i],
+    Neg(x) => refs(x),
+    Bin(_, l, r) => refs(l) + refs(r),
+    Agg(_, cells) => cells,
+  }
+}
+
+// keep only references to defined cells (empty cells have no value to wait for)
+fn keep_defined(xs: list[int], slots: map[int, Slot]) -> list[int] {
+  var out: list[int] = []
+  for i in xs {
+    if has(slots, i) { out = push(out, i) }
+  }
+  return out
+}
+
+fn deps_of(s: Slot, slots: map[int, Slot]) -> list[int] {
+  return match s {
+    Formula(e) => keep_defined(refs(e), slots),
+    Broken => range(0, 0),
+  }
+}
+
+fn neighbors(adj: map[int, list[int]], v: int) -> list[int] {
+  if has(adj, v) { return adj[v] }
+  return range(0, 0)
+}
+
+// Iterative Tarjan. Returns the nodes in completion order (every node comes after the nodes it
+// depends on) and the set of nodes that lie on a reference cycle.
+fn scc_order(nodes: list[int], adj: map[int, list[int]]) -> (list[int], map[int, bool]) {
+  var index_of: list[int] = []
+  var low: list[int] = []
+  var on_stack: list[bool] = []
+  var ep: list[int] = []
+  for k in range(0, 2600) {
+    index_of = push(index_of, -1)
+    low = push(low, 0)
+    on_stack = push(on_stack, false)
+    ep = push(ep, 0)
+  }
+  var counter = 0
+  var stack: list[int] = []
+  var calls: list[int] = []
+  var order: list[int] = []
+  var cyc: map[int, bool] = [:]
+
+  for root in nodes {
+    if index_of[root] == -1 {
+      index_of = set_at(index_of, root, counter)
+      low = set_at(low, root, counter)
+      counter = counter + 1
+      stack = push(stack, root)
+      on_stack = set_at(on_stack, root, true)
+      calls = push(calls, root)
+      while len(calls) > 0 {
+        let v = calls[len(calls) - 1]
+        let nb = neighbors(adj, v)
+        if ep[v] < len(nb) {
+          let w = nb[ep[v]]
+          ep = set_at(ep, v, ep[v] + 1)
+          if index_of[w] == -1 {
+            index_of = set_at(index_of, w, counter)
+            low = set_at(low, w, counter)
+            counter = counter + 1
+            stack = push(stack, w)
+            on_stack = set_at(on_stack, w, true)
+            calls = push(calls, w)
+          } else {
+            if on_stack[w] and index_of[w] < low[v] {
+              low = set_at(low, v, index_of[w])
+            }
+          }
+        } else {
+          if low[v] == index_of[v] {
+            var members: list[int] = []
+            var going = true
+            while going {
+              let x = stack[len(stack) - 1]
+              stack = pop(stack)
+              on_stack = set_at(on_stack, x, false)
+              members = push(members, x)
+              if x == v { going = false }
+            }
+            if len(members) > 1 or contains(nb, v) {
+              for x in members {
+                cyc = put(cyc, x, true)
+              }
+            }
+            for x in members {
+              order = push(order, x)
+            }
+          }
+          calls = pop(calls)
+          if len(calls) > 0 {
+            let u = calls[len(calls) - 1]
+            if low[v] < low[u] {
+              low = set_at(low, u, low[v])
+            }
+          }
+        }
+      }
+    }
+  }
+  return (order, cyc)
+}
+
+// ---------- evaluation ----------
+
+fn fetch(vals: map[int, Outcome], i: int) -> Outcome {
+  if has(vals, i) { return vals[i] }
+  return Good(0)
+}
+
+fn negate(o: Outcome) -> Outcome {
+  return match o {
+    Good(n) => Good(-n),
+    Failed(c) => Failed(c),
+  }
+}
+
+fn apply_op(op: str, x: int, y: int) -> Outcome {
+  if op == "+" { return Good(x + y) }
+  if op == "-" { return Good(x - y) }
+  if op == "*" { return Good(x * y) }
+  if y == 0 { return Failed("#DIV0") }
+  return Good(x / y)
+}
+
+fn arith(op: str, a: Outcome, b: Outcome) -> Outcome {
+  return match a {
+    Failed(c) => Failed(c),
+    Good(x) => match b {
+      Failed(c) => Failed(c),
+      Good(y) => apply_op(op, x, y),
+    },
+  }
+}
+
+fn agg_of(name: str, cells: list[int], vals: map[int, Outcome]) -> Outcome {
+  var total = 0
+  var lo = 0
+  var hi = 0
+  var first = true
+  for i in cells {
+    match fetch(vals, i) {
+      Failed(c) => { return Failed(c) }
+      Good(v) => {
+        total = total + v
+        if first {
+          lo = v
+          hi = v
+          first = false
+        }
+        if v < lo { lo = v }
+        if v > hi { hi = v }
+      }
+    }
+  }
+  if name == "SUM" { return Good(total) }
+  if name == "MIN" { return Good(lo) }
+  return Good(hi)
+}
+
+fn ev(e: Ex, vals: map[int, Outcome]) -> Outcome {
+  return match e {
+    Lit(n) => Good(n),
+    Ref(i) => fetch(vals, i),
+    Neg(x) => negate(ev(x, vals)),
+    Bin(op, l, r) => arith(op, ev(l, vals), ev(r, vals)),
+    Agg(name, cells) => agg_of(name, cells, vals),
+  }
+}
+
+fn outcome_for(v: int, slots: map[int, Slot], cyc: map[int, bool], vals: map[int, Outcome]) -> Outcome {
+  if has(cyc, v) { return Failed("#CYCLE") }
+  return match slots[v] {
+    Broken => Failed("#PARSE"),
+    Formula(e) => ev(e, vals),
+  }
+}
+
+fn show_outcome(o: Outcome) -> str {
+  return match o {
+    Good(n) => str(n),
+    Failed(c) => c,
+  }
+}
+
+// ---------- main ----------
+
+fn main() uses io {
+  let text = read_all()
+  var defs: map[int, str] = [:]
+  for line in split(text, "\n") {
+    let t = trim(line)
+    if len(t) == 0 { continue }
+    let parts = split(t, ":")
+    let key = cell_index(trim(parts[0]))
+    let body = trim(join(slice(parts, 1, len(parts)), ":"))
+    if is_some(key) {
+      defs = put(defs, unwrap(key), body)
+    }
+  }
+
+  var slots: map[int, Slot] = [:]
+  for k in keys(defs) {
+    slots = put(slots, k, to_slot(defs[k]))
+  }
+
+  var adj: map[int, list[int]] = [:]
+  for k in keys(slots) {
+    adj = put(adj, k, deps_of(slots[k], slots))
+  }
+
+  let (order, cyc) = scc_order(keys(slots), adj)
+
+  var vals: map[int, Outcome] = [:]
+  for v in order {
+    vals = put(vals, v, outcome_for(v, slots, cyc, vals))
+  }
+
+  for k in sort(keys(slots)) {
+    print("{cell_name(k)} = {show_outcome(fetch(vals, k))}")
+  }
+}

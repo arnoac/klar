@@ -1,0 +1,36 @@
+{
+  "task": "splitter",
+  "lang": "klar",
+  "model": "small-agent",
+  "docs": "repo",
+  "max_rounds": 3,
+  "rounds": [
+    {
+      "round": 1,
+      "agent": {
+        "exit": null,
+        "seconds": 100.1,
+        "tokens": 102937,
+        "tool_uses": 13
+      },
+      "build_ok": true,
+      "passed": 14,
+      "total": 14,
+      "failing": []
+    }
+  ],
+  "first_try_pass": true,
+  "first_try_score": 1.0,
+  "rounds_to_pass": 1,
+  "final_score": 1.0,
+  "tools": {
+    "tool_calls": 3,
+    "check_calls": 2,
+    "failed_checks": 1,
+    "run_calls": 0,
+    "error_codes": {
+      "E104": 1
+    },
+    "logged": true
+  }
+}

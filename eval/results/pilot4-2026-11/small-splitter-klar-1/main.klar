@@ -1,0 +1,222 @@
+// Splitter: shared expenses between friends. Runs entirely in the browser.
+// Amounts are kept as whole cents so all arithmetic is exact.
+
+use std.ui { Next, ui_start, ui_load, ui_save }
+use std.html { Html, div, span, p, h1, h2, ul, li, button, input, text, nothing, id, class, value, placeholder,
+  input_type, on_click, on_input, on_key, html_theme_css }
+use std.json { json_encode, json_decode }
+
+struct Expense {
+  payer: str,
+  cents: int,
+  desc: str,
+}
+
+struct Model {
+  name: str,
+  amount: str,
+  desc: str,
+  error: str,
+  items: list[Expense],
+}
+
+enum Msg {
+  SetName(s: str),
+  SetAmount(s: str),
+  SetDesc(s: str),
+  AddExpense,
+  RemoveAt(i: int),
+}
+
+// ---- parsing and formatting
+
+fn all_digits(t: str) -> bool {
+  return len(t) > 0 and all(chars(t), fn(c: str) => c >= "0" and c <= "9")
+}
+
+// Returns the amount in cents, or None unless the text is digits with an optional "." and one or two digits,
+// and greater than zero.
+fn parse_amount(s: str) -> Option[int] {
+  let parts = split(s, ".")
+  if len(parts) > 2 {
+    return None
+  }
+  let whole = parts[0]
+  let frac = if len(parts) == 2 then parts[1] else ""
+  if not all_digits(whole) {
+    return None
+  }
+  if len(parts) == 2 and (len(frac) < 1 or len(frac) > 2 or not all_digits(frac)) {
+    return None
+  }
+  let f2 = if len(frac) == 1 then frac + "0" else if len(frac) == 0 then "00" else frac
+  let cents = unwrap_or(parse_int(whole), 0) * 100 + unwrap_or(parse_int(f2), 0)
+  if cents <= 0 {
+    return None
+  }
+  return Some(cents)
+}
+
+// Non-negative cents as dollars with two decimals.
+fn money(c: int) -> str {
+  let d = c / 100
+  let r = c % 100
+  let rs = if r < 10 then "0" + str(r) else str(r)
+  return "{d}.{rs}"
+}
+
+fn signed(b: int) -> str {
+  return if b > 0 then "+" + money(b) else if b < 0 then "-" + money(-b) else "0.00"
+}
+
+fn expense_text(e: Expense) -> str {
+  let base = "{e.payer} paid {money(e.cents)}"
+  return if e.desc == "" then base else base + " for " + e.desc
+}
+
+// ---- totals and balances
+
+fn total_cents(items: list[Expense]) -> int {
+  var t = 0
+  for e in items {
+    t = t + e.cents
+  }
+  return t
+}
+
+fn paid_by(items: list[Expense], who: str) -> int {
+  var t = 0
+  for e in items {
+    if e.payer == who {
+      t = t + e.cents
+    }
+  }
+  return t
+}
+
+// Everyone who paid for at least one expense, sorted by code point.
+fn people(items: list[Expense]) -> list[str] {
+  var names: list[str] = []
+  for e in items {
+    if not contains(names, e.payer) {
+      names = push(names, e.payer)
+    }
+  }
+  return sort(names)
+}
+
+// Share per person, total / people rounded to the nearest cent (half up).
+fn share_cents(total: int, n: int) -> int {
+  if n == 0 {
+    return 0
+  }
+  return (total * 2 + n) / (2 * n)
+}
+
+// ---- update
+
+fn remove_at(xs: list[Expense], i: int) -> list[Expense] {
+  var out: list[Expense] = []
+  for j in range(0, len(xs)) {
+    if j != i {
+      out = push(out, xs[j])
+    }
+  }
+  return out
+}
+
+fn save_items(m: Model, items: list[Expense]) -> Next[Model, Msg] {
+  return Next(m with (items: items), [ui_save("expenses", json_encode(items))])
+}
+
+fn add_expense(m: Model) -> Next[Model, Msg] {
+  let name = trim(m.name)
+  if name == "" {
+    return Next(m with (error: "Enter the name of the person who paid"), [])
+  }
+  return match parse_amount(trim(m.amount)) {
+    None => Next(m with (error: "Enter an amount above zero, such as 12.50"), []),
+    Some(c) => {
+      let items = push(m.items, Expense(payer: name, cents: c, desc: trim(m.desc)))
+      return Next(m with (items: items, amount: "", desc: "", error: ""), [ui_save("expenses", json_encode(items))])
+    }
+  }
+}
+
+fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
+  return match msg {
+    SetName(s) => Next(m with (name: s), []),
+    SetAmount(s) => Next(m with (amount: s), []),
+    SetDesc(s) => Next(m with (desc: s), []),
+    AddExpense => add_expense(m),
+    RemoveAt(i) => save_items(m with (error: ""), remove_at(m.items, i)),
+  }
+}
+
+// ---- view
+
+fn enter_adds(key: str) -> Option[Msg] {
+  return if key == "Enter" then Some(AddExpense) else None
+}
+
+fn expense_row(items: list[Expense], i: int) -> Html[Msg] {
+  return li([], [
+    span([], [text(expense_text(items[i]))]),
+    button([class("remove"), on_click(RemoveAt(i))], [text("Delete")]),
+  ])
+}
+
+fn balance_row(items: list[Expense], who: str, share: int) -> Html[Msg] {
+  let b = paid_by(items, who) - share
+  return li([], [text("{who}: {signed(b)}")])
+}
+
+fn view(m: Model) -> Html[Msg] {
+  let t = total_cents(m.items)
+  let ppl = people(m.items)
+  let share = share_cents(t, len(ppl))
+  return div([class("wrap")], [
+    h1([], [text("Splitter")]),
+    div([class("panel")], [
+      div([class("form")], [
+        input([id("name"), input_type("text"), placeholder("Who paid"), value(m.name), on_input(fn(s: str) => SetName(s)), on_key(enter_adds)]),
+        input([id("amount"), input_type("text"), placeholder("Amount"), value(m.amount), on_input(fn(s: str) => SetAmount(s)), on_key(enter_adds)]),
+        input([id("desc"), input_type("text"), placeholder("What for (optional)"), value(m.desc), on_input(fn(s: str) => SetDesc(s)), on_key(enter_adds)]),
+        button([id("add"), on_click(AddExpense)], [text("Add")]),
+      ]),
+      if m.error == "" then nothing() else div([id("error"), class("error")], [text(m.error)]),
+    ]),
+    h2([], [text("Expenses")]),
+    ul([id("expenses"), class("list")], map(range(0, len(m.items)), fn(i: int) => expense_row(m.items, i))),
+    p([id("total"), class("total")], [text("Total: {money(t)}")]),
+    h2([], [text("Balances")]),
+    ul([id("balances"), class("list")], map(ppl, fn(who: str) => balance_row(m.items, who, share))),
+  ])
+}
+
+fn app_css() -> str {
+  return r"""
+    body { margin: 0; }
+    .wrap { max-width: 640px; margin: 0 auto; padding: 16px; font-family: system-ui, sans-serif; }
+    .panel { margin-bottom: 16px; }
+    .form { display: flex; flex-wrap: wrap; gap: 8px; }
+    .form input { flex: 1 1 140px; padding: 8px; font-size: 16px; }
+    .form button { padding: 8px 16px; font-size: 16px; }
+    .error { color: #b00020; margin-top: 8px; }
+    .list { padding-left: 0; list-style: none; }
+    .list li { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #ddd; }
+    .remove { font-size: 13px; }
+    .total { font-weight: bold; }
+  """
+}
+
+fn main() uses io {
+  let saved: list[Expense] = match ui_load("expenses") {
+    Some(raw) => match json_decode(raw) {
+      Ok(xs) => xs,
+      Err(_) => [],
+    },
+    None => [],
+  }
+  ui_start(Next(Model(name: "", amount: "", desc: "", error: "", items: saved), []), update, view, None, html_theme_css() + app_css())
+}

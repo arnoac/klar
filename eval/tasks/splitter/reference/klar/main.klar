@@ -72,7 +72,7 @@ fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
       return match parse_cents(m.amount) {
         Some(c) => if c <= 0 then Next(m with (error: "Enter an amount above zero."), [])
           else saved(m with (expenses: push(m.expenses, Expense(who, c, trim(m.desc))), amount: "", desc: "",
-                             error: "")),
+            error: "")),
         None => Next(m with (error: "Enter an amount such as 12.50."), []),
       }
     }
@@ -98,7 +98,7 @@ fn balances(expenses: list[Expense]) -> list[str] {
 fn expense_row(x: Expense, i: int) -> Html[Msg] {
   let what = if x.desc == "" then "" else " for {x.desc}"
   return li([], [text("{x.name} paid {money(x.cents)}{what} "),
-                 button([class("remove"), input_type("button"), on_click(Remove(i))], [text("Remove")])])
+    button([class("remove"), input_type("button"), on_click(Remove(i))], [text("Remove")])])
 }
 
 fn view(m: Model) -> Html[Msg] {

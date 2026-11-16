@@ -1,5 +1,52 @@
 # Results
 
+## Fourth pilot, November 2026: Klar after the fixes and the faster interpreter
+
+**Setup.** After fixing the gaps the earlier pilots found and after `klar run` became 10 to 110 times faster
+(it now compiles programs to Python code), 8 new Klar trials on `tickets`, `splitter` and `sheet` (twice),
+with each model. TypeScript was not rerun: nothing on that side changed, so the TypeScript trials of pilots 1
+to 3 are the baseline. Records and programs are in [results/pilot4-2026-11](results/pilot4-2026-11).
+
+| task | model | first try | checks (failed) | compiler errors | agent time | agent tokens |
+|---|---|---|---|---|---|---|
+| tickets | strong | pass | 1 (0) | - | 48 s | 76,756 |
+| splitter | strong | pass | 2 (0) | - | 60 s | 90,384 |
+| sheet (1) | strong | pass | 1 (0) | - | 102 s | 84,879 |
+| sheet (2) | strong | pass | 2 (1) | E311 | 91 s | 84,133 |
+| tickets | small | pass | 2 (0) | - | 83 s | 91,430 |
+| splitter | small | pass | 2 (1) | E104 | 100 s | 102,937 |
+| sheet (1) | small | pass | 3 (0) | - | 313 s | 113,631 |
+| sheet (2) | small | pass | 2 (0) | - | 152 s | 107,240 |
+
+Totals for the same mix of tasks (one `tickets`, one `splitter`, two `sheet`), against the TypeScript
+medians for each task:
+
+| model | Klar time vs TypeScript, before → now | Klar tokens vs TypeScript, before → now |
+|---|---|---|
+| strong (pilot 2 → 4) | 3.8x → **1.4x** | +36% → **+26%** |
+| small (pilot 3 → 4) | 3.0x → **2.1x** | +52% → **+35%** |
+
+### What this says
+
+* **The cost gap narrowed a lot, mostly on `sheet`.** The strong model's `sheet` trials went from 116 to
+  545 s down to 91 and 102 s: no agent had to redesign for speed or work around recursion depth. On `tickets`
+  and `splitter` the strong model is now within 1.15x to 1.35x of TypeScript's time.
+* **Klar still costs more**, chiefly in tokens: reading SPEC and the std sources is a fixed price of roughly
+  15,000 to 20,000 tokens per task that TypeScript does not pay.
+* **Correctness unchanged:** 8 of 8 passed every hidden test first try, as before.
+* **The small model's slowest trial was its own algorithm**: a reachability search per cell instead of one
+  strongly-connected-components pass, which took minutes on large sheets in any language.
+
+### New friction, and what was fixed right away
+
+* An E104 inside a `"""..."""` string of CSS did not mention raw strings. **Fixed:** the hint now says to use
+  `r"..."` or `r"""..."""` for text full of braces.
+* `klar fmt --check` listed the starter file without saying why, and the starter itself was not formatted.
+  **Fixed:** `--check` now prints the diff (to standard error), and every eval source is formatted.
+* Not fixed (no room under SPEC's word cap; the sources document them): `ui_start` for a custom stylesheet,
+  whether passing a `var` list to a function copies it, and whether `on_submit` stops the browser's own
+  submit (it does).
+
 ## Third pilot, November 2026: a smaller model
 
 **Setup.** The second pilot's tasks and method with a smaller, cheaper model from the same family as the
@@ -45,10 +92,13 @@ Repeats of pilot 2 (asynchronous `std.ui` redraws, `std.ui` signatures and `on_k
 sources, no top-level constants, `klar` vs `klarc`, interpreter speed) plus:
 
 1. **No `ord`/character code and no list `pop`.** Digit and column values went through `index_of` over
-   `chars("0123456789")`; an explicit stack needed `set_at` and a separate top index.
+   `chars("0123456789")`; an explicit stack needed `set_at` and a separate top index. **Fixed:** `ord`, `chr`,
+   `pop` (O(1) on a `var`, like `push`) and `last`.
 2. **No assignment to several existing variables from a tuple** (`(a, b) = f()`), so agents used small structs.
+   **Fixed:** `(a, b) = f()` assigns existing `var`s.
 3. **The E403 stack trace did not point where the agent expected** for a failed `unwrap`; it had to read
-   the reported line to tell which `unwrap` failed.
+   the reported line to tell which `unwrap` failed. **Fixed:** each frame of a trace now shows its own line
+   (it showed the line its caller called it from).
 4. **Unclear whether passing a large map to a function copies it**; one agent suspected that as the cause of a
    slow program and could not confirm it.
 
@@ -102,20 +152,25 @@ None of these came up for TypeScript, apart from the TASK wording point in 7.
 1. **`std.ui` redraws one frame late, and nothing says so.** The page re-renders on `requestAnimationFrame`,
    so a test (or an agent's own Playwright script) that reads the DOM right after a click sees the old
    state, or half of the new one. Both `splitter` agents lost time on it; our own hidden tests had to poll.
-   SPEC should say it, and the runtime could render synchronously after an event handler.
+   SPEC should say it, and the runtime could render synchronously after an event handler. **Fixed:** the page
+   re-renders as soon as `update` returns, and SPEC says so.
 2. **`std.ui` details only in the sources**: whether `value(...)` sets the live input value on every redraw
    (it does), that `on_key` exists (SPEC lists the name only), the `ui_load` in `main` + `ui_save` in `update`
-   recipe for storage, and that `std.ui` alone is enough without `std.kit` or `std.layout`.
+   recipe for storage, and that `std.ui` alone is enough without `std.kit` or `std.layout`. **Fixed:** in SPEC
+   and the `std.ui` / `std.html` sources.
 3. **Recursion depth is not stated.** A recursive function fails with E406 somewhere between depth 1,000 and
    3,000 in the interpreter. Both `sheet` agents tested for it and rewrote their searches to be iterative.
 4. **Interpreter speed is still not documented**: about 2.5 microseconds per loop iteration that indexes a
    list. Agents could not tell whether compiling the program was allowed.
 5. **The name rule in SPEC does not match the checker.** SPEC says a name is declared once per function,
    inner blocks included; the checker accepts `let w` in two sibling blocks and a match binding that reuses a
-   name from elsewhere. One agent was left unsure which is right.
-6. **No top-level constants**, and SPEC does not say to use zero-argument functions instead.
+   name from elsewhere. One agent was left unsure which is right. **Fixed:** SPEC states the checker's rule (no
+   redeclaring a name while it is in scope; separate blocks may reuse it).
+6. **No top-level constants**, and SPEC does not say to use zero-argument functions instead. **Fixed** in SPEC.
 7. **Smaller**: the E301 hint for `push(list, list)` (above); TASK says `klarc` while SPEC says `klar`; when
    a function ending in a `match` whose arms all return counts as returning (E305) is not spelled out.
+   **Fixed:** the hint now points at `xs + ys`, the eval workspace command is `klar`, and SPEC states the E305
+   rule.
 
 TypeScript agents' only notes were about the workspace: `tsconfig.json` compiles every `.ts` file, so test
 scripts had to be `.cjs`, and `"type": "module"` blocks `require`.

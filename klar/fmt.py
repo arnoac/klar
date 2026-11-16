@@ -236,14 +236,19 @@ def cmd_fmt(paths, check):
             continue
         if new != src:
             if check:
-                bad.append(path)
+                bad.append((path, src, new))
             else:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(new)
                 changed.append(path)
     if check:
-        for p in bad:
+        import difflib
+        for p, old_src, new_src in bad:
             print(p)
+            # show what `klar fmt` would change, so the check is actionable without running it
+            diff = difflib.unified_diff(old_src.splitlines(), new_src.splitlines(), p, p + " (formatted)", lineterm="", n=1)
+            for line in list(diff)[:40]:
+                print("  " + line, file=sys.stderr)
         return 1 if bad or failed else 0
     for p in changed:
         print(f"formatted {p}", file=sys.stderr)

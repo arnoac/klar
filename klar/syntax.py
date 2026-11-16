@@ -1010,10 +1010,12 @@ class Parser:
                     e = sub.parse_expr()
                 except KlarError as ex:
                     raise KlarError("E104", f"could not parse interpolation {{{text}}}: {ex.message}", line, col,
-                                    "only a single expression is allowed inside {}; use {{ and }} for literal braces", self.file)
+                                    "only a single expression is allowed inside {}; use {{ and }} for literal braces, or a raw "
+                                    "string r\"...\" / r\"\"\"...\"\"\"", self.file)
                 if not sub.at("eof"):
                     raise KlarError("E104", f"could not parse interpolation {{{text}}}", line, col,
-                                    "only a single expression is allowed inside {}", self.file)
+                                    "only a single expression is allowed inside {}; for text full of braces (CSS, JSON) "
+                                    "use a raw string r\"...\" or r\"\"\"...\"\"\"", self.file)
                 parts.append(e)
         if all(isinstance(p, str) for p in parts):
             return Node("Str", t.line, t.col, value="".join(parts))

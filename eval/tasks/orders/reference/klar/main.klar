@@ -22,7 +22,7 @@ fn whole_at_least(v: Option[Json], low: int) -> Option[int] {
 
 fn read_item(j: Json) -> Option[Item] {
   return Some(Item(sku: non_empty(json_get(j, "sku"))?, qty: whole_at_least(json_get(j, "qty"), 1)?,
-                   price_cents: whole_at_least(json_get(j, "price_cents"), 0)?))
+    price_cents: whole_at_least(json_get(j, "price_cents"), 0)?))
 }
 
 // The items of an order, or the reason it is invalid.
@@ -86,7 +86,7 @@ fn summarize(orders: list[Json]) -> Summary {
     seen = put(seen, unwrap(id), true)
     let before = unwrap_or(get(customers, who), CustomerTotal(orders: 0, total_cents: 0))
     customers = put(customers, who, CustomerTotal(orders: before.orders + 1,
-                                                  total_cents: before.total_cents + total_of(o, its)))
+      total_cents: before.total_cents + total_of(o, its)))
     for it in its {
       qty = put(qty, it.sku, unwrap_or(get(qty, it.sku), 0) + it.qty)
     }

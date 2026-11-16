@@ -116,7 +116,7 @@ fn buy(office: Office, args: list[str]) -> Outcome {
   }
   let held = unwrap_or(get(e.holders, person), 0)
   let after = e with (sold: e.sold + qty, revenue: e.revenue + qty * e.price,
-                      holders: put(e.holders, person, held + qty))
+    holders: put(e.holders, person, held + qty))
   return save(office, after, "ok: {person} bought {qty} for {e.id} ({money(qty * e.price)})")
 }
 

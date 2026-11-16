@@ -135,8 +135,8 @@ struct Sale { event: Event, text: str }
 fn sell(e: Event, person: str, qty: int) -> Sale {
   let cost = qty * e.price
   let after = e with (sold: e.sold + qty, revenue: e.revenue + cost,
-                      holders: put(e.holders, person, unwrap_or(get(e.holders, person), 0) + qty),
-                      paid: put(e.paid, person, unwrap_or(get(e.paid, person), 0) + cost))
+    holders: put(e.holders, person, unwrap_or(get(e.holders, person), 0) + qty),
+    paid: put(e.paid, person, unwrap_or(get(e.paid, person), 0) + cost))
   return Sale(after, "ok: {person} bought {qty} for {e.id} ({money(cost)})")
 }
 
@@ -194,7 +194,7 @@ fn refund(office: Office, args: list[str]) -> Outcome {
   }
   let amount = unwrap_or(get(e.paid, person), 0)
   let after = e with (sold: e.sold - held, revenue: e.revenue - amount, holders: remove(e.holders, person),
-                      paid: remove(e.paid, person))
+    paid: remove(e.paid, person))
   let filled = fill(after, "ok: refunded {held} to {person} ({money(amount)})")
   return save(office, filled.event, filled.text)
 }

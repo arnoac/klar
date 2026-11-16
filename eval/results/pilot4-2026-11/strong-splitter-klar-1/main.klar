@@ -1,0 +1,167 @@
+use std.ui { Next, ui_run, ui_save, ui_load }
+use std.html { Html, div, h1, h2, ul, li, form, input, button, text, nothing, class, id, placeholder, value,
+  input_type, on_input, on_submit, on_click, html_render }
+use std.json { json_encode, json_decode }
+
+struct Expense { name: str, cents: int, desc: str }
+
+struct Model {
+  expenses: list[Expense],
+  name: str,
+  amount: str,
+  desc: str,
+  error: str,
+}
+
+enum Msg {
+  SetName(t: str),
+  SetAmount(t: str),
+  SetDesc(t: str),
+  Add,
+  Remove(index: int),
+}
+
+fn is_digit(c: str) -> bool {
+  return c >= "0" and c <= "9"
+}
+
+// Parses "12", "12.5", "12.50" into cents; None when invalid or not > 0.
+fn parse_cents(raw: str) -> Option[int] {
+  let s = trim(raw)
+  let parts = split(s, ".")
+  if len(parts) > 2 { return None }
+  let whole = parts[0]
+  if len(whole) == 0 { return None }
+  if not all(chars(whole), fn(c) => is_digit(c)) { return None }
+  var cents = unwrap(parse_int(whole)) * 100
+  if len(parts) == 2 {
+    let frac = parts[1]
+    if len(frac) < 1 or len(frac) > 2 { return None }
+    if not all(chars(frac), fn(c) => is_digit(c)) { return None }
+    let f = unwrap(parse_int(frac))
+    cents = cents + (if len(frac) == 1 then f * 10 else f)
+  }
+  if cents <= 0 { return None }
+  return Some(cents)
+}
+
+fn pad2(n: int) -> str {
+  return if n < 10 then "0{n}" else "{n}"
+}
+
+fn money(cents: int) -> str {
+  let a = abs(cents)
+  let sign = if cents < 0 then "-" else ""
+  return "{sign}{a / 100}.{pad2(a % 100)}"
+}
+
+fn signed(cents: int) -> str {
+  if cents > 0 { return "+" + money(cents) }
+  return money(cents)
+}
+
+fn total_cents(xs: list[Expense]) -> int {
+  return fold(xs, 0, fn(acc, e) => acc + e.cents)
+}
+
+fn people(xs: list[Expense]) -> list[str] {
+  var seen: list[str] = []
+  for e in xs {
+    if not contains(seen, e.name) { seen = push(seen, e.name) }
+  }
+  return sort(seen)
+}
+
+fn balances(xs: list[Expense]) -> list[(str, int)] {
+  let ps = people(xs)
+  let n = len(ps)
+  if n == 0 { return [] }
+  let total = total_cents(xs)
+  let share = (2 * total + n) / (2 * n)
+  return map(ps, fn(p) => (p, total_cents(filter(xs, fn(e) => e.name == p)) - share))
+}
+
+fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
+  return match msg {
+    SetName(t) => Next(m with (name: t), []),
+    SetAmount(t) => Next(m with (amount: t), []),
+    SetDesc(t) => Next(m with (desc: t), []),
+    Add => add(m),
+    Remove(i) => {
+      let xs = slice(m.expenses, 0, i) + slice(m.expenses, i + 1, len(m.expenses))
+      return Next(m with (expenses: xs), [ui_save("splitter-expenses", json_encode(xs))])
+    }
+  }
+}
+
+fn add(m: Model) -> Next[Model, Msg] {
+  let name = trim(m.name)
+  if name == "" { return Next(m with (error: "Please enter who paid."), []) }
+  return match parse_cents(m.amount) {
+    None => Next(m with (error: "Please enter a valid amount greater than zero."), []),
+    Some(c) => {
+      let xs = push(m.expenses, Expense(name: name, cents: c, desc: trim(m.desc)))
+      return Next(m with (expenses: xs, amount: "", desc: "", error: ""), [ui_save("splitter-expenses", json_encode(xs))])
+    }
+  }
+}
+
+fn expense_text(e: Expense) -> str {
+  if e.desc == "" { return "{e.name} paid {money(e.cents)}" }
+  return "{e.name} paid {money(e.cents)} for {e.desc}"
+}
+
+fn view(m: Model) -> Html[Msg] {
+  let indexed = map(range(0, len(m.expenses)), fn(i) => (i, m.expenses[i]))
+  return div([class("container")], [
+    h1([], [text("Splitter")]),
+    form([on_submit(Add)], [
+      input([id("name"), placeholder("Who paid?"), value(m.name), on_input(fn(s) => SetName(s))]),
+      input([id("amount"), placeholder("Amount, e.g. 12.50"), value(m.amount), on_input(fn(s) => SetAmount(s))]),
+      input([id("desc"), placeholder("What for?"), value(m.desc), on_input(fn(s) => SetDesc(s))]),
+      button([id("add"), input_type("submit")], [text("Add")]),
+    ]),
+    if m.error == "" then nothing() else div([id("error"), class("error")], [text(m.error)]),
+    h2([], [text("Expenses")]),
+    ul([id("expenses")], map(indexed, fn(p) => li([], [
+      text(expense_text(p.1) + " "),
+      button([class("remove"), input_type("button"), on_click(Remove(p.0))], [text("Remove")]),
+    ]))),
+    div([id("total")], [text("Total: {money(total_cents(m.expenses))}")]),
+    h2([], [text("Balances")]),
+    ul([id("balances")], map(balances(m.expenses), fn(b) => li([], [text("{b.0}: {signed(b.1)}")]))),
+  ])
+}
+
+fn main() uses io {
+  let saved: list[Expense] = match ui_load("splitter-expenses") {
+    Some(t) => match json_decode(t) {
+      Ok(xs) => xs,
+      Err(_) => [],
+    },
+    None => [],
+  }
+  ui_run(Next(Model(saved, "", "", "", ""), []), update, view)
+}
+
+test "parse amounts" {
+  assert parse_cents("5") == Some(500)
+  assert parse_cents(" 5.5 ") == Some(550)
+  assert parse_cents("0.01") == Some(1)
+  assert parse_cents("0") == None
+  assert parse_cents("-1") == None
+  assert parse_cents("1.234") == None
+  assert parse_cents("abc") == None
+  assert parse_cents("") == None
+  assert parse_cents("5.") == None
+  assert parse_cents(".5") == None
+  assert parse_cents("+5") == None
+}
+
+test "balances" {
+  let xs = [Expense("Ann", 3000, "x"), Expense("Bob", 1000, "")]
+  assert balances(xs) == [("Ann", 1000), ("Bob", -1000)]
+  assert signed(-333) == "-3.33"
+  assert signed(0) == "0.00"
+  assert money(5) == "0.05"
+}
