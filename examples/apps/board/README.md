@@ -1,6 +1,6 @@
 # Klar Board
 
-A shared task board for a team, written entirely in Klar: about 1,400 lines across six files. It is the
+A shared task board for a team, written entirely in Klar: about 1,200 lines across six files. It is the
 largest Klar program so far, built to find out what hurts when a Klar codebase grows past a toy.
 
 * **Accounts**: sign up and log in. Passwords are stored as salted PBKDF2 hashes. Sessions are random tokens
@@ -14,10 +14,10 @@ largest Klar program so far, built to find out what hurts when a Klar codebase g
 
 | File | What it is |
 |---|---|
-| `shared.klar` | types and rules used by both the server and the browser: where a moved card lands, validation, search |
+| `shared.klar` | types, rules and typed calls used by both the server and the browser: where a moved card lands, validation, search |
 | `store.klar` | SQLite: versioned migrations, queries, moving cards in a transaction |
 | `auth.klar` | sign up, log in, sessions |
-| `server.klar` | the JSON API, access checks and live updates |
+| `server.klar` | answers the typed calls, checks access, sends live updates |
 | `app.klar` | the browser app: login, your boards, the board itself, built from `std.layout` and `std.kit` |
 | `report.klar` | a command-line report using `std.task` and the HTTP client |
 
@@ -47,14 +47,36 @@ elsewhere, and each one below is now fixed and has a regression test in `tests/t
 5. **Logging out needed `web_clear_cookie`**, and switching boards needed `ui_unlisten` to close the old live
    stream. `ui_start` is now documented for adding the app's own CSS.
 
+## Removing the glue
+
+A second pass added what the first one found awkward, and the board was ported to it:
+
+* **Typed calls** (`std.api`). Each server function is declared once in `shared.klar`, for example
+  `fn add_card_call() -> Api[NewCard, Card]`. The server answers it with `api_serve`, the browser calls it with
+  `api_call`, and the report tool with `api_fetch`. Both ends are checked against the same types, so there are
+  no routes, URLs, status checks or JSON reading left in the app. Errors are an `ApiError`:
+  `Refused(status, message)` for the user, `Internal(message)` for the logs.
+* **Typed SQL rows.** `sqlite_rows(db, query, params)` fills structs by column name and tuples by position,
+  the way `json_decode` does; `sql(value)` turns any value into a parameter. The `row_*` converters are gone.
+* **Tuples** replaced the `Account` struct (`Option[(User, str)]`), and **`?` wraps errors**: in a function
+  returning `Result[T, ApiError]`, a `str` error becomes `Internal(e)` by itself. With `ok_or`, the nested
+  `Result[Result[Access, HttpResponse], str]` access check became a flat function of `?` lines.
+
+Code lines (not counting blank lines and comments), before and after:
+
+| File | Before | After |
+|---|---|---|
+| `server.klar` | 200 | 131 |
+| `store.klar` | 176 | 138 |
+| `auth.klar` | 53 | 45 |
+| `report.klar` | 55 | 45 |
+| `app.klar` | 489 | 468 |
+| `shared.klar` (now also declares the 12 calls) | 150 | 161 |
+| **Total** | **1,123** | **988** (12% less) |
+
+The todo app (`examples/apps/todo_web`) went from 277 to 227 lines, 18% less.
+
 Still awkward, and on the roadmap:
 
-* **Access checks.** A "user plus board, or the reply to send instead" helper returns
-  `Result[Result[Access, HttpResponse], str]`. Each caller unpacks it with a `match` that returns early. It
-  reads fine, but a small middleware helper in `std.web` would remove the nesting.
-* **Converting database rows by hand** (`row_card`, `row_user`, ...) is the most repetitive code. Typed queries
-  that fill a struct by column name, the way `json_decode` does, would remove it.
-* **No tuples.** A function returning "a user and their password hash" needs a named struct (`Account`). That is
-  clearer, but costs a declaration.
 * **Drag and drop** now works with the mouse (`on_drag`/`on_drop`). Phones still use the arrow buttons, because HTML
   drag and drop does not fire on touch screens.

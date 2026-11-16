@@ -95,7 +95,9 @@ The full-stack example (`examples/apps/todo_web`) has a browser app and a JSON b
 ./klarc test examples/apps/todo_web/app.klar               # the UI logic, tested without a browser
 ```
 
-Both sides share their types (`api.klar`), JSON is derived from them, and every open tab stays in sync
+Both sides share their types and calls (`api.klar`): the server answers `add_todo()` with `api_serve`, the
+browser calls it with `api_call`, and the checker holds both ends to the same types. There are no URLs or JSON
+code to write, rows come out of SQLite as typed records (`sqlite_rows`), and every open tab stays in sync
 through live updates. To build it yourself instead of `klar dev`:
 
 ```sh

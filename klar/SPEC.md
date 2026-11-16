@@ -1,4 +1,4 @@
-# Klar Language Reference (v0.14)
+# Klar Language Reference (v0.15)
 
 Klar is a small, statically typed language designed so that an AI agent can learn it from this page, write
 correct code first time, and fix mistakes from the compiler's structured feedback. Files end in `.klar`. This page is the complete language.
@@ -14,7 +14,7 @@ fn main() uses io {
 }
 ```
 
-Comments: `// to end of line`. There are no block comments. Statements end at the end of a line; `;` is
+Comments: `// to end of line` (no block comments). Statements end at the end of a line; `;` is
 an optional separator. Whitespace and indentation are not significant, with one rule: the `(` of a call and
 the `[` of an index must be on the same line as the expression before them.
 
@@ -25,12 +25,11 @@ the `[` of an index must be on the same line as the expression before them.
 | variables, parameters, functions, fields | lowercase first letter | `total`, `parse_line`, `x` |
 | types, structs, enums, variants, type parameters | Uppercase first letter | `Point`, `Shape`, `Circle`, `T` |
 
-There is **no shadowing**: a name declared in a function cannot be declared again anywhere in that
-function (including inner blocks). There is **no overloading**: every function name is unique, and user
+There is **no shadowing**: a name is declared once per function, inner blocks included. There is **no overloading**: every function name is unique, and user
 functions cannot reuse built-in names. Variant names are global and must be unique across all enums.
 
-Every top-level name (function, type, variant) is unique across the **whole program**, including imported
-modules, so a search finds exactly one definition. Standard library names carry a module prefix
+Every top-level name (function, type, variant) is unique across the **whole program**, so a search finds
+exactly one definition. Standard library names carry a module prefix
 (`json_parse`, `fs_read`), except `std.html` elements (`div`, `text`); a std name only counts in the modules
 that import it, so your own `text` is fine elsewhere.
 
@@ -41,7 +40,7 @@ Keywords: `fn let var if then else while for in return break continue match stru
 | Type | Literals / constructors |
 |---|---|
 | `int` (arbitrary precision) | `0`, `42`, `1_000_000` |
-| `float` (64-bit) | `3.14`, `2.0`, `1e-9`, `6.02e23` (a digit is required on both sides of `.`) |
+| `float` (64-bit) | `3.14`, `2.0`, `1e-9`, `6.02e23` (digits on both sides of `.`) |
 | `bool` | `true`, `false` |
 | `str` (UTF-8, immutable) | `"text"`, `"total: {x + 1}"` |
 | `unit` (no value) | `()` |
@@ -49,6 +48,7 @@ Keywords: `fn let var if then else while for in return break continue match stru
 | `map[K, V]` (K is int, str or bool; insertion-ordered) | `["a": 1, "b": 2]`, `[:]` |
 | `Option[T]` | `Some(x)`, `None` |
 | `Result[T, E]` | `Ok(x)`, `Err(e)` |
+| tuple `(A, B)` (2 to 6 values) | `(1, "a")`; read `t.0`, or unpack: `let (n, s) = t` |
 | `fn(A, B) -> R` | `fn(a: int, b: int) => a + b` |
 | user `struct` / `enum` | `Point(x: 1, y: 2)`, `Circle(radius: 1.0)` |
 
@@ -62,10 +62,8 @@ String escapes: `\n \t \r \" \\ \0`. Interpolation: `{expr}` inside a string ins
 contain any expression, including other strings: `"{m["key"]} {upper("x")}"`. Write `{{` and `}}` for
 literal braces.
 
-* **Raw strings** `r"..."` have no interpolation and keep unknown escapes: `r"{\"id\": 1}"`, `r"\d+"`.
-* **Multi-line strings** `"""..."""` may span lines and interpolate. The first newline and common indentation
-  are removed.
-  `r"""..."""` is the raw multi-line form.
+* **Raw strings** `r"..."` do not interpolate and keep unknown escapes: `r"{\"id\": 1}"`, `r"\d+"`.
+* **Multi-line strings** `"""..."""` interpolate, minus the first newline and common indentation; `r"""..."""` is raw.
 
 ## 4. Declarations
 
@@ -99,10 +97,10 @@ test "area of a rectangle" {
 }
 ```
 
-* Functions are declared only at top level. Inside functions use anonymous functions.
+* Functions are top-level only; inside them use anonymous functions.
 * Structs and enums may be generic: `struct Pair[A, B] { first: A, second: B }`,
-  `enum Tree[T] { Leaf, Node(left: Tree[T], value: T, right: Tree[T]) }`. Type arguments are inferred at
-  construction (`Pair(first: 1, second: "a")` is a `Pair[int, str]`) and written in types (`Tree[int]`).
+  `enum Tree[T] { Leaf, Node(left: Tree[T], value: T, right: Tree[T]) }`. Type arguments are inferred:
+  `Pair(first: 1, second: "a")` is a `Pair[int, str]`.
 * Fields are separated by commas; a trailing comma is allowed.
 * `test "name" { ... }` blocks are run by `klar test file.klar`. They may use io.
 
@@ -124,12 +122,11 @@ fn total[T: Shape](xs: list[T]) -> float { ... }     // bounds: T: Shape + Show
 
 ### Effects
 
-A function that performs input/output must say `uses io` after its return type. This includes calling any
-function that `uses io`. The checker enforces this (E308), so a signature without `uses io` is guaranteed
-to have no side effects.
+A function that does input/output, or calls a function that `uses io`, must say `uses io` after its return
+type (E308), so a signature without it has no side effects.
 
-Function types carry the effect too: `fn(Request) -> Response uses io` may do io and is callable only from
-io code. A pure function may be passed where an io one is expected, not the reverse. An anonymous function may
+Function types carry the effect too: `fn(Request) -> Response uses io` is callable only from io code; a pure
+function may be passed in its place. An anonymous function may
 do io only if its expected type allows it, or (bound with `let`) if the enclosing function `uses io`; so
 `map(xs, fn(x) => print(x))` is an error: use `for`. To make a function returning a function io, parenthesise:
 `fn make() -> (fn(int) -> int) uses io`.
@@ -163,23 +160,21 @@ marked = "18.2.0"
 `use textkit { shout }` loads the dependency's `lib.klar`; `use textkit.case { ... }` its `case.klar`.
 `klar add NAME --path DIR | --git URL [--tag T]` (or `klar add --python NAME==VERSION`) edits `klar.toml` and
 installs; `klar install` fetches into `.klar/`; `klar.lock` pins each dependency by commit or hash (commit it);
-`klar update` moves pins forward. Unimported dependency functions never clash with yours;
-types and variants must be unique. Package errors are E601.
+`klar update` moves pins. Unimported dependency functions never clash with yours. Package errors are E601.
 
 ### Python interop
 
 `extern` gives any Python function a checked Klar signature. The target is `"module.attribute"`; a `.py`
-file next to the `.klar` file is found automatically. `extern type` declares an opaque Python object type.
+file next to the `.klar` file is found automatically.
 
 ```klar
 extern "statistics.median" fn median(xs: list[float]) -> float
 extern "mylib.load_model" fn load_model(path: str) -> Result[Model, str] uses io
-extern type Model
+extern type Model                    // an opaque Python object
 ```
 
-Values convert by type: scalars as is, `unit`/`None` = None, list = list, map = dict, struct = dict (or
-object with those attributes), variant = `("Variant", field1, ...)` or `"Variant"`, function = callable,
-extern type = the object. With a `Result[T, str]` result a Python exception becomes `Err("Type: message")`,
+Values convert by type: list = list, map and struct = dict (or an object with those attributes), variant =
+`("Variant", field1, ...)` or `"Variant"`, unit = None. With a `Result[T, str]` result a Python exception becomes `Err("Type: message")`,
 else E407 (also for a value of the wrong type). Declare `uses io` for side effects: Klar trusts the signature.
 
 ### JavaScript interop and npm
@@ -203,6 +198,7 @@ let _ = expr                    // evaluate and discard on purpose
 if cond { ... } else if cond { ... } else { ... }
 while cond { ... }
 for x in list_expr { ... }       // iterates a list; use range(0, n), keys(m), chars(s)
+for (k, v) in entries(m) { ... } // unpacks tuples, like `let (a, b) = pair`
 break
 continue
 return expr                      // `return` alone in unit functions
@@ -211,15 +207,14 @@ assert cond, "message"
 expr                             // only calls (and match) may stand alone as statements
 ```
 
-Conditions must be `bool` (no truthiness). A call whose non-unit result is ignored is an error (E301):
-this catches `push(xs, 1)` written instead of `xs = push(xs, 1)`.
+Conditions must be `bool` (no truthiness). Ignoring a call's non-unit result is an error (E301), which
+catches `push(xs, 1)` written for `xs = push(xs, 1)`.
 
 A function with a non-unit return type must `return` on every path (E305).
 
-**Lists in loops.** Values never change, but `xs = set_at(xs, i, v)` and `xs = push(xs, v)` on a `var` cost
-O(1): while only that variable holds the list, it is updated in place. Reading `xs[i]` and `len(xs)`
-keeps that; passing, storing or iterating `xs` hands out a snapshot. Keep a hot loop's arrays in local
-`var`s (not struct fields) and array code runs within 2-3x of C.
+**Lists in loops.** `xs = set_at(xs, i, v)` and `xs = push(xs, v)` on a `var` cost O(1) while only
+that variable holds the list (reading `xs[i]` and `len(xs)` keeps that; passing, storing or iterating `xs`
+takes a snapshot). Keep a hot loop's arrays in local `var`s, not struct fields.
 
 ## 6. Expressions
 
@@ -228,7 +223,7 @@ Precedence, lowest to highest:
 1. `or`
 2. `and`
 3. `not`
-4. `==  !=  <  <=  >  >=` (do not chain: `a < b < c` is an error)
+4. `==  !=  <  <=  >  >=` (no chaining: `a < b < c`)
 5. `+  -`
 6. `*  /  %`
 7. unary `-`
@@ -237,8 +232,7 @@ Precedence, lowest to highest:
 * `+` works on int, float, str and lists (concatenation). `-  *  /` on int and float. `%` on int.
 * Integer `/` truncates toward zero (`-7 / 2 == -3`), `%` takes the left side's sign; dividing by integer
   zero is a runtime error. Float division follows IEEE.
-* `<  <=  >  >=` work on int, float and str.
-* `and`, `or` short-circuit; `not` negates.
+* `<  <=  >  >=` work on int, float and str. `and`, `or` short-circuit.
 
 **If-expression:** `if cond then a else b` (both branches required, same type).
 
@@ -269,7 +263,7 @@ match read_line() {
 ```
 
 Patterns: `_`, a lowercase name (binds the value), literals (`0`, `-1`, `"s"`, `true`), and variants with
-positional sub-patterns `Some(Circle(_, r))`, tried top to bottom. No guards (use `if` in the arm) and no
+positional sub-patterns `Some(Circle(_, r))`, tuples `(0, _)`, tried top to bottom. No guards (use `if` in the arm) and no
 struct destructuring.
 
 **Calls:** arguments are all positional `f(1, 2)` or all named in any order `f(b: 2, a: 1)`. Structs and
@@ -283,9 +277,9 @@ variants are constructed the same way: `Point(x: 1.0, y: 2.0)` or `Point(1.0, 2.
 **Indexing:** `xs[i]` (list, int index), `s[i]` (str, returns a 1-char str), `m[k]` (map). Out-of-range or
 missing keys are runtime errors; use `get(xs, i)` / `get(m, k)` for an `Option`.
 
-**`?` operator:** `o?` unwraps `Some(v)` or returns `None` (the function must return an Option); `r?` unwraps
-`Ok(v)` or returns the `Err(e)` (the function returns a Result with the same error type). Not allowed in
-anonymous functions.
+**`?` operator:** `o?` unwraps `Some(v)` or returns `None` (in a function returning Option); `r?` unwraps
+`Ok(v)` or returns the `Err(e)` (in a function returning a Result with that error type). If the function's
+error type is an enum with one variant holding that error, `?` wraps it in that variant. Not allowed in anonymous functions.
 
 **Anonymous functions:**
 
@@ -326,10 +320,10 @@ Numbers: `to_float(n: int) -> float` · `floor(x) -> int` · `round(x) -> int` (
 `abs(x)`\* · `min(a, b)`\* · `max(a, b)`\*
 
 Maps: `len(m)`\* · `get(m, k) -> Option`\* · `has(m, k) -> bool` · `put(m, k, v)` · `remove(m, k)` ·
-`keys(m) -> list` · `values(m) -> list`
+`keys(m) -> list` · `values(m) -> list` · `entries(m) -> list[(K, V)]`
 
 Option/Result: `unwrap(o)`\* (runtime error on None/Err) · `unwrap_or(o, default)`\* · `is_some(o)` ·
-`is_none(o)` · `is_ok(r)` · `is_err(r)`
+`is_none(o)` · `is_ok(r)` · `is_err(r)` · `ok_or(o, error) -> Result`
 
 ### Standard library
 
@@ -338,9 +332,10 @@ Import with `use std.NAME { ... }`. Full signatures are in each module's source 
 | Module | Contents |
 |---|---|
 | `std.fs` | `fs_read`, `fs_write`, `fs_append`, `fs_exists`, `fs_is_dir`, `fs_list`, `fs_mkdir`, `fs_remove`, `fs_join` |
-| `std.json` | `json_encode(value)`, `json_encode_pretty`, `json_decode(text) -> Result[T, str]` for any type (see Web apps); `enum Json { JNull, JBool, JNum, JStr, JArr, JObj }`, `json_of(value) -> Json`, `json_into(json) -> Result[T, str]`, `json_parse`, `json_stringify`, `json_pretty`, `json_get`, `json_at`, `json_str`, `json_num`, `json_int`, `json_bool`, `json_list` |
+| `std.json` | `json_encode(value)`, `json_encode_pretty`, `json_decode(text) -> Result[T, str]` for any type; `enum Json { JNull, JBool, JNum, JStr, JArr, JObj }`, `json_of(value) -> Json`, `json_into(json) -> Result[T, str]`, `json_parse`, `json_stringify`, `json_pretty`, `json_get`, `json_at`, `json_str`, `json_num`, `json_int`, `json_bool`, `json_list` |
 | `std.http` | `HttpRequest`, `HttpResponse`, `http_get`, `http_request`, `http_post_json`, `http_serve(port, handler)`, `http_text`, `http_html`, `http_json` |
-| `std.sqlite` | `Database`, `enum SqlValue { SqlNull, SqlInt, SqlFloat, SqlText }`, `sqlite_open/exec/query/last_id/close`, `sql_int/text/float` |
+| `std.sqlite` | `Database`, `enum SqlValue { SqlNull, SqlInt, SqlFloat, SqlText }`, `sqlite_open/exec/query/last_id/close`; `sql(value)` for any parameter; `sqlite_rows(db, q, params)` and `sqlite_first` read rows as any type (structs by column name, tuples by position) |
+| `std.api` | `Api[In, Out]`, `enum ApiError { Refused(status, message), Internal(message) }`, `api_serve`, `api_call`, `api_fetch`, `api_error_text`, `or_refuse(r, status)` |
 | `std.crypto` | `crypto_sha256`, `crypto_hmac`, `crypto_token(bytes)` (secure random hex), `crypto_password_hash`, `crypto_password_verify`, `crypto_equal` (servers only) |
 | `std.time` | `time_now`, `time_millis`, `time_sleep`, `time_format`, `time_iso` |
 | `std.process` | `ProcessResult`, `process_run`, `process_run_input`, `env_get`, `process_exit` |
@@ -349,7 +344,7 @@ Import with `use std.NAME { ... }`. Full signatures are in each module's source 
 | `std.regex` | `regex_matches`, `regex_find_all`, `regex_groups`, `regex_replace`, `regex_split` |
 | `std.html` | `Html[M]`, `Attr[M]`; every common HTML element by its tag name (`div`, `ul`, `input`, ...), `el(tag, ...)`, `text`, `raw_html`, `nothing`, `card`; attributes `class/class_if/id/href/src/style/value/placeholder/input_type/checked/disabled/attr/flag`; events `on_click/on_submit/on_input/on_change/on_check/on_blur/on_press`, `on_key(fn(key) -> Option[Msg])`, drag and drop `on_drag/on_drop/on_drag_end(msg)`; `html_render/html_page/html_escape/html_theme_css` |
 | `std.layout` | `container/row/stack/grid/spread/center/box/spacer`, `sidebar(attrs, side, main)`; options `gap/pad` (`Zero/Xs/Sm/Md/Lg/Xl`), `cols/cols_at/fit_cols/col_span(_at)/full_row`, `align/justify` (`Start/Center/End/Stretch/Between`), `max_width` (`Narrow/Readable/Wide/Full/Rem(n)`), `centered/grow/row_at/hide_from/show_from`; screens `Phone/Tablet/Laptop/Desktop` |
-| `std.kit` | components `icon_button`, `menu/menu_item/menu_danger/menu_link`, `field/field_note(label, control, Hint(t)/Problem(t))`, `select_box/checkbox/toggle/radio_group` (`Choice`), `badge/alert/alert_dismissable/toasts` (`Tone`: `Neutral/Info/Success/Warning/Danger`), `dialog(open, title, text, close, body, actions)`, `tabs(attrs, current, [Tab(id, label, body)], pick)`, `data_table(attrs, [TableColumn(id, label, cell, ByText(f)/ByNumber(f)/Unsorted)], rows, state, page_size, change)`, `combobox(label, state, choices, change, pick)`, `panel/empty_state/stat/avatar/breadcrumbs/progress_bar/spinner/skeleton/kbd/separator`; options `variant` (`Primary/Secondary/Outline/Ghost/Destructive/Link`), `size(Small/Large)`, `busy/tooltip`; `kit_theme(default_theme() with (accent: "#2563eb", corners: Round, scheme: Dark))` |
+| `std.kit` | components `icon_button`, `menu/menu_item/menu_danger/menu_link`, `field/field_note(label, control, Hint(t)/Problem(t))`, `select_box/checkbox/toggle/radio_group` (`Choice`), `badge/alert/alert_dismissable/toasts` (`Tone`: `Neutral/Info/Success/Warning/Danger`), `dialog(open, title, text, close, body, actions)`, `tabs(attrs, current, [Tab(id, label, body)], pick)`, `data_table(attrs, [TableColumn(id, label, cell, ByText(f)/ByNumber(f)/Unsorted)], rows, state, page_size, change)`, `combobox(label, state, choices, change, pick)`, `panel/empty_state/stat/avatar/breadcrumbs/progress_bar/spinner/skeleton/kbd/separator`; options `variant` (`Primary/Secondary/Outline/Ghost/Destructive/Link`), `size(Small/Large)`, `busy/tooltip`; `kit_theme(theme)` |
 | `std.web` | `Route`, `web_get/post/put/patch/delete(pattern, handler)`, `web_serve(port, routes)`, `web_port(fallback)`, `web_handle`, `web_request`, `web_body(req) -> Result[T, str]`, `web_json(status, value)`, `web_form/json_body/cookies/page/redirect/set_cookie/clear_cookie/file/static`, `web_events(topic)`, `web_publish(topic, text)` |
 | `std.task` | `task_all(jobs)` (concurrent, results in order); `task_group(fn(g) { task_spawn(g, job) })` waits for its tasks; `Chan[T]`: `chan_new`, `chan_send`, `chan_recv -> Option[T]` (None once closed and empty), `chan_close`. One task runs Klar code at a time; others wait on io |
 | `std.ui` | `Next[M, Msg]`, `Cmd[Msg]`, `ui_run`, `ui_run_routed`, `ui_start` (adds CSS), `ui_get/ui_send/ui_after/ui_save/ui_load/ui_go/ui_focus`, `ui_listen(url, to_msg)`, `ui_unlisten(url)` |
@@ -360,7 +355,7 @@ Operations that can fail return `Result[T, str]`.
 
 **Pages are values.** `std.html` element functions take attributes and children:
 `div([class("card")], [h2([], [text("Hi {name}")])])`. Text is escaped (except `raw_html`).
-`Html[M]` is parameterised by the message type its events produce; server pages use `Html[unit]`.
+`Html[M]` takes the message type its events produce; server pages use `Html[unit]`.
 `html_page(title, css, body)` makes a full document with the built-in theme (light and dark);
 restyle it with `kit_theme(...)` or CSS variables (`--accent`, `--radius`, `--font`).
 **Layout:** options are attributes; phone first, then wider screens:
@@ -375,8 +370,8 @@ let routes = [web_get("/", home), web_get("/items/:id", show_item), web_post("/i
 web_serve(8080, routes)   // 404 / 405 automatically; HOST=0.0.0.0 to listen beyond localhost
 ```
 
-`web_page(title, html)` answers with a themed page; `web_form(req)`, `web_body(req)` and
-`web_cookies(req)` read requests; `web_redirect`, `web_set_cookie`, `web_clear_cookie`, `web_json` and `web_file` answer.
+`web_form`, `web_body` and `web_cookies` read requests; `web_page`, `web_redirect`, `web_set_cookie`, `web_json`
+and `web_file` answer.
 Test handlers by calling `web_handle(routes, web_request("GET", "/items/3", ""))`. Listen on
 `web_port(8080)`, which reads PORT (set by `klar dev` and hosting platforms).
 
@@ -384,23 +379,32 @@ Test handlers by calling `web_handle(routes, web_request("GET", "/items/3", ""))
 stays on-site.
 
 **JSON is automatic.** `json_encode(value)` and `json_decode(text)` work for every type; the type to read
-comes from where the result goes. Share one module of types between the frontend and the backend:
+comes from where the result goes:
 
 ```klar
 struct Todo { id: int, title: str, done: bool, note: Option[str] }
 let r: Result[Todo, str] = json_decode(text)    // Err("expected a whole number at $.id, found a string")
 web_json(201, todo)                             // {"id":1,"title":"Buy milk","done":false,"note":null}
-let body: Result[NewTodo, str] = web_body(req)  // the request body, read as any type
 ```
 
 Structs are objects (unknown keys ignored; a missing `Option` field is `None`), `map[str, V]` is an object
 (other keys: `[key, value]` pairs), `Option` is `null` or the value, `Result` is `{"ok": ...}`/`{"err": ...}`,
-enums are `"Variant"` or `{"type": "Variant", field: ...}`. Reading needs
-a known type (else E304). `json_of` / `json_into` work with `Json` values.
+enums are `"Variant"` or `{"type": "Variant", field: ...}`, tuples arrays. Reading needs
+a known type (else E304).
 
-**Live updates.** A route answering `web_events("todos")` keeps the connection open (server-sent events);
-`web_publish("todos", text)` sends `text` to every browser on it. In the browser, the command
-`ui_listen("/live", fn(text) => Synced(text))` turns each message into a `Msg`, and reconnects by itself.
+**Typed calls** need no routes or JSON code. Declare each call once in a module both sides import:
+
+```klar
+fn add_todo() -> Api[str, Todo] { return Api("add_todo") }       // POST /api/add_todo
+api_serve(add_todo(), fn(req, title) => store_add(db, title).or_refuse(400))  // server
+api_call(add_todo(), title, fn(r) => Added(r))                // browser; r: Result[Todo, ApiError]
+```
+
+Other programs use `api_fetch`. `Refused(status, message)` reaches the caller; `Internal` is logged and answered as a 500.
+
+**Live updates.** A route answering `web_events("todos")` streams server-sent events; `web_publish("todos", text)`
+sends `text` to every browser on it. The command `ui_listen("/live", fn(text) => Synced(text))` turns each
+message into a `Msg` and reconnects by itself.
 
 **Frontends** follow the model / update / view pattern and run in the browser:
 
@@ -453,11 +457,9 @@ checker reports all independent errors in one run. `klar check --json file.klar`
 | E205 | wrong argument count | E310 | pattern does not fit type |
 | E311 | anonymous fn uses an outer `var` | E408 | integer overflow (compiled code) |
 | E501 | not supported by this `klar build` target | E312 | trait not implemented |
-| E601 | klar.toml or a dependency is missing or invalid | E409 | deadlock: every task waiting |
+| E601 | package or klar.toml error | E409 | deadlock: every task waiting |
 | E206 | bad named arguments | E401–E407 | runtime: index, div by zero, panic, assert, missing key, stack overflow, io/interop |
 | E313 | SQL built from strings | | |
-
-`klar explain E306` explains any code.
 
 ## 9. Tooling
 
@@ -482,8 +484,7 @@ klar explain CODE                explain an error code
 Compiled programs match the interpreter except: `int` is 64-bit and
 overflow is E408, and natively `upper`/`lower`/`trim` change only ASCII. Native and Node builds support every
 std module (native regex and sqlite need the PCRE2 and SQLite libraries). The browser has no files, processes,
-databases or servers (E501), and `print` goes to the console. Python externs are interpreter-only, `js:` ones
-JavaScript-only.
+databases or servers (E501), and `print` goes to the console. Python externs are interpreter-only.
 
 ## 10. Coming from another language
 
@@ -495,8 +496,7 @@ JavaScript-only.
 | `throw` / `try` / `except` | return `Result[T, E]`; propagate with `?` |
 | `xs.append(4)` | `xs = push(xs, 4)` |
 | `for i in 0..n` | `for i in range(0, n)` |
-| `for k, v in m` | `for k in keys(m) { let v = m[k] }` |
-| `"a" + 1`, f-strings | `"a{1}"` |
+| `for k, v in m` | `for (k, v) in entries(m)` |
 | `from y import x` | `use y { x }` |
 | `class` with methods | `struct` + functions, called as `p.area()` |
 | `interface`, Rust `trait` | `trait` + `impl Trait for Type` |

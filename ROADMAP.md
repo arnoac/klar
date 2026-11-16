@@ -27,27 +27,26 @@ structured errors).
 | 16. Tables, combobox, drag and drop (v0.14) | `data_table` (sortable, paged, `aria-sort`), `combobox` (filter as you type, arrow keys, `aria-activedescendant`), dialogs that keep Tab inside and give focus back, `on_drag`/`on_drop`/`on_drag_end` with a drop highlight, `on_blur`, `on_press`; Klar Board cards move by dragging | the components most data apps need, with keyboard and screen reader support |
 | 17. npm packages | typed `js:` externs for npm packages: constructors, methods, properties, callbacks both ways; null only as `None`, exceptions only as `Err`, Promises only with `uses io` (else E407); `[npm]` in klar.toml with exact versions, `npm ci` against package-lock.json, install scripts off; web builds embed the packages' ES modules (still one offline .html); `klar bind` generates declarations from `.d.ts` | the npm ecosystem from Klar without giving up its guarantees; `examples/apps/markdown_notes` (marked + DOMPurify) |
 | 18. WebAssembly | `klar build --target wasm` and `extern "wasm:module.fn"` in web and Node apps: the C backend through clang's wasm32 target, with Klar's own small libc and a per-call heap; values are copied across as typed arrays, strings or JSON; runtime errors keep their codes; `klar run` interprets the module | heavy computation in the browser 1.1-5.7x faster than the JavaScript backend, on a par with hand-written JavaScript for float and allocation-heavy code |
+| 19. Full-stack glue (v0.15) | typed calls (`std.api`: declare `Api[In, Out]` once, answer it with `api_serve`, call it with `api_call` or `api_fetch`), typed SQL rows (`sqlite_rows`/`sqlite_first` fill structs by column name and tuples by position, `sql(value)` for parameters), tuples with `let (a, b) = t` and tuple patterns, `?` that wraps an error into the function's error enum, `ok_or`, `entries` | full-stack apps with no routes, URLs or JSON and row conversion code; Klar Board lost 12% of its code (its server 35%) |
 
 ## Next
 
-1. **What the board app found awkward.** Typed SQL queries that fill structs by column name (like
-   `json_decode`), a `std.web` helper for "signed in and allowed, or this reply", tuples (see [examples/apps/board/README.md](examples/apps/board/README.md)).
-2. **More components.** Date picker, multi-select, a command palette, keyed list diffing for long tables, and
+1. **More components.** Date picker, multi-select, a command palette, keyed list diffing for long tables, and
    touch drag and drop (HTML drag and drop does not fire on phones; the board keeps its arrow buttons there).
-3. **More real apps** written in Klar end to end, to find what hurts at scale.
-4. **Faster compiled code and builds.**
+2. **More real apps** written in Klar end to end, to find what hurts at scale.
+3. **Faster compiled code and builds.**
    * user C externs (`extern "c:..."`) for native libraries beyond the standard ones;
    * a precompiled runtime object so tcc doesn't re-parse the runtime on every build;
    * faster maps and strings (the `words` benchmark is about 2 times behind Go) and unchecked arithmetic
      where the checker can prove no overflow (recursive `fib` is about 2 times behind C);
    * WebAssembly: a garbage collector for long allocation-heavy calls (today each call gets a fresh heap, up
      to 4 GB), and closing the 1.7-1.9x gap to hand-written JavaScript on list-heavy kernels (bench/wasm).
-5. **More for the web.** Keyed list diffing for long lists, websockets for two-way messages, and keeping the
+4. **More for the web.** Keyed list diffing for long lists, websockets for two-way messages, and keeping the
    app's state across `klar dev` reloads.
-6. **Security** (see [SECURITY.md](SECURITY.md)): an opt-in for packages that must run build scripts,
+5. **Security** (see [SECURITY.md](SECURITY.md)): an opt-in for packages that must run build scripts,
    rate limiting and login lockout helpers in `std.web`, a stricter per-app Content-Security-Policy, and
    detecting edits inside `.klar/deps`.
-7. **GUI and games.** Browser apps work today through `std.ui` (and a canvas command is a small addition);
+6. **GUI and games.** Browser apps work today through `std.ui` (and a canvas command is a small addition);
    desktop toolkits through Python `extern`.
 
 ## Known limits today
@@ -67,4 +66,4 @@ structured errors).
   across all packages (functions you do not import are renamed automatically).
 * Native tasks are OS threads (cheap while waiting, but thousands at once cost real memory); channels are
   unbounded, so a fast producer can outrun a slow consumer.
-* No pattern guards, no destructuring of structs in patterns, no tuples.
+* No pattern guards and no destructuring of structs in patterns (tuples can be unpacked).
