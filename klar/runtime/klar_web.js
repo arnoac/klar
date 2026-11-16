@@ -87,10 +87,12 @@ class $UiApp {
     pre.textContent = text;
     document.body.appendChild(pre);
   }
+  // Messages sent in one burst of work share one render, which runs as soon as that work ends (a microtask),
+  // so the page shows the new model by the time an event handler returns to the browser.
   schedule() {
     if (this.queued) return;
     this.queued = true;
-    requestAnimationFrame(() => this.flush());
+    queueMicrotask(() => this.flush());
   }
   // Render now if a change is waiting.
   flush() {

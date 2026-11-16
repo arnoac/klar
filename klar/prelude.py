@@ -23,6 +23,8 @@ fn panic(message: str) -> never {}
 fn len[T](xs: list[T]) -> int {}
 fn push[T](xs: list[T], x: T) -> list[T] {}
 fn set_at[T](xs: list[T], index: int, x: T) -> list[T] {}
+fn pop[T](xs: list[T]) -> list[T] {}
+fn last[T](xs: list[T]) -> Option[T] {}
 fn get[T](xs: list[T], index: int) -> Option[T] {}
 fn slice[T](xs: list[T], start: int, end: int) -> list[T] {}
 fn contains[T](xs: list[T], x: T) -> bool {}
@@ -50,6 +52,8 @@ fn starts_with(s: str, prefix: str) -> bool {}
 fn ends_with(s: str, suffix: str) -> bool {}
 fn replace(s: str, old: str, new: str) -> str {}
 fn repeat(s: str, times: int) -> str {}
+fn ord(c: str) -> int {}
+fn chr(code: int) -> str {}
 fn parse_int(s: str) -> Option[int] {}
 fn parse_float(s: str) -> Option[float] {}
 

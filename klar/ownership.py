@@ -10,7 +10,7 @@ Maps work the same way with `v = put(v, k, x)`; `get(v, k)` and `has(v, k)` are 
 Strings too, with `v = v + a + b`: while v owns its buffer the pieces are appended in place.
 """
 
-LIST_UPDATES = ("set_at", "push")
+LIST_UPDATES = ("set_at", "push", "pop")
 MAP_UPDATES = ("put",)
 
 

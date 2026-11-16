@@ -668,6 +668,22 @@ class Parser:
         self.check_arity(len(names), t)
         return names
 
+    def tuple_assign_ahead(self):
+        """Is this `(name, name, ...) =`?"""
+        i = self.pos + 1
+        while True:
+            if self.toks[i].kind != "ident":
+                return False
+            i += 1
+            tk = self.toks[i]
+            if tk.kind == "sym" and tk.value == ",":
+                i += 1
+                continue
+            if tk.kind == "sym" and tk.value == ")":
+                nx = self.toks[i + 1]
+                return nx.kind == "sym" and nx.value == "="
+            return False
+
     def destructure(self, names, tmp, at, mutable=False):
         """`let (a, b) = tmp` as plain lets of tmp.0, tmp.1 (a `_` skips that value)."""
         out = []
@@ -739,6 +755,19 @@ class Parser:
                 self.advance()
                 msg = self.parse_expr()
             return Node("Assert", t.line, t.col, cond=cond, msg=msg)
+        if self.at_sym("(") and self.tuple_assign_ahead():
+            # `(a, b) = expr` assigns existing vars from a tuple: a hidden let, then plain assignments
+            names = self.parse_names_tuple("`(a, b) = ...`")
+            self.advance()
+            value = self.parse_expr()
+            tmp = f"tuple__{t.line}_{t.col}"
+            first = Node("Let", t.line, t.col, name=tmp, mutable=False, ann=None, value=value, unpack=len(names))
+            stmts = [first]
+            for i, nt in enumerate(names):
+                if nt.value != "_":
+                    field = Node("Field", nt.line, nt.col, target=Node("Name", nt.line, nt.col, name=tmp), name=str(i))
+                    stmts.append(Node("Assign", nt.line, nt.col, name=nt.value, value=field))
+            return Node("Destructure", t.line, t.col, stmts=stmts)
         if self.at("ident") and self.toks[self.pos + 1].kind == "sym" and self.toks[self.pos + 1].value == "=":
             name = self.advance().value
             self.advance()
@@ -834,6 +863,8 @@ class Parser:
             t = self.tok
             same_line = t.line == self.prev().end_line
             if self.at_sym("("):
+                if not same_line and self.tuple_assign_ahead():
+                    break                     # the next statement is `(a, b) = ...`
                 if not same_line:
                     self.error("`(` at the start of a line cannot continue the previous expression",
                                "put the `(` on the same line as what it applies to; Klar does not allow a statement to begin with `(`",

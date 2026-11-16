@@ -109,6 +109,16 @@ function $sslice(s, a, b) {
   a = Math.max(0, Math.min(a, n)); b = Math.max(a, Math.min(b, n));
   return arr ? arr.slice(a, b).join("") : s.slice(a, b);
 }
+function $ord(s, l, c) {
+  const a = Array.from(s);
+  if (a.length !== 1) $fail("E401", l, c, `ord needs exactly one character, got ${a.length}`);
+  return a[0].codePointAt(0);
+}
+function $chr(n, l, c) {
+  const k = Number(n);
+  if (!(k >= 0 && k <= 0x10FFFF) || (k >= 0xD800 && k <= 0xDFFF)) $fail("E401", l, c, `chr: ${n} is not a Unicode code point`);
+  return String.fromCodePoint(k);
+}
 function $chars(s) { return $L(Array.from(s)); }
 function $split(s, sep) { return $L(sep === "" ? Array.from(s) : s.split(sep)); }
 function $replace(s, a, b) { return s.replaceAll(a, () => b); }
@@ -155,6 +165,13 @@ function $push(l, x) {
   const nb = b.slice(0, l.n); nb.push(x);
   return new KL(nb, nb.length, 0);
 }
+// A view one shorter shares the buffer: a later push onto it copies, so `xs = pop(xs)` on an owned var
+// is done in place by the compiler instead.
+function $pop(l, line, col) {
+  if (l.n === 0) $fail("E401", line, col, "pop on an empty list");
+  return new KL(l.b, l.n - 1, l.v);
+}
+function $last(l) { return l.n === 0 ? $None : $Some($d(l)[l.n - 1]); }
 function $concat(a, b) {
   const da = $d(a), db = $d(b), n = b.n;
   if (da.length === a.n) {

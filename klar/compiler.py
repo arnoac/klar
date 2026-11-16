@@ -577,6 +577,8 @@ class Compiler:
                 i, x = self.tmp(), self.tmp()
                 out.append(f"int64_t {i} = {self.expr(call.args[1])}; KS {x} = {self.to_s(self.expr(call.args[2]), et)};")
                 vals.append((name, call, i, x))
+            elif name == "pop":
+                vals.append((name, call, None, None))
             else:
                 x = self.tmp()
                 out.append(f"KS {x} = {self.to_s(self.expr(call.args[1]), et)};")
@@ -587,6 +589,8 @@ class Compiler:
                 out.append(f"if ({o}) {{ if ({i} < 0 || {i} >= {v}->len) k_fail(\"E401\", {L}, \"set_at index %lld is out of "
                            f"bounds for length %lld\", (long long){i}, (long long){v}->len); {v}->buf->data[{i}] = {x}; }}")
                 out.append(f"else {{ {v} = k_list_set_at_fresh({v}, {i}, {x}, {L}); {o} = 1; }}")
+            elif name == "pop":
+                out.append(f"if ({o} && {v}->len > 0) {{ {v}->len--; {v}->buf->used--; }} else {{ {v} = k_list_pop({v}, {L}); }}")
             else:
                 out.append(f"if ({o}) k_list_push_owned({v}, {x}); else {{ {v} = k_list_push({v}, {x}); }}")
         out.append("}")
@@ -1185,6 +1189,15 @@ class Compiler:
             return f"k_list_push({a[0]}, {self.to_s(a[1], ts[1])})"
         if name == "set_at":
             return f"k_list_set_at({a[0]}, {a[1]}, {self.to_s(a[2], ts[2])}, {L})"
+        if name == "pop":
+            return f"k_list_pop({a[0]}, {L})"
+        if name == "last":
+            t1 = self.tmp()
+            return f"({{ KList *{t1} = {a[0]}; {t1}->len > 0 ? k_some(KL_DATA({t1})[{t1}->len - 1]) : K_NONE; }})"
+        if name == "ord":
+            return f"k_ord({a[0]}, {L})"
+        if name == "chr":
+            return f"k_chr({a[0]}, {L})"
         if name == "get":
             t1 = self.tmp()
             if k0 == "list":

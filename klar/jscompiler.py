@@ -392,6 +392,8 @@ class JSCompiler:
                 self.emit(f"const {i} = {ci};")
                 self.emit(f"const {x} = {cx};")
                 vals.append((name, call, i, x))
+            elif name == "pop":
+                vals.append((name, call, None, None))
             else:
                 x = self.tmp()
                 self.emit(f"const {x} = {self.ex(call.args[1])};")
@@ -401,6 +403,8 @@ class JSCompiler:
             if name == "set_at":
                 self.emit(f"if ({o}) {{ if ({i} < 0 || {i} >= {v}.n) $set_at({v}, {i}, {x}, {L}); {v}.b[{i}] = {x}; }}")
                 self.emit(f"else {{ {v} = $set_at_fresh({v}, {i}, {x}, {L}); {o} = true; }}")
+            elif name == "pop":
+                self.emit(f"if ({o} && {v}.n > 0) {{ {v}.b.pop(); {v}.n--; }} else {v} = $pop({v}, {L});")
             else:
                 self.emit(f"if ({o}) {{ {v}.b.push({x}); {v}.n++; }} else {v} = $push({v}, {x});")
 
@@ -927,6 +931,14 @@ class JSCompiler:
             return f"$sum_float({a[0]})" if self.kind(ts[0].args[0]) == "float" else f"$sum_int({a[0]}, {L})"
         if name == "set_at":
             return f"$set_at({a[0]}, {a[1]}, {a[2]}, {L})"
+        if name == "pop":
+            return f"$pop({a[0]}, {L})"
+        if name == "last":
+            return f"$last({a[0]})"
+        if name == "ord":
+            return f"$ord({a[0]}, {L})"
+        if name == "chr":
+            return f"$chr({a[0]}, {L})"
         if name == "unwrap":
             t = prune(ts[0])
             show_err = f"(x => {self.show('x', t.args[1], True)})" if t.name == "Result" else "null"

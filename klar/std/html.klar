@@ -122,6 +122,8 @@ fn src[M](url: str) -> Attr[M] { return AttrText("src", url) }
 fn alt[M](description: str) -> Attr[M] { return AttrText("alt", description) }
 // inline CSS; several style attributes on one element are joined
 fn style[M](css: str) -> Attr[M] { return AttrText("style", css) }
+// An input's text. It is set on the live element on every render, so `value(m.draft)` with an empty draft
+// clears the input after a submit.
 fn value[M](current: str) -> Attr[M] { return AttrText("value", current) }
 fn placeholder[M](hint: str) -> Attr[M] { return AttrText("placeholder", hint) }
 // The `type` attribute of inputs and buttons (`type` is a keyword in Klar).

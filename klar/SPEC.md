@@ -6,7 +6,8 @@ correct code first time, and fix mistakes from the compiler's structured feedbac
 ## 1. Program structure
 
 A file contains only top-level declarations: `use`, `fn`, `struct`, `enum`, `trait`, `impl`, `extern`, `test`.
-Order does not matter. Programs start at `fn main() uses io { ... }`.
+Order does not matter. Programs start at `fn main() uses io { ... }`. There are no global variables or
+constants: use a function, `fn rate() -> int { return 21 }`.
 
 ```klar
 fn main() uses io {
@@ -25,13 +26,13 @@ the `[` of an index must be on the same line as the expression before them.
 | variables, parameters, functions, fields | lowercase first letter | `total`, `parse_line`, `x` |
 | types, structs, enums, variants, type parameters | Uppercase first letter | `Point`, `Shape`, `Circle`, `T` |
 
-There is **no shadowing**: a name is declared once per function, inner blocks included. There is **no overloading**: every function name is unique, and user
+There is **no shadowing**: a name cannot be declared again while it is in scope, even in an inner block
+(separate blocks may reuse it). There is **no overloading**: every function name is unique, and user
 functions cannot reuse built-in names. Variant names are global and must be unique across all enums.
 
 Every top-level name (function, type, variant) is unique across the **whole program**, so a search finds
-exactly one definition. Standard library names carry a module prefix
-(`json_parse`, `fs_read`), except `std.html` elements (`div`, `text`); a std name only counts in the modules
-that import it, so your own `text` is fine elsewhere.
+one definition. Std names carry a module prefix (`json_parse`, `fs_read`), except `std.html` elements (`div`,
+`text`), and only count in modules that import them.
 
 Keywords: `fn let var if then else while for in return break continue match struct enum uses true false and or not assert test with use extern type trait impl`.
 
@@ -48,7 +49,7 @@ Keywords: `fn let var if then else while for in return break continue match stru
 | `map[K, V]` (K is int, str or bool; insertion-ordered) | `["a": 1, "b": 2]`, `[:]` |
 | `Option[T]` | `Some(x)`, `None` |
 | `Result[T, E]` | `Ok(x)`, `Err(e)` |
-| tuple `(A, B)` (2 to 6 values) | `(1, "a")`; read `t.0`, or unpack: `let (n, s) = t` |
+| tuple `(A, B)` (2 to 6 values) | `(1, "a")`; read `t.0`, unpack `let (n, s) = t`, or assign vars `(n, s) = t` |
 | `fn(A, B) -> R` | `fn(a: int, b: int) => a + b` |
 | user `struct` / `enum` | `Point(x: 1, y: 2)`, `Circle(radius: 1.0)` |
 
@@ -58,9 +59,8 @@ There is **no null**, no implicit conversion, and no subtyping. `int` and `float
 **All values are immutable.** `push`, `put`, `set_at` and `with` return a new value; to "update", reassign a
 `var`: `xs = push(xs, 4)`. Equality (`==`) is structural for every type except functions.
 
-String escapes: `\n \t \r \" \\ \0`. Interpolation: `{expr}` inside a string inserts `str(expr)` and may
-contain any expression, including other strings: `"{m["key"]} {upper("x")}"`. Write `{{` and `}}` for
-literal braces.
+String escapes: `\n \t \r \" \\ \0`. Interpolation: `{expr}` inserts `str(expr)` for any expression:
+`"{m["key"]} {upper("x")}"`. Write `{{` and `}}` for literal braces.
 
 * **Raw strings** `r"..."` do not interpolate and keep unknown escapes: `r"{\"id\": 1}"`, `r"\d+"`.
 * **Multi-line strings** `"""..."""` interpolate, minus the first newline and common indentation; `r"""..."""` is raw.
@@ -125,11 +125,10 @@ fn total[T: Shape](xs: list[T]) -> float { ... }     // bounds: T: Shape + Show
 A function that does input/output, or calls a function that `uses io`, must say `uses io` after its return
 type (E308), so a signature without it has no side effects.
 
-Function types carry the effect too: `fn(Request) -> Response uses io` is callable only from io code; a pure
-function may be passed in its place. An anonymous function may
-do io only if its expected type allows it, or (bound with `let`) if the enclosing function `uses io`; so
-`map(xs, fn(x) => print(x))` is an error: use `for`. To make a function returning a function io, parenthesise:
-`fn make() -> (fn(int) -> int) uses io`.
+Function types carry the effect too: `fn(Request) -> Response uses io` (a pure function may be passed in its
+place). An anonymous function may do io only if its expected type allows it, or (bound with `let`) if the
+enclosing function `uses io`; so `map(xs, fn(x) => print(x))` is an error: use `for`. Parenthesise a returned
+function type: `fn make() -> (fn(int) -> int) uses io`.
 
 ### Modules
 
@@ -158,9 +157,8 @@ marked = "18.2.0"
 ```
 
 `use textkit { shout }` loads the dependency's `lib.klar`; `use textkit.case { ... }` its `case.klar`.
-`klar add ../dir | URL@TAG | py:NAME==VERSION | npm:NAME` edits `klar.toml` and installs; `klar install`
-fetches into `.klar/`; `klar.lock` pins each dependency by commit or hash (commit it);
-`klar update` moves pins. Unimported dependency functions never clash with yours. Package errors are E601.
+`klar add ../dir | URL@TAG | py:NAME==VERSION | npm:NAME` adds and installs one; `klar.lock` pins each by
+commit or hash (commit it); `klar update` moves pins. Package errors are E601.
 
 ### Python interop
 
@@ -180,9 +178,8 @@ else E407 (also for a value of the wrong type). Declare `uses io` for side effec
 ### JavaScript interop and npm
 
 JavaScript builds call `"js:..."` targets: `"js:node:crypto.randomUUID"`, `"js:globalThis.Math.hypot"`, npm
-packages (`"js:marked.parse"`, `"js:new pkg.Class"`), first-argument members (`"js:.add"`, `"js:get .size"`,
-`set`). Values convert by type; null arrives only as `None`, a throw only as `Err` (if declared
-`Result[T, str]`), a Promise only with `uses io`, else E407. `klar add npm:marked` pins packages in
+(`"js:marked.parse"`, `"js:new pkg.Class"`), members of the first argument (`"js:.add"`, `"js:get .size"`).
+Values convert by type; null arrives only as `None`, a throw as `Err`, a Promise only with `uses io`, else E407. `klar add npm:marked` pins packages in
 `[npm]` and, given `typescript`, writes `npm/marked.klar` from `.d.ts` types (`klar bind marked` redoes it). `"wasm:mod.f"` runs `f` from
 `mod.klar` as WebAssembly (values copied).
 
@@ -210,9 +207,10 @@ expr                             // only calls (and match) may stand alone as st
 Conditions must be `bool` (no truthiness). Ignoring a call's non-unit result is an error (E301), which
 catches `push(xs, 1)` written for `xs = push(xs, 1)`.
 
-A function with a non-unit return type must `return` on every path (E305).
+A function with a non-unit return type must `return` on every path (E305); a final `match` whose arms all
+return counts.
 
-**Updates in loops.** `xs = set_at(xs, i, v)`, `xs = push(xs, v)`, `m = put(m, k, v)` and `s = s + t` on a
+**Updates in loops.** `xs = set_at(xs, i, v)`, `xs = push(xs, v)`, `xs = pop(xs)`, `m = put(m, k, v)` and `s = s + t` on a
 `var` cost O(1) while only that variable holds the value (`xs[i]`, `len`, `get`, `has` keep that; other uses take a
 snapshot). Keep hot loop data in local `var`s, not struct fields.
 
@@ -307,7 +305,7 @@ IO (require `uses io`):
 
 General: `str(value) -> str`\* · `panic(message: str) -> never`
 
-Lists: `len(xs)`\* · `push(xs, x)` · `set_at(xs, i, x)` · `get(xs, i) -> Option`\* ·
+Lists: `len(xs)`\* · `push(xs, x)` · `pop(xs)` (drops the last) · `last(xs) -> Option` · `set_at(xs, i, x)` · `get(xs, i) -> Option`\* ·
 `slice(xs, start, end)`\* (end exclusive, clamped) · `contains(xs, x)`\* · `reverse(xs)`\* ·
 `range(start, end) -> list[int]` (end exclusive) · `map(xs, f)` · `filter(xs, f)` · `fold(xs, init, f)`
 (f takes `(acc, x)`) · `any(xs, f)` · `all(xs, f)` · `find(xs, f) -> Option` · `index_of(xs, x) -> Option[int]` ·
@@ -315,7 +313,7 @@ Lists: `len(xs)`\* · `push(xs, x)` · `set_at(xs, i, x)` · `get(xs, i) -> Opti
 
 Strings: `len(s)`\* · `chars(s) -> list[str]` · `split(s, sep) -> list[str]` · `trim(s)` · `upper(s)` ·
 `lower(s)` · `starts_with(s, p)` · `ends_with(s, p)` · `contains(s, sub)`\* · `replace(s, old, new)` ·
-`repeat(s, n)` · `slice(s, start, end)`\* · `reverse(s)`\* · `parse_int(s) -> Option[int]` ·
+`repeat(s, n)` · `ord(c) -> int` · `chr(code) -> str` · `slice(s, start, end)`\* · `reverse(s)`\* · `parse_int(s) -> Option[int]` ·
 `parse_float(s) -> Option[float]` (both trim whitespace and allow a sign). Strings compare and `sort` by
 code point.
 
@@ -407,8 +405,7 @@ api_call(add_todo(), title, fn(r) => Added(r))                // browser; r: Res
 Other programs use `api_fetch`. `Refused(status, message)` reaches the caller; `Internal` is logged and answered as a 500.
 
 **Live updates.** A route answering `web_events("todos")` streams server-sent events; `web_publish("todos", text)`
-sends `text` to every browser on it. The command `ui_listen("/live", fn(text) => Synced(text))` turns each
-message into a `Msg` and reconnects by itself.
+sends `text` to every browser on it, where `ui_listen("/live", fn(text) => Synced(text))` receives it.
 
 **Frontends** follow the model / update / view pattern and run in the browser:
 
@@ -428,24 +425,20 @@ fn main() uses io { ui_run(Next(Model(0), [ui_get("/api/start", fn(r) => Loaded(
 ```
 
 `update` and `view` are pure, so `test` blocks cover them without a browser (`html_render` renders a view).
+The page re-renders as soon as `update` returns. `value(v)` sets an input's text on every render (clear it
+with `value("")`); `on_key` gets the browser's key name (`"Enter"`).
 Side effects are commands in `Next`: HTTP (`ui_get`, `ui_send`), timers (`ui_after`),
 storage (`ui_save`; read back with `ui_load` in `main`), navigation (`ui_go`), focus and live updates
 (`ui_listen`). `ui_run_routed` adds an `on_url: fn(str) -> Msg` called on start-up, link clicks and
 back/forward.
 
-**Develop with `klar dev`.** `klar dev server.klar app.klar` serves the backend (on Node) and the app at
-http://127.0.0.1:8000, rebuilding and reloading on save.
+**Develop with `klar dev server.klar app.klar`**: both at http://127.0.0.1:8000, reloaded on save.
 
 ## 8. Diagnostics
 
 Every error has a stable code, an exact `line:col`, a message, and usually a `hint` with the fix. The
-checker reports all independent errors in one run. `klar check --json file.klar` emits:
-
-```json
-{"ok": false, "errors": [{"code": "E201", "phase": "check", "title": "unknown name",
-  "message": "unknown function `lenght`", "file": "a.klar", "line": 3, "col": 11,
-  "hint": "did you mean `len`?"}]}
-```
+checker reports all independent errors in one run. `klar check --json` emits `{"ok": false, "errors": [...]}`,
+each with `code, phase, title, message, file, line, col, hint`.
 
 | Code | Meaning | Code | Meaning |
 |---|---|---|---|
@@ -492,7 +485,5 @@ databases or servers (E501), and `print` goes to the console. Python externs are
 | `&&`, `\|\|`, `!x` | `and`, `or`, `not x` |
 | `null`, `nil` | `Option[T]`: `Some(x)` / `None` |
 | `throw` / `try` / `except` | return `Result[T, E]`; propagate with `?` |
-| `for k, v in m` | `for (k, v) in entries(m)` |
 | `class` with methods | `struct` + functions, called as `p.area()` |
-| `interface`, Rust `trait` | `trait` + `impl Trait for Type` |
 | `switch`; Rust `Some(x) => { ...; x }` | `match`; inside `{ }` arms write `return x` |

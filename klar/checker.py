@@ -255,6 +255,8 @@ class Checker:
             hint = None
             if {a, e} == {"int", "float"}:
                 hint = "Klar never mixes int and float; convert with to_float(n), floor(x) or round(x)"
+            elif a == f"list[{e}]":
+                hint = "this is a whole list; join two lists with `xs + ys` (push adds one element)"
             elif e == "str" and a != "str":
                 hint = "convert with str(value) or use interpolation: \"{value}\""
             elif a == "unit" and e != "unit":

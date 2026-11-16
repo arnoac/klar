@@ -67,7 +67,7 @@ class Runtime:
 
         def run():
             with self.cond:
-                interp.stack = parent_stack + ["task"]
+                interp.stack = parent_stack + [("task", node.line if node else None)]
                 interp.tenv = {}
                 result = None
                 try:

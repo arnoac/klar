@@ -6,6 +6,24 @@
 //     an HTTP reply) and returns the new model plus commands (side effects) to run,
 //   * view(model) -> Html[msg]: a pure function from the model to the page (see std.html).
 // Because update and view are pure, both are tested with ordinary `test` blocks; nothing needs a browser.
+// This module alone makes an app; std.layout and std.kit are optional building blocks on top of std.html.
+//
+// Rendering: after every message the page is re-rendered as soon as update returns (before the browser
+// handles the next event), so a click's effect is visible right after the click.
+//
+// Keeping data across reloads: load in main, pass it into the first model, save from update.
+//
+//   fn main() uses io {
+//     let saved: list[Expense] = match ui_load("expenses") {
+//       Some(text) => match json_decode(text) {
+//         Ok(xs) => xs,
+//         Err(_) => [],
+//       },
+//       None => [],
+//     }
+//     ui_run(Next(Model(saved), []), update, view)
+//   }
+//   // in update, after a change:  Next(m2, [ui_save("expenses", json_encode(m2.items))])
 //
 //   klar build --target web app.klar     ->  app.html (open it, or serve it from a std.web backend)
 

@@ -423,6 +423,30 @@ static void k_list_push_owned(KList *l, KS x) {
     b->data[b->used++] = x;
     l->len++;
 }
+/* pop shares the buffer like a prefix slice; `xs = pop(xs)` on an owned var is done in place instead */
+static KList *k_list_pop(KList *l, int line, int col) {
+    if (l->len == 0) k_fail("E401", line, col, "pop on an empty list");
+    KS *d0 = KL_DATA(l); (void)d0;
+    KList *r = (KList *)K_ALLOC(sizeof(KList)); r->buf = l->buf; r->len = l->len - 1; r->ver = l->ver;
+    return r;
+}
+static int64_t k_ord(KStr *s, int line, int col) {
+    if (k_str_cps(s) != 1) k_fail("E401", line, col, "ord needs exactly one character, got %lld", (long long)k_str_cps(s));
+    const unsigned char *p = (const unsigned char *)s->data;
+    if (p[0] < 0x80) return p[0];
+    if (p[0] < 0xE0) return ((int64_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+    if (p[0] < 0xF0) return ((int64_t)(p[0] & 0x0F) << 12) | ((int64_t)(p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+    return ((int64_t)(p[0] & 0x07) << 18) | ((int64_t)(p[1] & 0x3F) << 12) | ((int64_t)(p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+}
+static KStr *k_chr(int64_t c, int line, int col) {
+    char b[4]; int n;
+    if (c < 0 || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF)) k_fail("E401", line, col, "chr: %lld is not a Unicode code point", (long long)c);
+    if (c < 0x80) { b[0] = (char)c; n = 1; }
+    else if (c < 0x800) { b[0] = (char)(0xC0 | (c >> 6)); b[1] = (char)(0x80 | (c & 0x3F)); n = 2; }
+    else if (c < 0x10000) { b[0] = (char)(0xE0 | (c >> 12)); b[1] = (char)(0x80 | ((c >> 6) & 0x3F)); b[2] = (char)(0x80 | (c & 0x3F)); n = 3; }
+    else { b[0] = (char)(0xF0 | (c >> 18)); b[1] = (char)(0x80 | ((c >> 12) & 0x3F)); b[2] = (char)(0x80 | ((c >> 6) & 0x3F)); b[3] = (char)(0x80 | (c & 0x3F)); n = 4; }
+    return k_str_piece(b, n);
+}
 static KList *k_list_slice(KList *l, int64_t a, int64_t b) {
     if (a < 0) a = 0; if (a > l->len) a = l->len;
     if (b < a) b = a; if (b > l->len) b = l->len;

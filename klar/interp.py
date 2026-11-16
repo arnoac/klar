@@ -219,7 +219,15 @@ class Interpreter:
             self.structs[tuple_name(n)] = [str(i) for i in range(n)]
 
     def rt_err(self, code, msg, node, hint=None):
-        raise KlarError(code, msg, node.line, node.col, hint, self.file, trace=list(reversed(self.stack[-10:])))
+        # self.stack holds (label, line the frame was called from); each frame is shown at the line it is on:
+        # the innermost at the error, every caller at its call into the next frame.
+        frames = self.stack[-11:]
+        trace = []
+        for k in range(len(frames) - 1, max(len(frames) - 11, -1), -1):
+            label, _ = frames[k]
+            at = node.line if k == len(frames) - 1 else frames[k + 1][1]
+            trace.append(f"{label} ({self.file or '<input>'}:{at})" if at else label)
+        raise KlarError(code, msg, node.line, node.col, hint, self.file, trace=trace)
 
     # ---------------------------------------------------------- entry points
     def run_main(self):
@@ -234,7 +242,7 @@ class Interpreter:
         results = []
         for t in self.tests:
             try:
-                self.stack = [f"test \"{t.name}\""]
+                self.stack = [(f"test \"{t.name}\"", None)]
                 self.exec_block(t.body, Env())
                 results.append((t.name, None))
             except KlarError as e:
@@ -249,7 +257,7 @@ class Interpreter:
         env = Env()
         for (pname, _), a in zip(d.params, args):
             env.vars[pname] = a
-        self.stack.append(f"{name} ({self.file or '<input>'}:{node.line if node else d.line})")
+        self.stack.append((name, node.line if node else None))
         saved_tenv = self.tenv
         inst = getattr(node, "inst", None) if d.tparams else None
         if tenv is not None:
@@ -560,6 +568,10 @@ class Interpreter:
         for (op, call), args in zip(steps, vals):
             if op == "push":
                 cur.append(args[0])
+            elif op == "pop":
+                if not cur:
+                    self.rt_err("E401", "pop on an empty list", call)
+                cur.pop()
             else:
                 i, x = args
                 if not (0 <= i < len(cur)):
@@ -657,7 +669,7 @@ class Interpreter:
                 self.rt_err("E407", f"extern `{name}`: cannot load Python target \"{d.target}\": {ex}", node or d,
                             "the target is `module.attribute`; a module file next to the .klar file is found automatically")
             self.extern_cache[name] = fn
-        self.stack.append(f"extern {name} -> python {d.target}")
+        self.stack.append((f"extern {name} -> python {d.target}", node.line if node else None))
         try:
             with self.rt.released():      # other tasks run while this one waits on io
                 return self.call_python(fn, args, d.ptypes, d.rtype, node or d, f"extern `{name}`")
@@ -853,6 +865,24 @@ class Interpreter:
         if not (0 <= i < len(xs)):
             self.rt_err("E401", f"set_at index {i} is out of bounds for length {len(xs)}", n)
         return xs[:i] + (x,) + xs[i + 1:]
+
+    def b_pop(self, n, xs):
+        if not xs:
+            self.rt_err("E401", "pop on an empty list", n)
+        return xs[:-1]
+
+    def b_last(self, n, xs):
+        return some(xs[-1]) if xs else NONE
+
+    def b_ord(self, n, s):
+        if len(s) != 1:
+            self.rt_err("E401", f"ord needs exactly one character, got {len(s)}", n)
+        return ord(s)
+
+    def b_chr(self, n, code):
+        if not (0 <= code <= 0x10FFFF) or 0xD800 <= code <= 0xDFFF:
+            self.rt_err("E401", f"chr: {code} is not a Unicode code point", n)
+        return chr(code)
 
     def b_get(self, n, c, k):
         if isinstance(c, dict):
