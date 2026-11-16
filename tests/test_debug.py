@@ -206,11 +206,10 @@ class DebugAdapter(Project):
         d.request("stepOut", {"threadId": 1})
         ev, st = self.stopped(d)
         self.assertEqual((ev["reason"], st[0]["name"], st[0]["line"]), ("step", "main", 15))
-        out = d.event("output")
-        self.assertEqual(out["body"]["output"], "5\n")
         d.request("next", {"threadId": 1})
         ev, st = self.stopped(d)
         self.assertEqual((st[0]["name"], st[0]["line"]), ("main", 16))
+        self.assertEqual(d.event("output")["body"]["output"], "5\n")       # the print ran
         d.request("stepIn", {"threadId": 1})
         ev, st = self.stopped(d)
         self.assertEqual((st[0]["name"], st[0]["line"]), ("main", 17))

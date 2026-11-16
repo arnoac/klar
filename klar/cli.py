@@ -879,8 +879,22 @@ def main(argv=None):
         from .debug import cmd_dap, cmd_debug
         if a.dap:
             return cmd_dap()
+        rest, prog_args = list(a.args), []
+        while rest:                       # options after FILE are still ours, up to `--`
+            x = rest.pop(0)
+            if x == "--":
+                prog_args += rest
+                break
+            if x == "--break" and rest:
+                a.breaks.append(rest.pop(0))
+            elif x.startswith("--break="):
+                a.breaks.append(x[len("--break="):])
+            elif x == "--json":
+                a.json = True
+            else:
+                prog_args.append(x)
         path = entry(a.file, "debug")
-        return 2 if path is None else cmd_debug(path, a.breaks, a.json, a.args)
+        return 2 if path is None else cmd_debug(path, a.breaks, a.json, prog_args)
     if a.cmd == "lsp":
         from .lsp import cmd_lsp
         return cmd_lsp()

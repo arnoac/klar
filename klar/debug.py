@@ -104,7 +104,8 @@ class Engine:
     the program's thread; it returns when the program may go on (after resume() from another thread, or
     straight away in the command-line mode)."""
 
-    def __init__(self, path, argv=(), stdout=None, on_stop=None, on_exit=None):
+    def __init__(self, path, argv=(), stdout=None, on_stop=None, on_exit=None, wait=True):
+        self.wait = wait                 # False: report stops and carry on (the command-line mode)
         self.path = os.path.abspath(path)
         self.argv = list(argv)
         self.stdout = stdout
@@ -148,8 +149,8 @@ class Engine:
         return f.f_code.co_filename == self.gen_file
 
     def fn_name(self, f):
-        named = getattr(self.interp, "named_code", {}) or {}
-        return named.get(f.f_code) or "fn"
+        labels = getattr(self.interp, "code_labels", None) or getattr(self.interp, "named_code", {}) or {}
+        return labels.get(f.f_code) or "fn"
 
     def stack(self, f):
         out = []
@@ -190,6 +191,11 @@ class Engine:
                 self.stop(reason, frame, None)
         elif event == "return":
             self.last.pop(id(frame), None)
+            # stepping out of (or over the end of) a function stops back in the caller, on the call's line
+            caller = frame.f_back
+            if self.mode in ("step_out", "step_over") and caller is not None and self.is_gen(caller) \
+                    and self.depth(frame) <= self.depth0:
+                self.stop("step", caller, None)
         return self.local
 
     def depth(self, frame):
@@ -204,6 +210,9 @@ class Engine:
         self.frames = self.stack(frame)
         self.mode = "run"
         if self.on_stop is None:
+            return
+        if not self.wait:
+            self.on_stop(reason, self.frames, error)
             return
         with self.go:
             self.resumed = False
@@ -364,7 +373,7 @@ def cmd_debug(path, breaks, as_json, argv):
             sys.stderr.write("\n".join(lines) + "\n")
         sys.stderr.flush()
 
-    eng = Engine(path, argv, on_stop=None)
+    eng = Engine(path, argv, on_stop=None, wait=False)
     errors = eng.load()
     if errors:
         from .cli import report
