@@ -1,0 +1,321 @@
+// Reference solution for the sheet task (used to validate the hidden tests).
+
+enum Expr {
+  Num(value: int),
+  Ref(cell: str),
+  Range(func: str, from: str, to: str),
+  Neg(inner: Expr),
+  Bin(op: str, left: Expr, right: Expr),
+}
+
+enum Val {
+  IntVal(n: int),
+  ErrVal(code: str),
+}
+
+struct Parser { toks: list[str], pos: int }
+
+fn is_digit(c: str) -> bool {
+  return c >= "0" and c <= "9"
+}
+
+fn is_upper(c: str) -> bool {
+  return c >= "A" and c <= "Z"
+}
+
+fn is_cell(s: str) -> bool {
+  let cs = chars(s)
+  if len(cs) < 2 or len(cs) > 3 or not is_upper(cs[0]) or cs[1] == "0" {
+    return false
+  }
+  return all(slice(cs, 1, len(cs)), fn(c) => is_digit(c))
+}
+
+fn tokenize(src: str) -> Option[list[str]] {
+  let cs = chars(src)
+  var toks: list[str] = []
+  var i = 0
+  while i < len(cs) {
+    let c = cs[i]
+    if c == " " {
+      i = i + 1
+    } else if is_digit(c) or is_upper(c) {
+      var j = i
+      while j < len(cs) and (is_digit(cs[j]) or (is_upper(c) and is_upper(cs[j]))) {
+        j = j + 1
+      }
+      toks = push(toks, join(slice(cs, i, j), ""))
+      i = j
+    } else if contains(["+", "-", "*", "/", "(", ")", ":"], c) {
+      toks = push(toks, c)
+      i = i + 1
+    } else {
+      return None
+    }
+  }
+  return Some(toks)
+}
+
+fn peek(p: Parser) -> str {
+  return unwrap_or(get(p.toks, p.pos), "")
+}
+
+fn advance(p: Parser) -> Parser {
+  return p with (pos: p.pos + 1)
+}
+
+fn expect_tok(p: Parser, t: str) -> Option[Parser] {
+  return if peek(p) == t then Some(advance(p)) else None
+}
+
+fn expect_cell(p: Parser) -> Option[Parser] {
+  return if is_cell(peek(p)) then Some(advance(p)) else None
+}
+
+// Each parse function returns the node and the parser after it, or None on a syntax error.
+// (Klar has no tuples, so a small struct carries both.)
+struct Step { node: Expr, rest: Parser }
+
+fn parse_expr(p: Parser) -> Option[Step] {
+  var s = parse_term(p)?
+  while peek(s.rest) == "+" or peek(s.rest) == "-" {
+    let op = peek(s.rest)
+    let right = parse_term(advance(s.rest))?
+    s = Step(Bin(op, s.node, right.node), right.rest)
+  }
+  return Some(s)
+}
+
+fn parse_term(p: Parser) -> Option[Step] {
+  var s = parse_unary(p)?
+  while peek(s.rest) == "*" or peek(s.rest) == "/" {
+    let op = peek(s.rest)
+    let right = parse_unary(advance(s.rest))?
+    s = Step(Bin(op, s.node, right.node), right.rest)
+  }
+  return Some(s)
+}
+
+fn parse_unary(p: Parser) -> Option[Step] {
+  if peek(p) == "-" {
+    let inner = parse_unary(advance(p))?
+    return Some(Step(Neg(inner.node), inner.rest))
+  }
+  return parse_primary(p)
+}
+
+fn parse_primary(p: Parser) -> Option[Step] {
+  let t = peek(p)
+  if t != "" and all(chars(t), fn(c) => is_digit(c)) {
+    return Some(Step(Num(parse_int(t)?), advance(p)))
+  }
+  if t == "SUM" or t == "MIN" or t == "MAX" {
+    let a = expect_tok(advance(p), "(")?
+    let b = expect_cell(a)?
+    let c = expect_tok(b, ":")?
+    let d = expect_cell(c)?
+    let e = expect_tok(d, ")")?
+    return Some(Step(Range(t, peek(a), peek(c)), e))
+  }
+  if t == "(" {
+    let inner = parse_expr(advance(p))?
+    let after = expect_tok(inner.rest, ")")?
+    return Some(Step(inner.node, after))
+  }
+  let after = expect_cell(p)?
+  return Some(Step(Ref(t), after))
+}
+
+fn parse_formula(src: str) -> Option[Expr] {
+  let toks = tokenize(src)?
+  let s = parse_expr(Parser(toks, 0))?
+  return if s.rest.pos == len(toks) then Some(s.node) else None
+}
+
+fn is_integer(s: str) -> bool {
+  let digits = if starts_with(s, "-") then slice(s, 1, len(s)) else s
+  return digits != "" and all(chars(digits), fn(c) => is_digit(c))
+}
+
+fn col(cell: str) -> str {
+  return slice(cell, 0, 1)
+}
+
+fn row(cell: str) -> int {
+  return unwrap_or(parse_int(slice(cell, 1, len(cell))), 0)
+}
+
+fn letters() -> list[str] {
+  return chars("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+}
+
+fn range_cells(a: str, b: str) -> list[str] {
+  let c1 = unwrap(index_of(letters(), col(a)))
+  let c2 = unwrap(index_of(letters(), col(b)))
+  let r1 = min(row(a), row(b))
+  let r2 = max(row(a), row(b))
+  var out: list[str] = []
+  for c in range(min(c1, c2), max(c1, c2) + 1) {
+    for r in range(r1, r2 + 1) {
+      out = push(out, "{letters()[c]}{r}")
+    }
+  }
+  return out
+}
+
+fn refs(e: Expr) -> list[str] {
+  return match e {
+    Num(_) => [],
+    Ref(c) => [c],
+    Range(_, a, b) => range_cells(a, b),
+    Neg(inner) => refs(inner),
+    Bin(_, l, r) => refs(l) + refs(r),
+  }
+}
+
+// Formulas by cell; None marks a cell whose content does not parse.
+struct Sheet { formulas: map[str, Option[Expr]], deps: map[str, list[str]] }
+
+fn reaches_self(sheet: Sheet, start: str) -> bool {
+  var seen: map[str, bool] = [:]
+  var stack = sheet.deps[start]
+  while len(stack) > 0 {
+    let n = stack[len(stack) - 1]
+    stack = slice(stack, 0, len(stack) - 1)
+    if n == start {
+      return true
+    }
+    if has(seen, n) or not has(sheet.deps, n) {
+      continue
+    }
+    seen = put(seen, n, true)
+    stack = stack + sheet.deps[n]
+  }
+  return false
+}
+
+// Values computed so far, threaded through evaluation (values are immutable).
+struct Eval { value: Val, memo: map[str, Val] }
+
+fn cell_value(sheet: Sheet, memo: map[str, Val], cell: str) -> Eval {
+  if not has(sheet.formulas, cell) {
+    return Eval(IntVal(0), memo)
+  }
+  match get(memo, cell) {
+    Some(v) => { return Eval(v, memo) }
+    None => {}
+  }
+  let r = match sheet.formulas[cell] {
+    Some(e) => eval(sheet, memo, e),
+    None => Eval(ErrVal("#PARSE"), memo),
+  }
+  return Eval(r.value, put(r.memo, cell, r.value))
+}
+
+fn truncdiv(a: int, b: int) -> int {
+  let q = abs(a) / abs(b)
+  return if (a >= 0) == (b >= 0) then q else 0 - q
+}
+
+fn eval(sheet: Sheet, memo: map[str, Val], e: Expr) -> Eval {
+  return match e {
+    Num(n) => Eval(IntVal(n), memo),
+    Ref(c) => cell_value(sheet, memo, c),
+    Neg(inner) => {
+      let r = eval(sheet, memo, inner)
+      return match r.value {
+        IntVal(n) => Eval(IntVal(0 - n), r.memo),
+        ErrVal(_) => r,
+      }
+    }
+    Range(f, a, b) => {
+      var m = memo
+      var vals: list[int] = []
+      for c in range_cells(a, b) {
+        let r = cell_value(sheet, m, c)
+        m = r.memo
+        match r.value {
+          IntVal(n) => vals = push(vals, n),
+          ErrVal(_) => { return r }
+        }
+      }
+      let first = vals[0]
+      let out = match f {
+        "SUM" => sum(vals),
+        "MIN" => fold(vals, first, fn(acc, x) => min(acc, x)),
+        _ => fold(vals, first, fn(acc, x) => max(acc, x)),
+      }
+      return Eval(IntVal(out), m)
+    }
+    Bin(op, l, r) => {
+      let left = eval(sheet, memo, l)
+      let a = match left.value {
+        IntVal(n) => n,
+        ErrVal(_) => { return left }
+      }
+      let right = eval(sheet, left.memo, r)
+      let b = match right.value {
+        IntVal(n) => n,
+        ErrVal(_) => { return right }
+      }
+      let v = match op {
+        "+" => IntVal(a + b),
+        "-" => IntVal(a - b),
+        "*" => IntVal(a * b),
+        _ => if b == 0 then ErrVal("#DIV0") else IntVal(truncdiv(a, b)),
+      }
+      return Eval(v, right.memo)
+    }
+  }
+}
+
+fn show(v: Val) -> str {
+  return match v {
+    IntVal(n) => str(n),
+    ErrVal(code) => code,
+  }
+}
+
+fn cell_key(cell: str) -> str {
+  let r = row(cell)
+  let pad = if r < 10 then "0" else ""
+  return "{col(cell)}{pad}{r}"
+}
+
+fn main() uses io {
+  var contents: map[str, str] = [:]
+  var more = true
+  while more {
+    match read_line() {
+      Some(line) => {
+        if trim(line) != "" {
+          let at = unwrap(index_of(chars(line), ":"))
+          contents = put(contents, trim(slice(line, 0, at)), trim(slice(line, at + 1, len(line))))
+        }
+      }
+      None => more = false,
+    }
+  }
+  var formulas: map[str, Option[Expr]] = [:]
+  var deps: map[str, list[str]] = [:]
+  for name in keys(contents) {
+    let c = contents[name]
+    let f = if starts_with(c, "=") then parse_formula(slice(c, 1, len(c)))
+      else if is_integer(c) then Some(Num(unwrap(parse_int(c))))
+      else None
+    formulas = put(formulas, name, f)
+    deps = put(deps, name, match f { Some(e) => refs(e), None => [] })
+  }
+  let sheet = Sheet(formulas, deps)
+  var memo: map[str, Val] = [:]
+  for name in keys(formulas) {
+    if reaches_self(sheet, name) {
+      memo = put(memo, name, ErrVal("#CYCLE"))
+    }
+  }
+  for name in sort_by(keys(formulas), fn(c) => cell_key(c)) {
+    let r = cell_value(sheet, memo, name)
+    memo = r.memo
+    print("{name} = {show(r.value)}")
+  }
+}

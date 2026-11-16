@@ -1,0 +1,102 @@
+{
+  "task": "notes_api",
+  "lang": "klar",
+  "build_ok": true,
+  "build_log": "{\n  \"ok\": true,\n  \"errors\": []\n}\n",
+  "tests": [
+    {
+      "name": "test_bad_json",
+      "ok": true,
+      "seconds": 0.11
+    },
+    {
+      "name": "test_combined_filters_and_encoding",
+      "ok": true,
+      "seconds": 0.22
+    },
+    {
+      "name": "test_create_and_get",
+      "ok": true,
+      "seconds": 0.11
+    },
+    {
+      "name": "test_defaults_and_trimming",
+      "ok": true,
+      "seconds": 0.11
+    },
+    {
+      "name": "test_delete",
+      "ok": true,
+      "seconds": 0.12
+    },
+    {
+      "name": "test_empty_list",
+      "ok": true,
+      "seconds": 0.21
+    },
+    {
+      "name": "test_filter_by_tag",
+      "ok": true,
+      "seconds": 0.12
+    },
+    {
+      "name": "test_html_page_escapes",
+      "ok": true,
+      "seconds": 0.11
+    },
+    {
+      "name": "test_ids_increase",
+      "ok": true,
+      "seconds": 0.12
+    },
+    {
+      "name": "test_list_sorted_by_id",
+      "ok": true,
+      "seconds": 0.15
+    },
+    {
+      "name": "test_not_found",
+      "ok": true,
+      "seconds": 0.12
+    },
+    {
+      "name": "test_patch_partial",
+      "ok": true,
+      "seconds": 0.12
+    },
+    {
+      "name": "test_patch_validation_changes_nothing",
+      "ok": true,
+      "seconds": 0.11
+    },
+    {
+      "name": "test_search_ignores_case",
+      "ok": true,
+      "seconds": 0.11
+    },
+    {
+      "name": "test_survives_restart",
+      "ok": true,
+      "seconds": 0.22
+    },
+    {
+      "name": "test_tags_deduplicated_in_order",
+      "ok": true,
+      "seconds": 0.11
+    },
+    {
+      "name": "test_unicode",
+      "ok": true,
+      "seconds": 0.11
+    },
+    {
+      "name": "test_validation_errors",
+      "ok": true,
+      "seconds": 0.12
+    }
+  ],
+  "passed": 18,
+  "total": 18,
+  "seconds": 2.46,
+  "all_pass": true
+}

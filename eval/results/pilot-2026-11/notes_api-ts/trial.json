@@ -1,0 +1,33 @@
+{
+  "task": "notes_api",
+  "lang": "ts",
+  "model": "pilot-agent",
+  "docs": "repo",
+  "max_rounds": 3,
+  "rounds": [
+    {
+      "round": 1,
+      "agent": {
+        "exit": null,
+        "seconds": 48.4,
+        "tokens": 66122,
+        "tool_uses": 6
+      },
+      "build_ok": true,
+      "passed": 18,
+      "total": 18,
+      "failing": []
+    }
+  ],
+  "first_try_pass": true,
+  "first_try_score": 1.0,
+  "rounds_to_pass": 1,
+  "final_score": 1.0,
+  "tools": {
+    "tool_calls": 1,
+    "check_calls": 1,
+    "failed_checks": 0,
+    "run_calls": 0,
+    "error_codes": {}
+  }
+}

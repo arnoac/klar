@@ -1,0 +1,131 @@
+// Reference solution for the orders task (used to validate the hidden tests).
+
+use std.json { Json, JNull, JStr, JArr, JObj, json_parse, json_get, json_int, json_encode }
+use std.process { process_exit }
+
+struct Invalid { id: Option[str], reason: str }
+struct CustomerTotal { orders: int, total_cents: int }
+struct Summary { valid: int, invalid: list[Invalid], customers: map[str, CustomerTotal], top_sku: Option[str] }
+struct Item { sku: str, qty: int, price_cents: int }
+
+fn non_empty(v: Option[Json]) -> Option[str] {
+  return match v {
+    Some(JStr(s)) => if s == "" then None else Some(s),
+    _ => None,
+  }
+}
+
+fn whole_at_least(v: Option[Json], low: int) -> Option[int] {
+  let n = json_int(v?)?
+  return if n >= low then Some(n) else None
+}
+
+fn read_item(j: Json) -> Option[Item] {
+  return Some(Item(sku: non_empty(json_get(j, "sku"))?, qty: whole_at_least(json_get(j, "qty"), 1)?,
+                   price_cents: whole_at_least(json_get(j, "price_cents"), 0)?))
+}
+
+// The items of an order, or the reason it is invalid.
+fn read_items(o: Json) -> Result[list[Item], str] {
+  let raw = match json_get(o, "items") {
+    Some(JArr(xs)) => xs,
+    _ => [],
+  }
+  if len(raw) == 0 {
+    return Err("no items")
+  }
+  var items: list[Item] = []
+  for j in raw {
+    match read_item(j) {
+      Some(it) => items = push(items, it),
+      None => { return Err("bad item") }
+    }
+  }
+  return Ok(items)
+}
+
+fn coupon_ok(o: Json) -> bool {
+  return match json_get(o, "coupon") {
+    None => true,
+    Some(JNull) => true,
+    Some(JStr(c)) => c == "SAVE10" or c == "FLAT500",
+    Some(_) => false,
+  }
+}
+
+fn total_of(o: Json, items: list[Item]) -> int {
+  let sub = fold(items, 0, fn(acc, it) => acc + it.qty * it.price_cents)
+  return match json_get(o, "coupon") {
+    Some(JStr("SAVE10")) => sub - sub / 10,
+    Some(JStr("FLAT500")) => max(0, sub - 500),
+    _ => sub,
+  }
+}
+
+fn summarize(orders: list[Json]) -> Summary {
+  var seen: map[str, bool] = [:]
+  var invalid: list[Invalid] = []
+  var customers: map[str, CustomerTotal] = [:]
+  var qty: map[str, int] = [:]
+  for o in orders {
+    let id = non_empty(json_get(o, "id"))
+    let customer = non_empty(json_get(o, "customer"))
+    let items = read_items(o)
+    let why = if is_none(id) then "missing id"
+      else if has(seen, unwrap(id)) then "duplicate id"
+      else if is_none(customer) then "missing customer"
+      else if is_err(items) then (match items { Err(e) => e, Ok(_) => "" })
+      else if not coupon_ok(o) then "unknown coupon"
+      else ""
+    if why != "" {
+      invalid = push(invalid, Invalid(id: id, reason: why))
+      continue
+    }
+    let its = unwrap(items)
+    let who = unwrap(customer)
+    seen = put(seen, unwrap(id), true)
+    let before = unwrap_or(get(customers, who), CustomerTotal(orders: 0, total_cents: 0))
+    customers = put(customers, who, CustomerTotal(orders: before.orders + 1,
+                                                  total_cents: before.total_cents + total_of(o, its)))
+    for it in its {
+      qty = put(qty, it.sku, unwrap_or(get(qty, it.sku), 0) + it.qty)
+    }
+  }
+  var top: Option[str] = None
+  for sku in sort(keys(qty)) {
+    let better = match top {
+      None => true,
+      Some(t) => qty[sku] > qty[t],
+    }
+    if better {
+      top = Some(sku)
+    }
+  }
+  return Summary(valid: len(seen), invalid: invalid, customers: customers, top_sku: top)
+}
+
+fn read_all() -> str uses io {
+  var lines: list[str] = []
+  var more = true
+  while more {
+    match read_line() {
+      Some(l) => lines = push(lines, l),
+      None => more = false,
+    }
+  }
+  return join(lines, "\n")
+}
+
+fn main() uses io {
+  let orders = match json_parse(read_all()) {
+    Ok(doc) => json_get(doc, "orders"),
+    Err(_) => None,
+  }
+  match orders {
+    Some(JArr(xs)) => print(json_encode(summarize(xs))),
+    _ => {
+      print("{{\"error\": \"invalid input\"}}")
+      process_exit(1)
+    }
+  }
+}

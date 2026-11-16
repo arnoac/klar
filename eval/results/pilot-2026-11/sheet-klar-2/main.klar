@@ -1,0 +1,468 @@
+// Spreadsheet evaluator: reads `CELL: CONTENT` lines, prints every defined cell's value.
+
+enum Tok {
+  TInt(n: int),
+  TCell(c: int),
+  TFunc(name: str),
+  TSym(s: str),
+}
+
+enum Expr {
+  Num(v: int),
+  Ref(c: int),
+  Neg(e: Expr),
+  Bin(op: str, l: Expr, r: Expr),
+  Agg(name: str, c1: int, c2: int),
+}
+
+enum Content {
+  CNum(n: int),
+  CBad,
+  CFormula(e: Expr),
+}
+
+enum Val {
+  VInt(n: int),
+  VErr(msg: str),
+}
+
+struct PR { e: Expr, pos: int }
+
+
+fn letters() -> str {
+  return "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+}
+
+fn is_digit(c: str) -> bool {
+  return contains("0123456789", c)
+}
+
+fn is_upper(c: str) -> bool {
+  return contains(letters(), c)
+}
+
+fn is_alnum(c: str) -> bool {
+  return contains("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", c)
+}
+
+fn all_digits(s: str) -> bool {
+  if len(s) == 0 { return false }
+  for c in chars(s) {
+    if not is_digit(c) { return false }
+  }
+  return true
+}
+
+// Parse a cell name like "A1" / "Z99" into col*100 + row.
+fn parse_cell_name(s: str) -> Option[int] {
+  if len(s) < 2 or len(s) > 3 { return None }
+  let col = s[0]
+  if not is_upper(col) { return None }
+  let rest = slice(s, 1, len(s))
+  if not all_digits(rest) { return None }
+  if rest[0] == "0" { return None }
+  let row = unwrap(parse_int(rest))
+  if row < 1 or row > 99 { return None }
+  let ci = unwrap(index_of(chars(letters()), col))
+  return Some(ci * 100 + row)
+}
+
+fn cell_label(c: int) -> str {
+  return "{letters()[c / 100]}{c % 100}"
+}
+
+fn tokenize(src: str) -> Option[list[Tok]] {
+  var toks: list[Tok] = []
+  let cs = chars(src)
+  var i = 0
+  while i < len(cs) {
+    let c = cs[i]
+    if c == " " or c == "\t" {
+      i = i + 1
+    } else if is_alnum(c) {
+      var j = i
+      while j < len(cs) and is_alnum(cs[j]) { j = j + 1 }
+      let w = join(slice(cs, i, j), "")
+      if all_digits(w) {
+        toks = push(toks, TInt(unwrap(parse_int(w))))
+      } else if w == "SUM" or w == "MIN" or w == "MAX" {
+        toks = push(toks, TFunc(w))
+      } else {
+        match parse_cell_name(w) {
+          Some(ci) => toks = push(toks, TCell(ci)),
+          None => return None,
+        }
+      }
+      i = j
+    } else if contains("+-*/():", c) {
+      toks = push(toks, TSym(c))
+      i = i + 1
+    } else {
+      return None
+    }
+  }
+  return Some(toks)
+}
+
+fn sym_at(toks: list[Tok], pos: int) -> str {
+  return match get(toks, pos) {
+    Some(TSym(s)) => s,
+    _ => "",
+  }
+}
+
+fn cell_at(toks: list[Tok], pos: int) -> Option[int] {
+  return match get(toks, pos) {
+    Some(TCell(c)) => Some(c),
+    _ => None,
+  }
+}
+
+fn p_expr(toks: list[Tok], pos: int) -> Option[PR] {
+  var left = p_term(toks, pos)?
+  while true {
+    let op = sym_at(toks, left.pos)
+    if op != "+" and op != "-" { break }
+    let right = p_term(toks, left.pos + 1)?
+    left = PR(e: Bin(op, left.e, right.e), pos: right.pos)
+  }
+  return Some(left)
+}
+
+fn p_term(toks: list[Tok], pos: int) -> Option[PR] {
+  var left = p_unary(toks, pos)?
+  while true {
+    let op = sym_at(toks, left.pos)
+    if op != "*" and op != "/" { break }
+    let right = p_unary(toks, left.pos + 1)?
+    left = PR(e: Bin(op, left.e, right.e), pos: right.pos)
+  }
+  return Some(left)
+}
+
+fn p_unary(toks: list[Tok], pos: int) -> Option[PR] {
+  if sym_at(toks, pos) == "-" {
+    let inner = p_unary(toks, pos + 1)?
+    return Some(PR(e: Neg(inner.e), pos: inner.pos))
+  }
+  return p_primary(toks, pos)
+}
+
+fn p_primary(toks: list[Tok], pos: int) -> Option[PR] {
+  let t = get(toks, pos)?
+  match t {
+    TInt(n) => { return Some(PR(e: Num(n), pos: pos + 1)) }
+    TCell(c) => { return Some(PR(e: Ref(c), pos: pos + 1)) }
+    TFunc(name) => {
+      if sym_at(toks, pos + 1) != "(" { return None }
+      let c1 = cell_at(toks, pos + 2)?
+      if sym_at(toks, pos + 3) != ":" { return None }
+      let c2 = cell_at(toks, pos + 4)?
+      if sym_at(toks, pos + 5) != ")" { return None }
+      return Some(PR(e: Agg(name, c1, c2), pos: pos + 6))
+    }
+    TSym(s) => {
+      if s != "(" { return None }
+      let inner = p_expr(toks, pos + 1)?
+      if sym_at(toks, inner.pos) != ")" { return None }
+      return Some(PR(e: inner.e, pos: inner.pos + 1))
+    }
+  }
+}
+
+fn parse_formula(src: str) -> Option[Expr] {
+  let toks = tokenize(src)?
+  let r = p_expr(toks, 0)?
+  if r.pos != len(toks) { return None }
+  return Some(r.e)
+}
+
+fn parse_content(s: str) -> Content {
+  if starts_with(s, "=") {
+    return match parse_formula(slice(s, 1, len(s))) {
+      Some(e) => CFormula(e),
+      None => CBad,
+    }
+  }
+  let body = if starts_with(s, "-") then slice(s, 1, len(s)) else s
+  if not all_digits(body) { return CBad }
+  let n = unwrap(parse_int(body))
+  return CNum(if starts_with(s, "-") then 0 - n else n)
+}
+
+// Cells of the rectangle between two corners, column by column, top to bottom.
+fn range_cells(c1: int, c2: int) -> list[int] {
+  let col1 = min(c1 / 100, c2 / 100)
+  let col2 = max(c1 / 100, c2 / 100)
+  let row1 = min(c1 % 100, c2 % 100)
+  let row2 = max(c1 % 100, c2 % 100)
+  let nrows = row2 - row1 + 1
+  let total = (col2 - col1 + 1) * nrows
+  return map(range(0, total), fn(k: int) => (col1 + k / nrows) * 100 + row1 + k % nrows)
+}
+
+// A normalized key identifying a range regardless of corner order.
+fn range_key(c1: int, c2: int) -> int {
+  let lo = min(c1 / 100, c2 / 100) * 100 + min(c1 % 100, c2 % 100)
+  let hi = max(c1 / 100, c2 / 100) * 100 + max(c1 % 100, c2 % 100)
+  return lo * 10000 + hi
+}
+
+fn direct_refs(e: Expr, acc: list[int]) -> list[int] {
+  return match e {
+    Num(_) => acc,
+    Ref(c) => push(acc, c),
+    Neg(x) => direct_refs(x, acc),
+    Bin(_, l, r) => direct_refs(r, direct_refs(l, acc)),
+    Agg(_, _, _) => acc,
+  }
+}
+
+fn range_refs(e: Expr, acc: list[int]) -> list[int] {
+  return match e {
+    Num(_) => acc,
+    Ref(_) => acc,
+    Neg(x) => range_refs(x, acc),
+    Bin(_, l, r) => range_refs(r, range_refs(l, acc)),
+    Agg(_, c1, c2) => push(acc, range_key(c1, c2)),
+  }
+}
+
+// Precomputed aggregate of one range: the first error met (or ""), and sum / min / max.
+struct RangeRes { err: str, total: int, lo: int, hi: int }
+
+fn range_eval(cells: list[int], vals: list[Val]) -> RangeRes {
+  var total = 0
+  var lo = 0
+  var hi = 0
+  var first = true
+  for c in cells {
+    match vals[c] {
+      VErr(m) => { return RangeRes(err: m, total: 0, lo: 0, hi: 0) }
+      VInt(n) => {
+        if first {
+          lo = n
+          hi = n
+          first = false
+        } else {
+          if n < lo { lo = n }
+          if n > hi { hi = n }
+        }
+        total = total + n
+      }
+    }
+  }
+  return RangeRes(err: "", total: total, lo: lo, hi: hi)
+}
+
+struct Env { vals: list[Val], rid: map[int, int], rres: list[RangeRes] }
+
+fn eval_expr(e: Expr, env: Env) -> Val {
+  match e {
+    Num(n) => { return VInt(n) }
+    Ref(c) => { return env.vals[c] }
+    Neg(x) => {
+      return match eval_expr(x, env) {
+        VInt(n) => VInt(0 - n),
+        VErr(m) => VErr(m),
+      }
+    }
+    Bin(op, l, r) => {
+      let a = match eval_expr(l, env) {
+        VInt(n) => n,
+        VErr(m) => { return VErr(m) }
+      }
+      let b = match eval_expr(r, env) {
+        VInt(n) => n,
+        VErr(m) => { return VErr(m) }
+      }
+      if op == "+" { return VInt(a + b) }
+      if op == "-" { return VInt(a - b) }
+      if op == "*" { return VInt(a * b) }
+      if b == 0 { return VErr("#DIV0") }
+      return VInt(a / b)
+    }
+    Agg(name, c1, c2) => {
+      let rr = env.rres[env.rid[range_key(c1, c2)]]
+      if rr.err != "" { return VErr(rr.err) }
+      if name == "SUM" { return VInt(rr.total) }
+      if name == "MIN" { return VInt(rr.lo) }
+      return VInt(rr.hi)
+    }
+  }
+}
+
+fn main() uses io {
+  let size = 2600
+  var defined: list[bool] = map(range(0, size), fn(k: int) => false)
+  var contents: list[Content] = map(range(0, size), fn(k: int) => CBad)
+
+  while true {
+    match read_line() {
+      Some(line) => {
+        let t = trim(line)
+        if len(t) > 0 {
+          match index_of(chars(t), ":") {
+            Some(k) => {
+              let name = trim(slice(t, 0, k))
+              let content = trim(slice(t, k + 1, len(t)))
+              match parse_cell_name(name) {
+                Some(ci) => {
+                  defined = set_at(defined, ci, true)
+                  contents = set_at(contents, ci, parse_content(content))
+                }
+                None => {}
+              }
+            }
+            None => {}
+          }
+        }
+      }
+      None => break,
+    }
+  }
+
+  let def_now = defined
+  let con_now = contents
+
+  // Distinct ranges become extra graph nodes (ids size, size+1, ...), so shared ranges are handled once.
+  var rid: map[int, int] = [:]
+  var rkeys: list[int] = []
+  for v in range(0, size) {
+    if def_now[v] {
+      match con_now[v] {
+        CFormula(e) => {
+          for key in range_refs(e, []) {
+            if not has(rid, key) {
+              rid = put(rid, key, len(rkeys))
+              rkeys = push(rkeys, key)
+            }
+          }
+        }
+        _ => {}
+      }
+    }
+  }
+  let rid_now = rid
+  let rk_now = rkeys
+  let nodes = size + len(rkeys)
+
+  // Cells covered by each range (only defined ones matter for cycles; undefined ones are 0).
+  let rcells: list[list[int]] = map(rk_now, fn(key: int) => range_cells(key / 10000, key % 10000))
+  let adj: list[list[int]] = map(range(0, nodes), fn(v: int) -> list[int] {
+    if v >= size {
+      return filter(rcells[v - size], fn(w: int) => def_now[w])
+    }
+    if not def_now[v] { return [] }
+    return match con_now[v] {
+      CFormula(e) => filter(direct_refs(e, []), fn(w: int) => def_now[w])
+        + map(range_refs(e, []), fn(key: int) => size + rid_now[key]),
+      _ => [],
+    }
+  })
+
+  var vals: list[Val] = map(range(0, size), fn(k: int) => VInt(0))
+  var rres: list[RangeRes] = map(rk_now, fn(k: int) => RangeRes(err: "", total: 0, lo: 0, hi: 0))
+
+  // Iterative Tarjan SCC; an SCC is emitted after everything it reaches, so it is evaluated on emission.
+  // Note: the interpreter copies a list on push/set_at, so per-edge work avoids them.
+  var idx: list[int] = map(range(0, nodes), fn(k: int) => -1)
+  var low: list[int] = map(range(0, nodes), fn(k: int) => 0)
+  var onst: list[bool] = map(range(0, nodes), fn(k: int) => false)
+  var counter = 0
+  var stk: list[int] = []
+  var fnode: list[int] = []
+  var fpos: list[int] = []
+
+  for s in range(0, size) {
+    if def_now[s] and idx[s] == -1 {
+      idx = set_at(idx, s, counter)
+      low = set_at(low, s, counter)
+      counter = counter + 1
+      stk = push(stk, s)
+      onst = set_at(onst, s, true)
+      fnode = [s]
+      fpos = [0]
+      while len(fnode) > 0 {
+        let top = len(fnode) - 1
+        let v = fnode[top]
+        let av = adj[v]
+        let n = len(av)
+        var i = fpos[top]
+        var lv = low[v]
+        var next = -1
+        while i < n {
+          let w = av[i]
+          i = i + 1
+          let iw = idx[w]
+          if iw == -1 {
+            next = w
+            break
+          }
+          if onst[w] and iw < lv { lv = iw }
+        }
+        if lv != low[v] { low = set_at(low, v, lv) }
+        if next != -1 {
+          fpos = set_at(fpos, top, i)
+          idx = set_at(idx, next, counter)
+          low = set_at(low, next, counter)
+          counter = counter + 1
+          stk = push(stk, next)
+          onst = set_at(onst, next, true)
+          fnode = push(fnode, next)
+          fpos = push(fpos, 0)
+        } else {
+          fnode = slice(fnode, 0, top)
+          fpos = slice(fpos, 0, top)
+          if lv == idx[v] {
+            var comp: list[int] = []
+            var sp = len(stk)
+            while true {
+              sp = sp - 1
+              let x = stk[sp]
+              onst = set_at(onst, x, false)
+              comp = push(comp, x)
+              if x == v { break }
+            }
+            stk = slice(stk, 0, sp)
+            let cyclic = len(comp) > 1 or contains(av, v)
+            // Cells first, so ranges inside a cyclic component see #CYCLE values.
+            for x in comp {
+              if x < size {
+                if cyclic {
+                  vals = set_at(vals, x, VErr("#CYCLE"))
+                } else {
+                  let r = match con_now[x] {
+                    CNum(num) => VInt(num),
+                    CBad => VErr("#PARSE"),
+                    CFormula(e) => eval_expr(e, Env(vals: vals, rid: rid_now, rres: rres)),
+                  }
+                  vals = set_at(vals, x, r)
+                }
+              }
+            }
+            for x in comp {
+              if x >= size {
+                rres = set_at(rres, x - size, range_eval(rcells[x - size], vals))
+              }
+            }
+          }
+          if top > 0 {
+            let u = fnode[top - 1]
+            if lv < low[u] { low = set_at(low, u, lv) }
+          }
+        }
+      }
+    }
+  }
+
+  for c in range(0, size) {
+    if def_now[c] {
+      let shown = match vals[c] {
+        VInt(n) => str(n),
+        VErr(m) => m,
+      }
+      print("{cell_label(c)} = {shown}")
+    }
+  }
+}

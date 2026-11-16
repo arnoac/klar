@@ -1,0 +1,161 @@
+// Reference solution for the ledger task (used to validate the hidden tests).
+
+use std.process { process_exit }
+
+fn is_digit(c: str) -> bool {
+  return c >= "0" and c <= "9"
+}
+
+fn valid_name(s: str) -> bool {
+  let cs = chars(s)
+  if len(cs) < 1 or len(cs) > 20 {
+    return false
+  }
+  return all(cs, fn(c) => is_digit(c) or (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or c == "_")
+}
+
+fn all_digits(s: str) -> bool {
+  return len(s) > 0 and all(chars(s), fn(c) => is_digit(c))
+}
+
+// "12.5" -> Some(1250) cents; None when the token breaks the amount rule or is zero.
+fn parse_amount(tok: str) -> Option[int] {
+  let parts = split(tok, ".")
+  if len(parts) > 2 {
+    return None
+  }
+  let whole = parts[0]
+  if not all_digits(whole) or len(whole) > 15 {
+    return None
+  }
+  var cents = parse_int(whole)? * 100
+  if len(parts) == 2 {
+    let frac = parts[1]
+    if not all_digits(frac) or len(frac) > 2 {
+      return None
+    }
+    let f = parse_int(frac)?
+    cents = cents + (if len(frac) == 1 then f * 10 else f)
+  }
+  if cents <= 0 {
+    return None
+  }
+  return Some(cents)
+}
+
+fn money(cents: int) -> str {
+  let frac = cents % 100
+  let pad = if frac < 10 then "0" else ""
+  return "{cents / 100}.{pad}{frac}"
+}
+
+fn arity(cmd: str) -> Option[int] {
+  return match cmd {
+    "open" => Some(1),
+    "close" => Some(1),
+    "deposit" => Some(2),
+    "withdraw" => Some(2),
+    "transfer" => Some(3),
+    _ => None,
+  }
+}
+
+// Applies one command: the new accounts, or the error message.
+fn apply(accounts: map[str, int], words: list[str]) -> Result[map[str, int], str] {
+  let cmd = words[0]
+  let args = slice(words, 1, len(words))
+  let n = match arity(cmd) {
+    Some(k) => k,
+    None => { return Err("unknown command: {cmd}") }
+  }
+  if len(args) != n {
+    return Err("wrong number of arguments: {cmd}")
+  }
+  let name = args[0]
+  if cmd == "open" {
+    if not valid_name(name) {
+      return Err("invalid name: {name}")
+    }
+    if has(accounts, name) {
+      return Err("account exists: {name}")
+    }
+    return Ok(put(accounts, name, 0))
+  }
+  var amount = 0
+  if cmd != "close" {
+    let tok = args[len(args) - 1]
+    amount = match parse_amount(tok) {
+      Some(a) => a,
+      None => { return Err("invalid amount: {tok}") }
+    }
+  }
+  let named = if cmd == "transfer" then slice(args, 0, 2) else [name]
+  for who in named {
+    if not has(accounts, who) {
+      return Err("no such account: {who}")
+    }
+  }
+  let balance = accounts[name]
+  if cmd == "deposit" {
+    return Ok(put(accounts, name, balance + amount))
+  }
+  if cmd == "withdraw" {
+    if amount > balance {
+      return Err("insufficient funds: {name}")
+    }
+    return Ok(put(accounts, name, balance - amount))
+  }
+  if cmd == "transfer" {
+    let to = args[1]
+    if to == name {
+      return Err("same account: {name}")
+    }
+    if amount > balance {
+      return Err("insufficient funds: {name}")
+    }
+    let after = put(accounts, name, balance - amount)
+    return Ok(put(after, to, after[to] + amount))
+  }
+  if balance != 0 {
+    return Err("balance not zero: {name}")
+  }
+  return Ok(remove(accounts, name))
+}
+
+fn words_of(line: str) -> list[str] {
+  return filter(split(replace(line, "\t", " "), " "), fn(w) => w != "")
+}
+
+fn main() uses io {
+  var accounts: map[str, int] = [:]
+  var errors = 0
+  var line_no = 0
+  while true {
+    // `None => break` cannot end a value match yet (E301), so test first
+    let got = read_line()
+    if is_none(got) {
+      break
+    }
+    let raw = unwrap(got)
+    line_no = line_no + 1
+    let line = trim(raw)
+    if line == "" or starts_with(line, "#") {
+      continue
+    }
+    match apply(accounts, words_of(line)) {
+      Ok(next) => accounts = next,
+      Err(e) => {
+        print("line {line_no}: {e}")
+        errors = errors + 1
+      }
+    }
+  }
+  print("--- balances ---")
+  for name in sort(keys(accounts)) {
+    print("{name} {money(accounts[name])}")
+  }
+  print("errors: {errors}")
+  if errors > 0 {
+    process_exit(1)
+  }
+}

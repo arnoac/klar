@@ -1,0 +1,33 @@
+{
+  "task": "sheet",
+  "lang": "klar",
+  "model": "pilot-agent",
+  "docs": "repo",
+  "max_rounds": 3,
+  "rounds": [
+    {
+      "round": 1,
+      "agent": {
+        "exit": null,
+        "seconds": 224.8,
+        "tokens": 92670,
+        "tool_uses": 17
+      },
+      "build_ok": true,
+      "passed": 22,
+      "total": 22,
+      "failing": []
+    }
+  ],
+  "first_try_pass": true,
+  "first_try_score": 1.0,
+  "rounds_to_pass": 1,
+  "final_score": 1.0,
+  "tools": {
+    "tool_calls": 17,
+    "check_calls": 3,
+    "failed_checks": 0,
+    "run_calls": 14,
+    "error_codes": {}
+  }
+}

@@ -1,0 +1,218 @@
+// Reference solution for the notes_api task (used to validate the hidden tests).
+// The notes live in DATA_DIR/notes.json, read on every request and rewritten on every change.
+
+use std.http { HttpRequest, HttpResponse, http_serve }
+use std.web { Route, web_get, web_post, web_patch, web_delete, web_handle, web_json, web_port }
+use std.json { Json, JNull, JStr, JArr, JObj, json_parse, json_encode, json_decode }
+use std.html { Html, ul, li, h1, text, html_page }
+use std.fs { fs_read, fs_write, fs_exists, fs_join }
+use std.process { env_get }
+
+struct Note { id: int, title: str, body: str, tags: list[str] }
+struct Db { next: int, notes: list[Note] }
+struct ApiError { error: str }
+
+fn db_path() -> str uses io {
+  return fs_join([unwrap_or(env_get("DATA_DIR"), "."), "notes.json"])
+}
+
+fn load() -> Db uses io {
+  let path = db_path()
+  if not fs_exists(path) {
+    return Db(next: 1, notes: [])
+  }
+  let parsed: Result[Db, str] = json_decode(unwrap_or(fs_read(path), ""))
+  return unwrap_or(parsed, Db(next: 1, notes: []))
+}
+
+fn save(db: Db) uses io {
+  match fs_write(db_path(), json_encode(db)) {
+    Ok(_) => {}
+    Err(e) => print("cannot save: {e}")
+  }
+}
+
+fn fail(status: int, message: str) -> HttpResponse {
+  return web_json(status, ApiError(error: message))
+}
+
+fn valid_tag(t: str) -> bool {
+  let cs = chars(t)
+  return len(cs) >= 1 and len(cs) <= 20
+    and all(cs, fn(c) => (c >= "a" and c <= "z") or (c >= "0" and c <= "9") or c == "-")
+}
+
+fn read_title(j: Json) -> Result[str, str] {
+  return match j {
+    JStr(s) => {
+      let t = trim(s)
+      if t == "" or len(t) > 100 {
+        return Err("title must be 1 to 100 characters")
+      }
+      return Ok(t)
+    }
+    _ => Err("title must be a string"),
+  }
+}
+
+fn read_body(j: Json) -> Result[str, str] {
+  return match j {
+    JStr(s) => Ok(s),
+    _ => Err("body must be a string"),
+  }
+}
+
+fn read_tags(j: Json) -> Result[list[str], str] {
+  let items = match j {
+    JArr(xs) => xs,
+    _ => { return Err("tags must be an array") }
+  }
+  var out: list[str] = []
+  for item in items {
+    match item {
+      JStr(t) => {
+        if not valid_tag(t) {
+          return Err("invalid tag: {t}")
+        }
+        if not contains(out, t) {
+          out = push(out, t)
+        }
+      }
+      _ => { return Err("tags must be strings") }
+    }
+  }
+  return Ok(out)
+}
+
+fn read_object(req: HttpRequest) -> Result[map[str, Json], str] {
+  return match json_parse(req.body) {
+    Ok(JObj(fields)) => Ok(fields),
+    Ok(_) => Err("body must be a JSON object"),
+    Err(_) => Err("body is not valid JSON"),
+  }
+}
+
+// Applies the fields present in `fields` to `note`.
+fn apply_fields(note: Note, fields: map[str, Json]) -> Result[Note, str] {
+  var n = note
+  match get(fields, "title") {
+    Some(j) => n = n with (title: read_title(j)?),
+    None => {}
+  }
+  match get(fields, "body") {
+    Some(j) => n = n with (body: read_body(j)?),
+    None => {}
+  }
+  match get(fields, "tags") {
+    Some(j) => n = n with (tags: read_tags(j)?),
+    None => {}
+  }
+  return Ok(n)
+}
+
+fn find_note(db: Db, req: HttpRequest) -> Option[Note] {
+  let id = parse_int(req.params["id"])?
+  return find(db.notes, fn(n) => n.id == id)
+}
+
+fn has_text(n: Note, q: str) -> bool {
+  return contains(lower(n.title), q) or contains(lower(n.body), q)
+}
+
+fn list_notes(req: HttpRequest) -> HttpResponse uses io {
+  var notes = load().notes
+  match get(req.query, "tag") {
+    Some(t) => notes = filter(notes, fn(n) => contains(n.tags, t)),
+    None => {}
+  }
+  match get(req.query, "q") {
+    Some(q) => {
+      let low = lower(q)
+      notes = filter(notes, fn(n) => has_text(n, low))
+    }
+    None => {}
+  }
+  return web_json(200, notes)
+}
+
+fn create_note(req: HttpRequest) -> HttpResponse uses io {
+  let fields = match read_object(req) {
+    Ok(f) => f,
+    Err(e) => { return fail(400, e) }
+  }
+  if not has(fields, "title") {
+    return fail(400, "title is required")
+  }
+  let db = load()
+  let blank = Note(id: db.next, title: "", body: "", tags: [])
+  return match apply_fields(blank, fields) {
+    Ok(note) => {
+      save(Db(next: db.next + 1, notes: push(db.notes, note)))
+      return web_json(201, note)
+    }
+    Err(e) => fail(400, e),
+  }
+}
+
+fn show_note(req: HttpRequest) -> HttpResponse uses io {
+  return match find_note(load(), req) {
+    Some(n) => web_json(200, n),
+    None => fail(404, "note not found"),
+  }
+}
+
+fn patch_note(req: HttpRequest) -> HttpResponse uses io {
+  let db = load()
+  let note = match find_note(db, req) {
+    Some(n) => n,
+    None => { return fail(404, "note not found") }
+  }
+  let fields = match read_object(req) {
+    Ok(f) => f,
+    Err(e) => { return fail(400, e) }
+  }
+  return match apply_fields(note, fields) {
+    Ok(changed) => {
+      save(db with (notes: map(db.notes, fn(n) => if n.id == changed.id then changed else n)))
+      return web_json(200, changed)
+    }
+    Err(e) => fail(400, e),
+  }
+}
+
+fn delete_note(req: HttpRequest) -> HttpResponse uses io {
+  let db = load()
+  return match find_note(db, req) {
+    Some(note) => {
+      save(db with (notes: filter(db.notes, fn(n) => n.id != note.id)))
+      return HttpResponse(204, [:], "")
+    }
+    None => fail(404, "note not found"),
+  }
+}
+
+fn home(req: HttpRequest) -> HttpResponse uses io {
+  let items: list[Html[unit]] = map(load().notes, fn(n) => li([], [text(n.title)]))
+  let page = html_page("Notes", "", ul([], items))
+  return HttpResponse(200, ["content-type": "text/html; charset=utf-8"], page)
+}
+
+fn main() uses io {
+  let routes = [
+    web_get("/", home),
+    web_get("/notes", list_notes),
+    web_post("/notes", create_note),
+    web_get("/notes/:id", show_note),
+    web_patch("/notes/:id", patch_note),
+    web_delete("/notes/:id", delete_note),
+  ]
+  // std.web answers unknown paths in plain text; this API answers every error in JSON.
+  let served = http_serve(web_port(8000), fn(req: HttpRequest) -> HttpResponse {
+    let res = web_handle(routes, req)
+    return if res.status == 404 or res.status == 405 then fail(404, "not found") else res
+  })
+  match served {
+    Ok(_) => {}
+    Err(e) => print("server error: {e}")
+  }
+}

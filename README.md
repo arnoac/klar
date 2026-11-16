@@ -5,6 +5,10 @@ write and repair. The complete language reference is [klar/SPEC.md](klar/SPEC.md
 reasoning behind each design choice is in [DESIGN.md](DESIGN.md), and what comes next is in
 [ROADMAP.md](ROADMAP.md).
 
+Whether agents really make fewer mistakes in Klar is measured in [eval/](eval/README.md): the same tasks with
+hidden tests, given to an AI agent in Klar and in TypeScript. The first pilot's results, including where Klar
+loses, are in [eval/RESULTS.md](eval/RESULTS.md).
+
 Klar has modules, generics, checked side effects, a standard library (files, JSON, HTTP client and
 server, SQLite, time, processes, math, random, regex, tasks and channels, crypto) and typed interop with any Python library.
 

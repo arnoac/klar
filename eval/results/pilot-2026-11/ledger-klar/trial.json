@@ -1,0 +1,35 @@
+{
+  "task": "ledger",
+  "lang": "klar",
+  "model": "pilot-agent",
+  "docs": "repo",
+  "max_rounds": 3,
+  "rounds": [
+    {
+      "round": 1,
+      "agent": {
+        "exit": null,
+        "seconds": 53.7,
+        "tokens": 81377,
+        "tool_uses": 9
+      },
+      "build_ok": true,
+      "passed": 21,
+      "total": 21,
+      "failing": []
+    }
+  ],
+  "first_try_pass": true,
+  "first_try_score": 1.0,
+  "rounds_to_pass": 1,
+  "final_score": 1.0,
+  "tools": {
+    "tool_calls": 8,
+    "check_calls": 3,
+    "failed_checks": 1,
+    "run_calls": 5,
+    "error_codes": {
+      "E301": 1
+    }
+  }
+}

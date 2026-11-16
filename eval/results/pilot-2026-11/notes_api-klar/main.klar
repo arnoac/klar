@@ -1,0 +1,361 @@
+// Notes service: JSON API plus one HTML page, stored in SQLite inside DATA_DIR.
+
+use std.http { HttpRequest, HttpResponse, http_serve, http_json, http_html }
+use std.json { Json, JNull, JBool, JNum, JStr, JArr, JObj, json_parse, json_stringify, json_get }
+use std.sqlite { Database, SqlValue, SqlInt, SqlText, sqlite_open, sqlite_exec, sqlite_query, sqlite_last_id, sql_int, sql_text }
+use std.process { env_get }
+use std.fs { fs_join }
+
+struct Note { id: int, title: str, body: str, tags: list[str] }
+
+// ---- JSON
+
+fn note_json(n: Note) -> Json {
+  return JObj([
+    "id": JNum(to_float(n.id)),
+    "title": JStr(n.title),
+    "body": JStr(n.body),
+    "tags": JArr(map(n.tags, fn(t) => JStr(t))),
+  ])
+}
+
+fn error_resp(status: int, message: str) -> HttpResponse {
+  return http_json(status, JObj(["error": JStr(message)]))
+}
+
+// ---- validation
+
+fn valid_tag(t: str) -> bool {
+  if len(t) < 1 or len(t) > 20 {
+    return false
+  }
+  let allowed = "abcdefghijklmnopqrstuvwxyz0123456789-"
+  return all(chars(t), fn(c) => contains(allowed, c))
+}
+
+fn check_title(j: Json) -> Result[str, str] {
+  return match j {
+    JStr(s) => {
+      let t = trim(s)
+      if t == "" {
+        return Err("title is required")
+      }
+      if len(t) > 100 {
+        return Err("title must be at most 100 characters")
+      }
+      return Ok(t)
+    }
+    _ => Err("title must be a string"),
+  }
+}
+
+fn check_body(j: Json) -> Result[str, str] {
+  return match j {
+    JStr(s) => Ok(s),
+    _ => Err("body must be a string"),
+  }
+}
+
+fn check_tags(j: Json) -> Result[list[str], str] {
+  let items = match j {
+    JArr(xs) => xs,
+    _ => {
+      return Err("tags must be an array of strings")
+    }
+  }
+  var out: list[str] = []
+  for item in items {
+    let t = match item {
+      JStr(s) => s,
+      _ => {
+        return Err("tags must be an array of strings")
+      }
+    }
+    if not valid_tag(t) {
+      return Err("invalid tag: {t}")
+    }
+    if not contains(out, t) {
+      out = push(out, t)
+    }
+  }
+  return Ok(out)
+}
+
+fn parse_object(body: str) -> Result[map[str, Json], str] {
+  let j = match json_parse(body) {
+    Ok(v) => v,
+    Err(_) => {
+      return Err("invalid JSON")
+    }
+  }
+  return match j {
+    JObj(fields) => Ok(fields),
+    _ => Err("body must be a JSON object"),
+  }
+}
+
+// ---- storage
+
+fn store_open(dir: str) -> Result[Database, str] uses io {
+  let db = sqlite_open(fs_join([dir, "notes.db"]))?
+  let _ = sqlite_exec(db, "create table if not exists notes (id integer primary key autoincrement, title text not null, body text not null, tags text not null)", [])?
+  return Ok(db)
+}
+
+fn decode_tags(s: str) -> list[str] {
+  return match json_parse(s) {
+    Ok(JArr(xs)) => fold(xs, [], fn(acc: list[str], x: Json) => match x {
+      JStr(t) => push(acc, t),
+      _ => acc,
+    }),
+    _ => [],
+  }
+}
+
+fn encode_tags(tags: list[str]) -> str {
+  return json_stringify(JArr(map(tags, fn(t) => JStr(t))))
+}
+
+fn row_to_note(row: map[str, SqlValue]) -> Note {
+  return Note(
+    id: unwrap_or(sql_int(row["id"]), 0),
+    title: unwrap_or(sql_text(row["title"]), ""),
+    body: unwrap_or(sql_text(row["body"]), ""),
+    tags: decode_tags(unwrap_or(sql_text(row["tags"]), "[]")),
+  )
+}
+
+fn store_list(db: Database) -> Result[list[Note], str] uses io {
+  let rows = sqlite_query(db, "select id, title, body, tags from notes order by id", [])?
+  return Ok(map(rows, fn(r) => row_to_note(r)))
+}
+
+fn store_find(db: Database, id: int) -> Result[Option[Note], str] uses io {
+  let rows = sqlite_query(db, "select id, title, body, tags from notes where id = ?", [SqlInt(id)])?
+  return Ok(match get(rows, 0) {
+    Some(r) => Some(row_to_note(r)),
+    None => None,
+  })
+}
+
+fn store_add(db: Database, title: str, body: str, tags: list[str]) -> Result[Note, str] uses io {
+  let _ = sqlite_exec(db, "insert into notes (title, body, tags) values (?, ?, ?)", [SqlText(title), SqlText(body), SqlText(encode_tags(tags))])?
+  return Ok(Note(id: sqlite_last_id(db), title: title, body: body, tags: tags))
+}
+
+fn store_update(db: Database, n: Note) -> Result[int, str] uses io {
+  return sqlite_exec(db, "update notes set title = ?, body = ?, tags = ? where id = ?", [SqlText(n.title), SqlText(n.body), SqlText(encode_tags(n.tags)), SqlInt(n.id)])
+}
+
+fn store_delete(db: Database, id: int) -> Result[int, str] uses io {
+  return sqlite_exec(db, "delete from notes where id = ?", [SqlInt(id)])
+}
+
+// ---- handlers
+
+fn parse_id(s: str) -> Option[int] {
+  if s == "" or len(s) > 18 {
+    return None
+  }
+  if not all(chars(s), fn(c) => contains("0123456789", c)) {
+    return None
+  }
+  return parse_int(s)
+}
+
+fn escape_html(s: str) -> str {
+  return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&#39;")
+}
+
+fn render_page(notes: list[Note]) -> str {
+  var items = ""
+  for n in notes {
+    items = items + "<li>{escape_html(n.title)}</li>\n"
+  }
+  return "<!doctype html>\n<html>\n<head><meta charset=\"utf-8\"><title>Notes</title></head>\n<body>\n<h1>Notes</h1>\n<ul>\n{items}</ul>\n</body>\n</html>\n"
+}
+
+fn list_notes(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
+  var notes = store_list(db)?
+  match get(req.query, "tag") {
+    Some(tag) => {
+      notes = filter(notes, fn(n) => contains(n.tags, tag))
+    }
+    None => {}
+  }
+  match get(req.query, "q") {
+    Some(q) => {
+      let word = lower(q)
+      notes = filter(notes, fn(n) => contains(lower(n.title), word) or contains(lower(n.body), word))
+    }
+    None => {}
+  }
+  return Ok(http_json(200, JArr(map(notes, fn(n) => note_json(n)))))
+}
+
+fn create_note(db: Database, body: str) -> Result[HttpResponse, str] uses io {
+  let fields = match parse_object(body) {
+    Ok(f) => f,
+    Err(e) => {
+      return Ok(error_resp(400, e))
+    }
+  }
+  let title = match get(fields, "title") {
+    None => {
+      return Ok(error_resp(400, "title is required"))
+    }
+    Some(j) => match check_title(j) {
+      Ok(t) => t,
+      Err(e) => {
+        return Ok(error_resp(400, e))
+      }
+    },
+  }
+  let text = match get(fields, "body") {
+    None => "",
+    Some(j) => match check_body(j) {
+      Ok(b) => b,
+      Err(e) => {
+        return Ok(error_resp(400, e))
+      }
+    },
+  }
+  let tags = match get(fields, "tags") {
+    None => [],
+    Some(j) => match check_tags(j) {
+      Ok(ts) => ts,
+      Err(e) => {
+        return Ok(error_resp(400, e))
+      }
+    },
+  }
+  let n = store_add(db, title, text, tags)?
+  return Ok(http_json(201, note_json(n)))
+}
+
+fn patch_note(db: Database, id: int, body: str) -> Result[HttpResponse, str] uses io {
+  let existing = match store_find(db, id)? {
+    Some(n) => n,
+    None => {
+      return Ok(error_resp(404, "note not found"))
+    }
+  }
+  let fields = match parse_object(body) {
+    Ok(f) => f,
+    Err(e) => {
+      return Ok(error_resp(400, e))
+    }
+  }
+  let title = match get(fields, "title") {
+    None => existing.title,
+    Some(j) => match check_title(j) {
+      Ok(t) => t,
+      Err(e) => {
+        return Ok(error_resp(400, e))
+      }
+    },
+  }
+  let text = match get(fields, "body") {
+    None => existing.body,
+    Some(j) => match check_body(j) {
+      Ok(b) => b,
+      Err(e) => {
+        return Ok(error_resp(400, e))
+      }
+    },
+  }
+  let tags = match get(fields, "tags") {
+    None => existing.tags,
+    Some(j) => match check_tags(j) {
+      Ok(ts) => ts,
+      Err(e) => {
+        return Ok(error_resp(400, e))
+      }
+    },
+  }
+  let updated = existing with (title: title, body: text, tags: tags)
+  let _ = store_update(db, updated)?
+  return Ok(http_json(200, note_json(updated)))
+}
+
+fn handle(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
+  let path = req.path
+  if path == "/" {
+    if req.method == "GET" {
+      return Ok(http_html(200, render_page(store_list(db)?)))
+    }
+    return Ok(error_resp(404, "not found"))
+  }
+  if path == "/notes" {
+    if req.method == "GET" {
+      return list_notes(db, req)
+    }
+    if req.method == "POST" {
+      return create_note(db, req.body)
+    }
+    return Ok(error_resp(404, "not found"))
+  }
+  if starts_with(path, "/notes/") {
+    let rest = slice(path, 7, len(path))
+    let id = match parse_id(rest) {
+      Some(i) => i,
+      None => {
+        return Ok(error_resp(404, "note not found"))
+      }
+    }
+    if req.method == "GET" {
+      return match store_find(db, id)? {
+        Some(n) => Ok(http_json(200, note_json(n))),
+        None => Ok(error_resp(404, "note not found")),
+      }
+    }
+    if req.method == "PATCH" {
+      return patch_note(db, id, req.body)
+    }
+    if req.method == "DELETE" {
+      let changed = store_delete(db, id)?
+      if changed > 0 {
+        return Ok(HttpResponse(status: 204, headers: [:], body: ""))
+      }
+      return Ok(error_resp(404, "note not found"))
+    }
+    return Ok(error_resp(404, "not found"))
+  }
+  return Ok(error_resp(404, "not found"))
+}
+
+fn main() uses io {
+  let port = unwrap_or(parse_int(unwrap_or(env_get("PORT"), "8080")), 8080)
+  let dir = unwrap_or(env_get("DATA_DIR"), ".")
+  match store_open(dir) {
+    Err(e) => {
+      print("cannot open database: {e}")
+    }
+    Ok(db) => {
+      print("listening on http://127.0.0.1:{port}")
+      let result = http_serve(port, fn(req) => match handle(db, req) {
+        Ok(resp) => resp,
+        Err(e) => error_resp(500, e),
+      })
+      print("server stopped: {result}")
+    }
+  }
+}
+
+test "tags" {
+  assert valid_tag("a-1")
+  assert not valid_tag("A")
+  assert not valid_tag("")
+  assert check_tags(JArr([JStr("a"), JStr("b"), JStr("a")])) == Ok(["a", "b"])
+}
+
+test "ids" {
+  assert parse_id("12") == Some(12)
+  assert parse_id("1.5") == None
+  assert parse_id("-1") == None
+  assert parse_id("") == None
+}
+
+test "escape" {
+  assert escape_html("<b>hi</b>") == "&lt;b&gt;hi&lt;/b&gt;"
+}

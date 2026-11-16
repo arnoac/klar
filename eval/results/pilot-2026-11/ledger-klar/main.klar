@@ -1,0 +1,220 @@
+use std.process { process_exit }
+
+fn tokenize(line: str) -> list[str] {
+  var out: list[str] = []
+  var cur = ""
+  for c in chars(line) {
+    if c == " " or c == "\t" or c == "\r" {
+      if cur != "" {
+        out = push(out, cur)
+        cur = ""
+      }
+    } else {
+      cur = cur + c
+    }
+  }
+  if cur != "" {
+    out = push(out, cur)
+  }
+  return out
+}
+
+fn is_digit(c: str) -> bool {
+  return contains("0123456789", c)
+}
+
+fn valid_name(n: str) -> bool {
+  let cs = chars(n)
+  if len(cs) < 1 or len(cs) > 20 {
+    return false
+  }
+  for c in cs {
+    let ok = contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_", c)
+    if not ok {
+      return false
+    }
+  }
+  return true
+}
+
+fn digits_value(cs: list[str]) -> int {
+  var v = 0
+  for c in cs {
+    v = v * 10 + unwrap(parse_int(c))
+  }
+  return v
+}
+
+// Parse an amount into cents; None if invalid (including zero).
+fn parse_amount(t: str) -> Option[int] {
+  let cs = chars(t)
+  var i = 0
+  var whole: list[str] = []
+  while i < len(cs) and is_digit(cs[i]) {
+    whole = push(whole, cs[i])
+    i = i + 1
+  }
+  if len(whole) < 1 or len(whole) > 15 {
+    return None
+  }
+  var frac: list[str] = []
+  if i < len(cs) {
+    if cs[i] != "." {
+      return None
+    }
+    i = i + 1
+    while i < len(cs) and is_digit(cs[i]) {
+      frac = push(frac, cs[i])
+      i = i + 1
+    }
+    if i != len(cs) or len(frac) < 1 or len(frac) > 2 {
+      return None
+    }
+  }
+  var cents = digits_value(whole) * 100
+  if len(frac) == 1 {
+    cents = cents + digits_value(frac) * 10
+  } else if len(frac) == 2 {
+    cents = cents + digits_value(frac)
+  }
+  if cents <= 0 {
+    return None
+  }
+  return Some(cents)
+}
+
+fn fmt_cents(c: int) -> str {
+  let w = c / 100
+  let f = c % 100
+  let fs = if f < 10 then "0{f}" else "{f}"
+  return "{w}.{fs}"
+}
+
+fn arg_count(cmd: str) -> int {
+  return match cmd {
+    "open" => 1,
+    "close" => 1,
+    "deposit" => 2,
+    "withdraw" => 2,
+    "transfer" => 3,
+    _ => -1,
+  }
+}
+
+// Returns Ok(new accounts) or Err(message).
+fn apply(accts: map[str, int], w: list[str]) -> Result[map[str, int], str] {
+  let cmd = w[0]
+  let n = arg_count(cmd)
+  if n < 0 {
+    return Err("unknown command: {cmd}")
+  }
+  if len(w) - 1 != n {
+    return Err("wrong number of arguments: {cmd}")
+  }
+  if cmd == "open" {
+    let name = w[1]
+    if not valid_name(name) {
+      return Err("invalid name: {name}")
+    }
+    if has(accts, name) {
+      return Err("account exists: {name}")
+    }
+    return Ok(put(accts, name, 0))
+  }
+  if cmd == "close" {
+    let name = w[1]
+    if not has(accts, name) {
+      return Err("no such account: {name}")
+    }
+    if accts[name] != 0 {
+      return Err("balance not zero: {name}")
+    }
+    return Ok(remove(accts, name))
+  }
+  let amt_tok = w[n]
+  let amount = match parse_amount(amt_tok) {
+    Some(a) => a,
+    None => { return Err("invalid amount: {amt_tok}") }
+  }
+  if cmd == "deposit" {
+    let name = w[1]
+    if not has(accts, name) {
+      return Err("no such account: {name}")
+    }
+    return Ok(put(accts, name, accts[name] + amount))
+  }
+  if cmd == "withdraw" {
+    let name = w[1]
+    if not has(accts, name) {
+      return Err("no such account: {name}")
+    }
+    if amount > accts[name] {
+      return Err("insufficient funds: {name}")
+    }
+    return Ok(put(accts, name, accts[name] - amount))
+  }
+  // transfer
+  let from = w[1]
+  let to = w[2]
+  if not has(accts, from) {
+    return Err("no such account: {from}")
+  }
+  if not has(accts, to) {
+    return Err("no such account: {to}")
+  }
+  if from == to {
+    return Err("same account: {from}")
+  }
+  if amount > accts[from] {
+    return Err("insufficient funds: {from}")
+  }
+  let a1 = put(accts, from, accts[from] - amount)
+  return Ok(put(a1, to, a1[to] + amount))
+}
+
+fn main() uses io {
+  var accts: map[str, int] = [:]
+  var errors = 0
+  var lineno = 0
+  var next = read_line()
+  while is_some(next) {
+    let line = unwrap(next)
+    next = read_line()
+    lineno = lineno + 1
+    let words = tokenize(line)
+    if len(words) == 0 {
+      continue
+    }
+    if starts_with(words[0], "#") {
+      continue
+    }
+    match apply(accts, words) {
+      Ok(a) => accts = a,
+      Err(e) => {
+        print("line {lineno}: {e}")
+        errors = errors + 1
+      }
+    }
+  }
+  print("--- balances ---")
+  for name in sort(keys(accts)) {
+    print("{name} {fmt_cents(accts[name])}")
+  }
+  print("errors: {errors}")
+  if errors > 0 {
+    process_exit(1)
+  }
+}
+
+test "amounts" {
+  assert parse_amount("5") == Some(500)
+  assert parse_amount("5.5") == Some(550)
+  assert parse_amount("0.01") == Some(1)
+  assert parse_amount("0") == None
+  assert parse_amount("0.00") == None
+  assert parse_amount("5.") == None
+  assert parse_amount(".5") == None
+  assert parse_amount("5.123") == None
+  assert parse_amount("1234567890123456") == None
+  assert fmt_cents(100000000000000001) == "1000000000000000.01"
+}

@@ -1,0 +1,122 @@
+{
+  "task": "sheet",
+  "lang": "klar",
+  "build_ok": true,
+  "build_log": "{\n  \"ok\": true,\n  \"errors\": []\n}\n",
+  "tests": [
+    {
+      "name": "test_chain_of_references",
+      "ok": true,
+      "seconds": 0.19
+    },
+    {
+      "name": "test_cycle_beats_other_errors",
+      "ok": true,
+      "seconds": 0.13
+    },
+    {
+      "name": "test_cycle_through_range",
+      "ok": true,
+      "seconds": 0.12
+    },
+    {
+      "name": "test_deep_chain_across_columns",
+      "ok": true,
+      "seconds": 0.53
+    },
+    {
+      "name": "test_dependents_of_cycle_are_not_in_cycle_but_error",
+      "ok": true,
+      "seconds": 0.12
+    },
+    {
+      "name": "test_division_truncates_toward_zero",
+      "ok": true,
+      "seconds": 0.12
+    },
+    {
+      "name": "test_empty_cells_are_zero",
+      "ok": true,
+      "seconds": 0.12
+    },
+    {
+      "name": "test_empty_input",
+      "ok": true,
+      "seconds": 0.11
+    },
+    {
+      "name": "test_example_from_task",
+      "ok": true,
+      "seconds": 0.12
+    },
+    {
+      "name": "test_first_error_left_to_right",
+      "ok": true,
+      "seconds": 0.11
+    },
+    {
+      "name": "test_generated_large",
+      "ok": true,
+      "seconds": 0.71
+    },
+    {
+      "name": "test_generated_small",
+      "ok": true,
+      "seconds": 2.34
+    },
+    {
+      "name": "test_integer_literals",
+      "ok": true,
+      "seconds": 0.09
+    },
+    {
+      "name": "test_last_definition_wins",
+      "ok": true,
+      "seconds": 0.11
+    },
+    {
+      "name": "test_min_max_with_negatives_and_empties",
+      "ok": true,
+      "seconds": 0.11
+    },
+    {
+      "name": "test_parse_errors",
+      "ok": true,
+      "seconds": 0.13
+    },
+    {
+      "name": "test_precedence_and_unary",
+      "ok": true,
+      "seconds": 0.12
+    },
+    {
+      "name": "test_range_order_column_major",
+      "ok": true,
+      "seconds": 0.12
+    },
+    {
+      "name": "test_ranges_any_corner_order",
+      "ok": true,
+      "seconds": 0.12
+    },
+    {
+      "name": "test_self_reference",
+      "ok": true,
+      "seconds": 0.11
+    },
+    {
+      "name": "test_sort_order_rows_numeric",
+      "ok": true,
+      "seconds": 0.12
+    },
+    {
+      "name": "test_spaces_between_tokens",
+      "ok": true,
+      "seconds": 0.11
+    }
+  ],
+  "passed": 22,
+  "total": 22,
+  "seconds": 5.91,
+  "all_pass": true
+}

@@ -1,0 +1,112 @@
+{
+  "task": "orders",
+  "lang": "ts",
+  "build_ok": true,
+  "build_log": "",
+  "tests": [
+    {
+      "name": "test_bad_items",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_customers_aggregate",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_duplicate_only_against_valid",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_empty_orders",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_example_shape",
+      "ok": true,
+      "seconds": 0.02
+    },
+    {
+      "name": "test_extra_keys_ignored",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_flat500_never_negative",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_invalid_json",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_large_totals",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_missing_id_variants",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_not_an_orders_object",
+      "ok": true,
+      "seconds": 0.15
+    },
+    {
+      "name": "test_null_coupon_is_absent",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_order_not_an_object",
+      "ok": true,
+      "seconds": 0.04
+    },
+    {
+      "name": "test_reason_order",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_save10_rounds_discount_down",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_save10_small_amounts",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_top_sku_by_quantity_with_tie",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_unicode_strings",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_unknown_coupons",
+      "ok": true,
+      "seconds": 0.03
+    },
+    {
+      "name": "test_zero_price_is_fine",
+      "ok": true,
+      "seconds": 0.02
+    }
+  ],
+  "passed": 20,
+  "total": 20,
+  "seconds": 1.48,
+  "all_pass": true
+}

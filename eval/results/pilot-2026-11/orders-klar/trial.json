@@ -1,0 +1,33 @@
+{
+  "task": "orders",
+  "lang": "klar",
+  "model": "pilot-agent",
+  "docs": "repo",
+  "max_rounds": 3,
+  "rounds": [
+    {
+      "round": 1,
+      "agent": {
+        "exit": null,
+        "seconds": 69.1,
+        "tokens": 84051,
+        "tool_uses": 11
+      },
+      "build_ok": true,
+      "passed": 20,
+      "total": 20,
+      "failing": []
+    }
+  ],
+  "first_try_pass": true,
+  "first_try_score": 1.0,
+  "rounds_to_pass": 1,
+  "final_score": 1.0,
+  "tools": {
+    "tool_calls": 9,
+    "check_calls": 1,
+    "failed_checks": 0,
+    "run_calls": 8,
+    "error_codes": {}
+  }
+}

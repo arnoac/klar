@@ -1,0 +1,154 @@
+use std.json { Json, JNull, JBool, JNum, JStr, JArr, JObj, json_parse, json_stringify, json_get }
+use std.process { process_exit }
+
+struct Item { sku: str, qty: int, price: int }
+
+struct Stat { orders: int, total: int }
+
+// Whole number from a JSON value; rejects non-numbers, fractions, NaN and infinities.
+fn whole(v: Json) -> Option[int] {
+  return match v {
+    JNum(n) => {
+      if n - n != 0.0 { return None }
+      if to_float(floor(n)) != n { return None }
+      return Some(floor(n))
+    }
+    _ => None,
+  }
+}
+
+fn nonempty_str(v: Option[Json]) -> Option[str] {
+  return match v {
+    Some(JStr(s)) => if len(s) > 0 then Some(s) else None,
+    _ => None,
+  }
+}
+
+fn parse_item(v: Json) -> Option[Item] {
+  let sku = nonempty_str(json_get(v, "sku"))?
+  let qj = json_get(v, "qty")?
+  let pj = json_get(v, "price_cents")?
+  let qty = whole(qj)?
+  let price = whole(pj)?
+  if qty < 1 { return None }
+  if price < 0 { return None }
+  return Some(Item(sku: sku, qty: qty, price: price))
+}
+
+fn quote(s: str) -> str {
+  return json_stringify(JStr(s))
+}
+
+fn fail() uses io {
+  print("{{\"error\": \"invalid input\"}}")
+  process_exit(1)
+}
+
+fn main() uses io {
+  var lines: list[str] = []
+  var done = false
+  while not done {
+    match read_line() {
+      Some(l) => lines = push(lines, l),
+      None => done = true,
+    }
+  }
+  let text = join(lines, "\n")
+  let parsed = json_parse(text)
+  var orders: list[Json] = []
+  match parsed {
+    Ok(JObj(fields)) => {
+      match get(fields, "orders") {
+        Some(JArr(items)) => orders = items,
+        _ => fail(),
+      }
+    }
+    _ => fail(),
+  }
+
+  var valid = 0
+  var seen: map[str, bool] = [:]
+  var invalid: list[str] = []
+  var custs: map[str, Stat] = [:]
+  var skus: map[str, int] = [:]
+
+  for o in orders {
+    let idopt = nonempty_str(json_get(o, "id"))
+    let id_json = match idopt { Some(s) => quote(s), None => "null" }
+    var reason = ""
+    var items: list[Item] = []
+    var coupon = ""
+    if is_none(idopt) {
+      reason = "missing id"
+    } else if has(seen, unwrap(idopt)) {
+      reason = "duplicate id"
+    } else if is_none(nonempty_str(json_get(o, "customer"))) {
+      reason = "missing customer"
+    } else {
+      match json_get(o, "items") {
+        Some(JArr(xs)) => {
+          if len(xs) == 0 {
+            reason = "no items"
+          } else {
+            for x in xs {
+              match parse_item(x) {
+                Some(it) => items = push(items, it),
+                None => reason = "bad item",
+              }
+            }
+          }
+        }
+        _ => reason = "no items",
+      }
+      if reason == "" {
+        match json_get(o, "coupon") {
+          None => coupon = "",
+          Some(JNull) => coupon = "",
+          Some(JStr(c)) => {
+            if c == "SAVE10" or c == "FLAT500" { coupon = c } else { reason = "unknown coupon" }
+          }
+          Some(_) => reason = "unknown coupon",
+        }
+      }
+    }
+    if reason != "" {
+      invalid = push(invalid, "{{\"id\": {id_json}, \"reason\": \"{reason}\"}}")
+      continue
+    }
+    let id = unwrap(idopt)
+    let customer = unwrap(nonempty_str(json_get(o, "customer")))
+    seen = put(seen, id, true)
+    valid = valid + 1
+    var subtotal = 0
+    for it in items {
+      subtotal = subtotal + it.qty * it.price
+      skus = put(skus, it.sku, unwrap_or(get(skus, it.sku), 0) + it.qty)
+    }
+    var total = subtotal
+    if coupon == "SAVE10" {
+      total = subtotal - subtotal / 10
+    } else if coupon == "FLAT500" {
+      total = max(subtotal - 500, 0)
+    }
+    let prev = unwrap_or(get(custs, customer), Stat(orders: 0, total: 0))
+    custs = put(custs, customer, Stat(orders: prev.orders + 1, total: prev.total + total))
+  }
+
+  var cparts: list[str] = []
+  for c in keys(custs) {
+    let s = custs[c]
+    cparts = push(cparts, "{quote(c)}: {{\"orders\": {s.orders}, \"total_cents\": {s.total}}}")
+  }
+  var top = "null"
+  var best = -1
+  var best_sku = ""
+  for k in sort(keys(skus)) {
+    let q = skus[k]
+    if q > best {
+      best = q
+      best_sku = k
+    }
+  }
+  if best >= 0 { top = quote(best_sku) }
+  print("{{\"valid\": {valid}, \"invalid\": [{join(invalid, ", ")}], \"customers\": {{{join(cparts, ", ")}}}, \"top_sku\": {top}}}")
+}

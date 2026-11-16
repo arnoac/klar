@@ -1,0 +1,117 @@
+{
+  "task": "ledger",
+  "lang": "klar",
+  "build_ok": true,
+  "build_log": "{\n  \"ok\": true,\n  \"errors\": []\n}\n",
+  "tests": [
+    {
+      "name": "test_amount_checked_before_account",
+      "ok": true,
+      "seconds": 0.07
+    },
+    {
+      "name": "test_cents_are_exact",
+      "ok": true,
+      "seconds": 0.06
+    },
+    {
+      "name": "test_close_and_reopen",
+      "ok": true,
+      "seconds": 0.06
+    },
+    {
+      "name": "test_command_words_case_sensitive",
+      "ok": true,
+      "seconds": 0.06
+    },
+    {
+      "name": "test_crlf_line_endings",
+      "ok": true,
+      "seconds": 0.06
+    },
+    {
+      "name": "test_empty_input",
+      "ok": true,
+      "seconds": 0.07
+    },
+    {
+      "name": "test_example_from_task",
+      "ok": true,
+      "seconds": 0.07
+    },
+    {
+      "name": "test_insufficient_funds_exact_boundary",
+      "ok": true,
+      "seconds": 0.07
+    },
+    {
+      "name": "test_invalid_amounts",
+      "ok": true,
+      "seconds": 0.07
+    },
+    {
+      "name": "test_invalid_names",
+      "ok": true,
+      "seconds": 0.06
+    },
+    {
+      "name": "test_large_balances_exact",
+      "ok": true,
+      "seconds": 0.07
+    },
+    {
+      "name": "test_line_numbers_count_blank_and_comment_lines",
+      "ok": true,
+      "seconds": 0.07
+    },
+    {
+      "name": "test_many_operations",
+      "ok": true,
+      "seconds": 0.14
+    },
+    {
+      "name": "test_no_errors_exit_zero",
+      "ok": true,
+      "seconds": 0.06
+    },
+    {
+      "name": "test_open_existing",
+      "ok": true,
+      "seconds": 0.07
+    },
+    {
+      "name": "test_reopened_account_starts_at_zero",
+      "ok": true,
+      "seconds": 0.07
+    },
+    {
+      "name": "test_same_account_transfer",
+      "ok": true,
+      "seconds": 0.09
+    },
+    {
+      "name": "test_sorted_byte_order",
+      "ok": true,
+      "seconds": 0.07
+    },
+    {
+      "name": "test_unknown_accounts_left_to_right",
+      "ok": true,
+      "seconds": 0.07
+    },
+    {
+      "name": "test_whitespace_tabs_and_comments",
+      "ok": true,
+      "seconds": 0.05
+    },
+    {
+      "name": "test_wrong_argument_counts",
+      "ok": true,
+      "seconds": 0.06
+    }
+  ],
+  "passed": 21,
+  "total": 21,
+  "seconds": 1.52,
+  "all_pass": true
+}
