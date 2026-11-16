@@ -32,61 +32,46 @@ python3 bench/benchmarksgame/run.py --full   # plus the official sizes for C, Go
 
 ## Results in short
 
-Klar v0.14 at the official sizes, single-threaded; ratios are slower-than. Python numbers are from the scaled
-sizes. Exact numbers are in [RESULTS.md](RESULTS.md).
+Klar at the official sizes, single-threaded; ratios are slower-than unless marked. Python numbers are from the
+scaled sizes. Exact numbers are in [RESULTS.md](RESULTS.md).
 
 | Program | What it stresses | Klar vs C | Klar vs Go | Klar vs Python | Klar on Node vs C |
 |---|---|---|---|---|---|
-| mandelbrot | float loops | 1.1x | 1.0x | 37x faster | 1.5x |
-| spectral-norm | float loops over arrays | 1.7x | 1.8x | 57x faster | 6.9x |
-| fasta | string building, output | 1.8x | 1.8x | 6.4x faster | 3.4x |
-| binary-trees | allocation + GC | 2.1x | 1.5x | 2.7x faster | 4.4x |
-| fannkuch-redux | in-place array permutation | 3.0x | 2.8x | 5x faster | 4.6x |
-| nbody | small arrays updated every step | 4.8x | 2.9x | 14x faster | 4.7x |
-| regex-redux | regular expressions (PCRE2) | 8.3x | 2.2x faster | 1.5x slower | 2.4x |
-| k-nucleotide | hash map of string keys | 26x | 9.1x | 1.3x slower | 41x |
-| reverse-complement | byte-level rewrite of ~250 MB | 40x | 15x | 8x slower | 45x |
+| mandelbrot | float loops | 1.0x | 1.0x | 37x faster | 1.3x |
+| fasta | string building, output | 1.2x | 1.1x | 9x faster | 3.1x |
+| regex-redux | regular expressions (PCRE2) | 1.4x | 13x faster | 4x faster | 2.3x |
+| binary-trees | allocation + GC | 2.0x | 1.4x | 2.9x faster | 3.9x |
+| spectral-norm | float loops over arrays | 2.0x | 2.0x | 54x faster | 6.8x |
+| fannkuch-redux | in-place array permutation | 2.9x | 2.7x | 5x faster | 4.3x |
+| nbody | small arrays updated every step | 4.6x | 2.6x | 17x faster | 4.8x |
+| k-nucleotide | hash map of string keys | 8.1x | 2.8x | 2.3x faster | 16x |
+| reverse-complement | rewriting ~250 MB of text | 13.5x | 4.8x | 1.4x slower | 65x |
 
-**Where Klar is at C/Go speed:** numeric loops (mandelbrot, spectral-norm), output-heavy string code
-(fasta), allocation-heavy recursive data (binary-trees, within 1.5x of Go) and, since v0.5, array code that
-updates lists in place (fannkuch-redux, nbody: 3-5x C, down from 23-29x). The rest of that gap is bounds
-checks, overflow checks and the version check on each list read, which keep gcc from vectorising.
+**What closed the gaps.** Klar values never change, so loops that update a list, map or string would copy it
+every time. Instead, a `var` that is the only holder of its value is updated in place, and any other use of
+the var hands out the value as it is (see `klar/ownership.py`; values stay immutable as far as any program can
+tell). This covers `xs = set_at(xs, i, v)` and `xs = push(xs, v)` (nbody and fannkuch-redux: 23-29x C down to
+3-5x), `m = put(m, k, v)` (k-nucleotide: 26x to 8x), and `s = s + t` (reverse-complement: 40x to 13.5x,
+memory 6.4 GB to 0.6 GB, and fasta: 1.8x to 1.2x). The same rule runs in the interpreter, so `klar run` no
+longer turns these loops quadratic. One-character ASCII strings (from `s[i]`, `slice`, `chars`) are shared
+constants and cost no allocation. Regular expressions use PCRE2 with its JIT, as the C program does.
 
-**Where Klar is far behind, and why** (the three programs added last):
+**What is left:**
 
-* **k-nucleotide (26x C, 9x Go).** `counts = put(counts, key, n + 1)` never updates in place: every `put`
-  appends a new version of the key to the map's log, allocates a new map value, and compacts the log every
-  few updates. Each k-mer is also a freshly allocated `slice` of the sequence, hashed twice (`get`, then
-  `put`). Lists got in-place updates in v0.5; maps have not.
-* **reverse-complement (40x C, 6.4 GB of memory).** Klar has no byte buffer, so the program turns each
-  sequence into a list of one-character strings with `chars()`, looks every character up in a
-  `map[str, str]`, and joins lines back together. 125 million small strings is where the memory goes.
-* **regex-redux (8x C, but 2x faster than Go).** Matching is already PCRE2, as in C. The difference is that
-  the C program uses PCRE2's JIT and Klar doesn't, and `regex_find_all` builds a list of matched strings
-  where only the count is needed. Before the fix described below it was quadratic.
+* Every `xs[i]` is bounds-checked and every integer `+`/`*` is overflow-checked (E408), and list reads check
+  a version; hoisting those checks out of simple `for i in range(...)` loops would let gcc vectorise
+  spectral-norm and nbody.
+* k-nucleotide allocates a new string for every k-mer and hashes it byte by byte; the C program packs k-mers
+  into integers. Caching string hashes, or slices that share the parent string's bytes, would help.
+* reverse-complement looks up each character in a `map[str, str]`. Klar has no character codes or byte type,
+  so there is nothing cheaper to write. On Node, building strings one character at a time is slow.
+* `klar build` without `libgc-dev` silently produces a binary that never frees memory; it should warn.
 
 ## Compiler and runtime findings
 
-Porting these programs found two real problems, both fixed on main:
-
-1. **Native regex was O(length x matches).** PCRE2 checks that the whole subject is valid UTF-8 on every
-   `pcre2_match` call unless told not to, and `regex_find_all`/`regex_replace` call it once per match.
-   regex-redux on a 1 MB input took 25 s; it now checks once per scan and takes 0.3 s.
-2. **The interpreter copied lists on every `push`/`set_at`**, although SPEC promises O(1). It now uses the
-   same ownership rule as the compiled backends (an agent evaluation found a program going from 8 s to 91 s
-   because of it).
-
-Next improvements, in order of payoff:
-
-1. **In-place `put` for maps held by one `var`**, the same ownership rule lists use. This is most of
-   k-nucleotide's gap, and maps are everywhere in real programs.
-2. **A byte buffer or string builder type** (and a way to write raw bytes, which mandelbrot's PBM output
-   needs) for reverse-complement, fasta and any text processing.
-3. **PCRE2 JIT** for patterns used on long strings, and a `regex_count` that doesn't build the match list.
-4. **Hoist bounds, version and overflow checks out of simple `for i in range(...)` loops**, which would let
-   gcc vectorise spectral-norm and nbody.
-5. **Warn when building without a GC.** On a machine without `libgc-dev`, `klar build` silently produces a
-   binary that never frees memory; binary-trees at the official size would need many GB.
+Porting these programs found two real problems, both fixed on main: native regex was O(length x matches)
+(PCRE2 re-validated the whole subject as UTF-8 on every match; regex-redux on 1 MB took 25 s, now 0.06 s), and
+the interpreter copied lists on every `push`/`set_at` although SPEC promises O(1).
 
 ## Programs not ported yet
 
