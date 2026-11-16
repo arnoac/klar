@@ -1443,7 +1443,7 @@ static const char *kx_sql_kind(KEnum *v) {
 #define KX_SQL_BAD(want) KX_SQL_FAIL("column `%s` holds %s, but %s needs %s", col, kx_sql_kind(v), target, want)
 static KS kx_sql_col(KEnum *v, KD *d, const char *col, const char *target, KJErr *er) {
     if (er->failed) return 0;
-    KS x = v->f[0];
+    KS x = v->tag == KT_SqlNull ? 0 : v->f[0];  /* NULL carries no value */
     if (d->k == KD_ENUM && !strcmp(d->name, "Option")) {
         if (v->tag == KT_SqlNull) return k_p2s(K_NONE);
         KS r = kx_sql_col(v, d->vs[0].types[0], col, target, er);
