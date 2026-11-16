@@ -1210,16 +1210,19 @@ static pcre2_code *kx_re(KStr *pat) {
     return re;
 }
 /* Calls f(match data) for every non-overlapping match, Python-style (empty matches included). */
-typedef struct { KStr *s; pcre2_code *re; pcre2_match_data *md; PCRE2_SIZE start; int done; int last_empty_at; } KReIt;
+typedef struct { KStr *s; pcre2_code *re; pcre2_match_data *md; PCRE2_SIZE start; int done; int last_empty_at; uint32_t utf_checked; } KReIt;
 static void kx_re_it(KReIt *it, KStr *pat, KStr *s) {
     it->s = s; it->re = kx_re(pat); it->md = pcre2_match_data_create_from_pattern(it->re, NULL);
-    it->start = 0; it->done = 0; it->last_empty_at = -1;
+    it->start = 0; it->done = 0; it->last_empty_at = -1; it->utf_checked = 0;
 }
 static int kx_re_next(KReIt *it, PCRE2_SIZE **ov) {
     while (!it->done && it->start <= (PCRE2_SIZE)it->s->len) {
         uint32_t opts = 0;
         if ((int64_t)it->start == it->last_empty_at) opts = PCRE2_NOTEMPTY_ATSTART | PCRE2_ANCHORED;
-        int rc = pcre2_match(it->re, (PCRE2_SPTR)it->s->data, it->s->len, it->start, opts, it->md, NULL);
+        /* PCRE2 checks the whole subject is valid UTF-8 on every call unless told not to, which made finding
+         * many matches O(length * matches). Check once per scan, on the first call. */
+        int rc = pcre2_match(it->re, (PCRE2_SPTR)it->s->data, it->s->len, it->start, opts | it->utf_checked, it->md, NULL);
+        it->utf_checked = PCRE2_NO_UTF_CHECK;
         if (rc < 0) {
             if (opts) {   /* no non-empty match here: move on one character */
                 it->last_empty_at = -1;
