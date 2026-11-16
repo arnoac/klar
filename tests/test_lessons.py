@@ -153,6 +153,35 @@ fn main() uses io {
         r = klar("check", os.path.join(d, "both.klar"))
         self.assertNotEqual(r.returncode, 0)
 
+    def test_std_types_reached_indirectly_stay_free(self):
+        # The notes_api evaluation task declares its own `struct ApiError`; it broke once std.api (which has an
+        # ApiError enum with Refused and Internal) was loaded by a module it imports.
+        task = os.path.join(ROOT, "eval", "tasks", "notes_api", "reference", "klar", "main.klar")
+        with open(task, encoding="utf-8") as f:
+            src = f.read().replace("use std.process { env_get }\n", "use std.process { env_get }\nuse calls { notes_path }\n", 1)
+        d = write({
+            "main.klar": src,
+            "calls.klar": 'use std.api { Api, ApiError, Refused, api_path, api_error_text }\n'
+                          'fn notes_path() -> str { return api_path(notes_call()) }\n'
+                          'fn notes_call() -> Api[unit, str] { return Api("notes") }\n'
+                          'fn refusal() -> ApiError { return Refused(404, "gone") }\n'
+                          'fn refusal_text() -> str { return api_error_text(refusal()) }\n',
+            "small.klar": 'use calls { notes_path, refusal_text }\nuse std.json { json_encode }\n'
+                          'struct ApiError { error: str }\nenum Problem { Refused(why: str), Internal }\n'
+                          'fn main() uses io {\n  print(json_encode(ApiError(error: notes_path())))\n'
+                          '  print(refusal_text())\n  print(Refused("no"))\n}\n',
+            "both.klar": 'use std.api { ApiError }\nenum Problem { Refused(why: str) }\nfn main() uses io { print(1) }\n',
+        })
+        r = klar("check", os.path.join(d, "main.klar"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for name, cmd in runners(os.path.join(d, "small.klar")).items():
+            with self.subTest(backend=name):
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                self.assertEqual(r.stdout, '{"error":"/api/notes"}\ngone\nRefused(why: "no")\n', r.stderr)
+        # a module that sees both definitions is still a real clash
+        r = klar("check", os.path.join(d, "both.klar"))
+        self.assertIn("E202", r.stdout + r.stderr)
+
     def test_fmt_closes_a_continued_line_back_to_its_statement(self):
         src = '''fn f(x: int) -> int {
   match g(x,

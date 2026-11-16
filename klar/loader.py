@@ -88,9 +88,7 @@ def _is_std(module):
 
 def _rename(node, old, new):
     if isinstance(node, Node):
-        if node.kind == "Name" and node.name == old:
-            node.name = new
-        elif node.kind == "MethodCall" and node.name == old:
+        if node.kind in ("Name", "MethodCall", "TName", "PVariant") and getattr(node, "name", None) == old:
             node.name = new
         for v in node.__dict__.values():
             _rename(v, old, new)
@@ -106,6 +104,10 @@ def _defined(d):
         yield from (v.name for v in d.variants)
     if d.kind == "Trait":
         yield from (m.name for m in d.methods)
+
+
+# Standard modules whose types and variants the runtimes build or read by name: these stay reserved program-wide.
+RUNTIME_STD_MODULES = {"http", "json", "sqlite", "html", "ui", "task", "process"}
 
 
 def rename_private_library_names(decls, modules, package):
@@ -151,3 +153,47 @@ def rename_private_library_names(decls, modules, package):
                 other.names = [(new if n == old else n, t) for n, t in other.names]
                 rename_in(other.module, old, new)
         d.name = new
+
+    # Types and enum variants of the standard library: renamed the same way, so a library a program reaches only
+    # indirectly (std.web importing std.api) does not take `ApiError` or `Refused` away from it. Modules that
+    # import an enum see its variants too.
+    def rename_everywhere(module, old, new):
+        for o in decls:
+            if o.module == module and o.kind != "Use":
+                _rename(o, old, new)
+
+    enums_holding = {}      # variant name -> {(module, enum name)}
+    for d in decls:
+        if d.kind == "Enum":
+            for v in d.variants:
+                enums_holding.setdefault(v.name, set()).add((d.module, d.name))
+
+    def sees_other(module, name, lib_mod):
+        """Does `module` define `name`, or import it (or an enum holding it) from somewhere other than lib_mod?"""
+        if module in defined_in.get(name, ()):
+            return True
+        others = {m for m in defined_in.get(name, ()) if m != lib_mod}
+        wanted = {name} | {e for m, e in enums_holding.get(name, ()) if m in others}
+        return any(u.kind == "Use" and u.module == module and getattr(u, "target_module", None) in others
+                   and any(n in wanted for n, _ in u.names) for u in decls)
+
+    for d in decls:
+        mod = d.module
+        if pkg_of(mod) != "std" or d.kind not in ("Struct", "Enum", "ExternType") \
+                or modules.get(mod, "").split(".")[-1] in RUNTIME_STD_MODULES:
+            continue
+        names = [(d.name, d)] + ([(v.name, v) for v in d.variants] if d.kind == "Enum" else [])
+        for old, holder in names:
+            if len(owners.get(old, ())) < 2:
+                continue
+            seen_via = {old, d.name}
+            importers = [u for u in decls if u.kind == "Use" and getattr(u, "target_module", None) == mod
+                         and u.module != mod and any(n in seen_via for n, _ in u.names)]
+            if any(sees_other(u.module, old, mod) for u in importers):
+                continue        # a module sees both definitions: a real clash, reported by the checker
+            new = "std_" + modules.get(mod, "x").split(".")[-1] + "__" + old
+            rename_everywhere(mod, old, new)
+            for u in importers:
+                u.names = [(new if n == old else n, t) for n, t in u.names]
+                rename_everywhere(u.module, old, new)
+            holder.name = new
