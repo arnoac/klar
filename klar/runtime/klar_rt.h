@@ -179,6 +179,18 @@ static KStr *k_str_new(const char *p, int64_t n) {
     return s;
 }
 static KStr *k_cstr(const char *p) { return k_str_new(p, (int64_t)strlen(p)); }
+/* A piece of a string (index, slice, chars). One-character ASCII pieces are shared constants, so walking a
+ * string character by character does not allocate. Only use this where the result is never written to. */
+static struct { int64_t len, cps; char data[2]; } k_ascii1[128];
+static KStr *k_str_piece(const char *p, int64_t n) {
+    if (n == 1 && (unsigned char)p[0] < 128) {
+        unsigned char c = (unsigned char)p[0];
+        if (!k_ascii1[c].len) { k_ascii1[c].cps = 1; k_ascii1[c].data[0] = (char)c; k_ascii1[c].len = 1; }
+        return (KStr *)&k_ascii1[c];
+    }
+    KStr *s = k_str_new(p, n);
+    return s;
+}
 
 static int64_t k_str_cps(KStr *s) {
     if (s->cps < 0) {
@@ -203,6 +215,22 @@ static int64_t k_str_cmp(KStr *a, KStr *b) {
     int r = memcmp(a->data, b->data, n);
     if (r) return r;
     return a->len < b->len ? -1 : a->len > b->len;
+}
+/* `v = v + t` on a str var: append in place while v owns its buffer (*cap > 0 is its capacity; see
+ * ownership.py), otherwise copy into a fresh buffer with room to grow, which v then owns. */
+static KStr *k_str_append_owned(KStr *s, int64_t *cap, KStr *t) {
+    int64_t n = s->len + t->len;
+    if (n > *cap) {
+        int64_t c = n < 32 ? 64 : n * 2;
+        KStr *r = (KStr *)K_ALLOC_ATOMIC(k_size(c, 1, sizeof(KStr) + 1));
+        memcpy(r->data, s->data, s->len);
+        r->len = s->len; r->cps = s->cps;
+        s = r; *cap = c;
+    }
+    memcpy(s->data + s->len, t->data, t->len);
+    s->cps = (s->cps >= 0 && t->cps >= 0) ? s->cps + t->cps : -1;
+    s->len = n; s->data[n] = 0;
+    return s;
 }
 static KStr *k_str_concat(KStr *a, KStr *b) {
     KStr *s = k_str_alloc(a->len + b->len);
@@ -677,14 +705,14 @@ static KStr *k_str_index(KStr *s, int64_t i, int line, int col) {
     int64_t n = k_str_cps(s);
     if (i < 0 || i >= n) k_fail("E401", line, col, "index %lld is out of bounds for length %lld", (long long)i, (long long)n);
     int64_t a = k_str_off(s, i), b = k_str_off(s, i + 1);
-    return k_str_new(s->data + a, b - a);
+    return k_str_piece(s->data + a, b - a);
 }
 static KStr *k_str_slice(KStr *s, int64_t a, int64_t b) {
     int64_t n = k_str_cps(s);
     if (a < 0) a = 0; if (a > n) a = n;
     if (b < a) b = a; if (b > n) b = n;
     int64_t x = k_str_off(s, a), y = k_str_off(s, b);
-    return k_str_new(s->data + x, y - x);
+    return k_str_piece(s->data + x, y - x);
 }
 static KList *k_str_chars(KStr *s) {
     int64_t n = k_str_cps(s);
@@ -692,7 +720,7 @@ static KList *k_str_chars(KStr *s) {
     int64_t start = 0, k = 0;
     for (int64_t i = 1; i <= s->len; i++) {
         if (i == s->len || ((unsigned char)s->data[i] & 0xC0) != 0x80) {
-            r->buf->data[k++] = k_p2s(k_str_new(s->data + start, i - start));
+            r->buf->data[k++] = k_p2s(k_str_piece(s->data + start, i - start));
             start = i;
         }
     }

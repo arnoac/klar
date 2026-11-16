@@ -1,0 +1,28 @@
+// `s = s + t` on a str var appends in place while only s holds the string; no other value may see a change.
+fn main() uses io {
+  var s = ""
+  for i in range(0, 100000) { s = s + "ab" }
+  print("{len(s)} {s[0]}{s[199999]}")
+  var t = "x"
+  t = t + "y" + "z"
+  let snap = t
+  t = t + "!"
+  t = t + t
+  print("{snap} {t} {len(t)}")
+  var u = "é"
+  u = u + "ü" + "ab"
+  let mid = u
+  u = u + "c"
+  print("{u} {len(u)} {u[1]} {mid} {len(mid)}")
+  var parts: list[str] = []
+  var w = ""
+  for c in chars("hello") {
+    w = w + c
+    parts = push(parts, w)
+  }
+  print(join(parts, ","))
+  let text = "a,b"
+  var acc = slice(text, 0, 1)
+  acc = acc + "z"
+  print("{acc} {text} {slice(text, 2, 3)}")
+}

@@ -12,18 +12,18 @@ fn complement_table() -> map[str, str] {
 fn flush(header: str, lines: list[str], table: map[str, str]) uses io {
   if header == "" { return }
   print(header)
-  let cs = chars(join(lines, ""))
-  var line: list[str] = []
-  var i = len(cs) - 1
+  let seq = join(lines, "")
+  var line = ""
+  var i = len(seq) - 1
   while i >= 0 {
-    line = push(line, table[cs[i]])
+    line = line + table[seq[i]]
     if len(line) == 60 {
-      print(join(line, ""))
-      line = []
+      print(line)
+      line = ""
     }
     i = i - 1
   }
-  if len(line) > 0 { print(join(line, "")) }
+  if len(line) > 0 { print(line) }
 }
 
 fn main() uses io {

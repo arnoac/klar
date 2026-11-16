@@ -7,6 +7,7 @@ write straight into the buffer, which is what makes array code run at C speed. R
 keeps the flag; any other use of `v` (passing it on, storing it, iterating it) clears the flag first, so no
 other value can ever observe the in-place writes. Values stay immutable as far as any program can tell.
 Maps work the same way with `v = put(v, k, x)`; `get(v, k)` and `has(v, k)` are reads that keep the flag.
+Strings too, with `v = v + a + b`: while v owns its buffer the pieces are appended in place.
 """
 
 LIST_UPDATES = ("set_at", "push")
@@ -49,3 +50,16 @@ def is_fresh(e, fns):
         return True
     return (e.kind == "Call" and getattr(e, "target_kind", "") == "fn" and e.callee.kind == "Name"
             and e.callee.name == "range" and "range" not in fns)
+
+
+def str_append(s):
+    """For `v = v + a`, `v = v + a + b`, ... return the appended expressions [a, b, ...], else None."""
+    parts = []
+    e = s.value
+    while e.kind == "Binary" and e.op == "+":
+        parts.append(e.right)
+        e = e.left
+    if parts and e.kind == "Name" and e.name == s.name:
+        parts.reverse()
+        return parts
+    return None

@@ -8,7 +8,7 @@ import threading
 from dataclasses import dataclass
 
 from .errors import KlarError
-from .ownership import self_update, LIST_UPDATES, MAP_UPDATES
+from .ownership import self_update, str_append, LIST_UPDATES, MAP_UPDATES
 from .syntax import Node, MAX_TUPLE, tuple_name, is_tuple_name
 from .interop import Converter, Opaque, PyFn, InteropError, resolve_target
 from .types import TCon, prune, resolve, substitute
@@ -59,6 +59,16 @@ class FnRef:
 class FrozenMap(dict):
     def __hash__(self):
         return hash(tuple(sorted(self.items(), key=repr)))
+
+
+def _is_str(t):
+    t = prune(t) if t is not None else None
+    return isinstance(t, TCon) and t.name == "str"
+
+
+class OwnedStr(list):
+    """The pieces of a string held only by one var and built with `v = v + t` (see Interpreter.update_in_place);
+    any read of the var joins them into an ordinary str first."""
 
 
 class OwnedMap(dict):
@@ -346,8 +356,16 @@ class Interpreter:
             env.vars[s.name] = self.eval(s.value, env)
         elif k == "Assign":
             steps = self_update(s, self.fns, LIST_UPDATES) or self_update(s, self.fns, MAP_UPDATES)
+            parts = str_append(s) if steps is None and _is_str(getattr(s.value, "ty", None)) else None
             if steps is not None:
                 self.update_in_place(s.name, steps, env)
+            elif parts is not None:
+                vals = [self.eval(x, env) for x in parts]
+                cur = env.get(s.name)
+                if type(cur) is not OwnedStr:
+                    cur = OwnedStr([cur])
+                cur.extend(vals)
+                env.set(s.name, cur)
             else:
                 env.set(s.name, self.eval(s.value, env))
         elif k == "ExprStmt":
@@ -413,8 +431,8 @@ class Interpreter:
                 pass
             else:
                 tv = type(v)
-                if tv is list or tv is OwnedMap:    # an owned var (see update_in_place): hand out a snapshot
-                    v = tuple(v) if tv is list else FrozenMap(v)
+                if tv is list or tv is OwnedMap or tv is OwnedStr:  # an owned var (see update_in_place): snapshot
+                    v = tuple(v) if tv is list else FrozenMap(v) if tv is OwnedMap else "".join(v)
                     env.set(e.name, v)
                 return v
             if e.name in self.variants:
@@ -516,9 +534,12 @@ class Interpreter:
         """Evaluate e, but read an owned list var without snapshotting it (for xs[i] and len(xs))."""
         if e.kind == "Name":
             try:
-                return env.get(e.name)
+                v = env.get(e.name)
             except KeyError:
                 pass
+            else:
+                if type(v) is not OwnedStr:
+                    return v
         return self.eval(e, env)
 
     def update_in_place(self, name, steps, env):

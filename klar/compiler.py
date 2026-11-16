@@ -9,7 +9,7 @@ The generated C is self-contained (the runtime is inlined) and compiles with tcc
 import os
 
 from .errors import KlarError
-from .ownership import self_update, is_fresh, LIST_UPDATES, MAP_UPDATES
+from .ownership import self_update, is_fresh, str_append, LIST_UPDATES, MAP_UPDATES
 from .syntax import Node, is_tuple_name
 from .types import TCon, TFn, TVar, INT, prune, resolve, substitute, show
 
@@ -90,6 +90,7 @@ class FnCtx:
         self.is_lambda = is_lambda
         self.locals = {}
         self.owned = set()      # list vars with an ownership flag o_<name>
+        self.owned_str = set()  # str vars with a capacity c_<name> (> 0 while the var owns its buffer)
 
 
 class Compiler:
@@ -464,8 +465,27 @@ class Compiler:
                 if s.mutable and self.kind(t) in ("list", "map"):
                     self.ctx.owned.add(s.name)
                     out.append(f"int o_{s.name} = {1 if is_fresh(s.value, self.fns) else 0}; (void)o_{s.name};")
+                elif s.mutable and self.kind(t) == "str":
+                    self.ctx.owned_str.add(s.name)
+                    out.append(f"int64_t c_{s.name} = 0; (void)c_{s.name};")
         elif k == "Assign":
             t = self.ctx.locals[s.name]
+            if s.name in self.ctx.owned_str:
+                parts = str_append(s)
+                if parts is not None:
+                    tmps = []
+                    out.append("{")
+                    for p_ in parts:
+                        tv = self.tmp()
+                        out.append(f"KStr *{tv} = {self.expr(p_)};")
+                        tmps.append(tv)
+                    for tv in tmps:
+                        out.append(f"v_{s.name} = k_str_append_owned(v_{s.name}, &c_{s.name}, {tv});")
+                    out.append("}")
+                    return
+                out.append(f"v_{s.name} = {self.coerce(self.expr(s.value), self.T(s.value.ty), t)};")
+                out.append(f"c_{s.name} = 0;")
+                return
             upd = None
             if s.name in self.ctx.owned:
                 upd = self_update(s, self.fns, MAP_UPDATES if self.kind(t) == "map" else LIST_UPDATES)
@@ -627,6 +647,8 @@ class Compiler:
         if name in self.ctx.locals:
             if name in self.ctx.owned and not getattr(e, "safe_read", False):
                 return f"(o_{name} = 0, v_{name})"
+            if name in self.ctx.owned_str and not getattr(e, "safe_read", False):
+                return f"(c_{name} = 0, v_{name})"
             return f"v_{name}"
         if name in self.c.variants:
             return self.nullary(name)

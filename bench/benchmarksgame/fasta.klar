@@ -51,15 +51,15 @@ fn random_fasta(header: str, f: Freq, n: int, seed0: int) -> int uses io {
   var left = n
   while left > 0 {
     let line = min(left, 60)
-    var buf: list[str] = []
+    var buf = ""
     for _i in range(0, line) {
       seed = next_seed(seed)
       let r = to_float(seed) / 139968.0
       var j = 0
       while j < m - 1 and f.probs[j] <= r { j = j + 1 }
-      buf = push(buf, chars[j])
+      buf = buf + chars[j]
     }
-    print(join(buf, ""))
+    print(buf)
     left = left - line
   }
   return seed

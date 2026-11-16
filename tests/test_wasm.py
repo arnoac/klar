@@ -60,7 +60,7 @@ class WasmPrograms(unittest.TestCase):
                     self.check_same(os.path.join(EXAMPLES, f), stdin)
 
     def test_feature_programs(self):
-        for f in ("features.klar", "traits.klar", "owned_lists.klar", "owned_maps.klar", "json_auto.klar", "web_features.klar"):
+        for f in ("features.klar", "traits.klar", "owned_lists.klar", "owned_maps.klar", "owned_strings.klar", "json_auto.klar", "web_features.klar"):
             with self.subTest(program=f):
                 self.check_same(os.path.join(PROGRAMS, f))
 

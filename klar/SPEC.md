@@ -212,8 +212,8 @@ catches `push(xs, 1)` written for `xs = push(xs, 1)`.
 
 A function with a non-unit return type must `return` on every path (E305).
 
-**Updates in loops.** `xs = set_at(xs, i, v)`, `xs = push(xs, v)` and `m = put(m, k, v)` on a `var` cost
-O(1) while only that variable holds the value (`xs[i]`, `len`, `get`, `has` keep that; other uses take a
+**Updates in loops.** `xs = set_at(xs, i, v)`, `xs = push(xs, v)`, `m = put(m, k, v)` and `s = s + t` on a
+`var` cost O(1) while only that variable holds the value (`xs[i]`, `len`, `get`, `has` keep that; other uses take a
 snapshot). Keep hot loop data in local `var`s, not struct fields.
 
 ## 6. Expressions

@@ -88,6 +88,11 @@ class CompiledMatchesInterpreter(unittest.TestCase):
             with self.subTest(release=release):
                 self.check_same(os.path.join(PROGRAMS, "owned_maps.klar"), release=release)
 
+    def test_strings_appended_in_place_stay_immutable(self):
+        for release in ((False, True) if HAVE_OPT_CC else (False,)):
+            with self.subTest(release=release):
+                self.check_same(os.path.join(PROGRAMS, "owned_strings.klar"), release=release)
+
     def test_runtime_errors_have_same_codes(self):
         cases = {
             "E401": "let xs = [1]\nprint(xs[3])",
