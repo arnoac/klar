@@ -16,7 +16,8 @@ from klar.fmt import format_source  # noqa: E402
 
 CC = shutil.which("tcc") or shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 
-CRYPTO = '''use std.crypto { crypto_sha256, crypto_hmac, crypto_token, crypto_password_hash, crypto_password_verify, crypto_equal }
+CRYPTO = '''use std.crypto { crypto_sha256, crypto_hmac, crypto_token, crypto_password_hash, crypto_password_verify, crypto_equal,
+  crypto_password_needs_rehash }
 fn main() uses io {
   print(crypto_sha256(""))
   print(crypto_sha256("héllo wörld"))
@@ -27,7 +28,11 @@ fn main() uses io {
   print(len(t))
   print(t != crypto_token(16))
   let h = crypto_password_hash("s3cret pass")
-  print(starts_with(h, "pbkdf2_sha256$100000$"))
+  print(starts_with(h, "pbkdf2_sha256$600000$"))
+  print(crypto_password_needs_rehash(h))
+  let old = "pbkdf2_sha256$100000$0123456789abcdef0123456789abcdef$3b2380af99b053e37e794a5814af6e855acab9f340f7d0fb37a55edf155ab5f5"
+  print(crypto_password_verify("s3cret pass", old))
+  print(crypto_password_needs_rehash(old))
   print(crypto_password_verify("s3cret pass", h))
   print(crypto_password_verify("s3cret pas", h))
   print(crypto_password_verify("x", "pbkdf2_sha256$abc$$"))
@@ -43,6 +48,9 @@ a1003f7d04a4115711d0b48a2eaf1359ce565d2d2a6fd65098dfcffadeeef59f
 f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8
 {longkey}
 32
+true
+true
+false
 true
 true
 true

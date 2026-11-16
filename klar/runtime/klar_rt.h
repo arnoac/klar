@@ -15,15 +15,29 @@
 #include <unistd.h>
 #include <sys/resource.h>
 
+/* Every allocation is checked: running out of memory stops the program with an error instead of handing
+ * back NULL. Sizes are checked before they are computed (k_size), so they cannot wrap around. */
+#define K_MAX_ALLOC ((int64_t)1 << 44)
+__attribute__((noreturn, cold)) static void k_oom(int64_t n) {
+    fflush(stdout);
+    fprintf(stderr, "error[E407]: out of memory (asked for a value of size %lld)\n", (long long)n);
+    exit(1);
+}
+static inline void *k_nn(void *p, int64_t n) { if (__builtin_expect(!p, 0)) k_oom(n); return p; }
+/* n items of `each` bytes plus `extra`, refusing sizes that would overflow */
+static inline int64_t k_size(int64_t n, int64_t each, int64_t extra) {
+    if (n < 0 || n > (K_MAX_ALLOC - extra) / each) k_oom(n);
+    return n * each + extra;
+}
 #ifdef KLAR_GC
 #include <gc.h>
-#define K_ALLOC(n) GC_MALLOC(n)
-#define K_ALLOC_ATOMIC(n) GC_MALLOC_ATOMIC(n)
-#define K_REALLOC(p, n) GC_REALLOC(p, n)
+#define K_ALLOC(n) k_nn(GC_MALLOC(n), (int64_t)(n))
+#define K_ALLOC_ATOMIC(n) k_nn(GC_MALLOC_ATOMIC(n), (int64_t)(n))
+#define K_REALLOC(p, n) k_nn(GC_REALLOC(p, n), (int64_t)(n))
 #else
-#define K_ALLOC(n) malloc(n)
-#define K_ALLOC_ATOMIC(n) malloc(n)
-#define K_REALLOC(p, n) realloc(p, n)
+#define K_ALLOC(n) k_nn(malloc(n), (int64_t)(n))
+#define K_ALLOC_ATOMIC(n) k_nn(malloc(n), (int64_t)(n))
+#define K_REALLOC(p, n) k_nn(realloc(p, n), (int64_t)(n))
 #endif
 
 typedef uint64_t KS;
@@ -150,7 +164,7 @@ static inline int64_t k_rem(int64_t a, int64_t b, int l, int c) {
 typedef struct KStr { int64_t len; int64_t cps; char data[]; } KStr;   /* cps: code points, -1 = unknown */
 
 static KStr *k_str_alloc(int64_t n) {
-    KStr *s = (KStr *)K_ALLOC_ATOMIC(sizeof(KStr) + n + 1);
+    KStr *s = (KStr *)K_ALLOC_ATOMIC(k_size(n, 1, sizeof(KStr) + 1));
     s->len = n; s->cps = -1; s->data[n] = 0;
     return s;
 }
@@ -197,6 +211,7 @@ typedef struct { char *p; int64_t len, cap; } KSB;
 static inline void ksb_init(KSB *b) { b->cap = 32; b->len = 0; b->p = (char *)K_ALLOC_ATOMIC(b->cap); }
 static void ksb_add(KSB *b, const char *s, int64_t n) {
     if (b->len + n > b->cap) {
+        k_size(b->len + n, 2, 0);
         while (b->len + n > b->cap) b->cap *= 2;
         b->p = (char *)K_REALLOC(b->p, b->cap);
     }
@@ -274,7 +289,7 @@ typedef struct { KBuf *buf; int64_t len; int64_t ver; } KList;
 static KList *k_list_with_cap(int64_t len, int64_t cap) {
     if (cap < 4) cap = 4;
     /* one allocation holds the list header, the buffer header and the first data block */
-    KList *l = (KList *)K_ALLOC(sizeof(KList) + sizeof(KBuf) + sizeof(KS) * cap);
+    KList *l = (KList *)K_ALLOC(k_size(cap, sizeof(KS), sizeof(KList) + sizeof(KBuf)));
     KBuf *b = (KBuf *)(l + 1);
     b->used = len; b->cap = cap; b->ver = 0; b->log = NULL; b->nlog = 0; b->caplog = 0;
     b->data = (KS *)(b + 1);
@@ -283,6 +298,7 @@ static KList *k_list_with_cap(int64_t len, int64_t cap) {
 }
 static void k_buf_grow(KBuf *b) {
     int64_t cap = b->cap * 2;
+    k_size(cap, sizeof(KS), 0);
     if (b->data == (KS *)(b + 1)) {
         KS *d = (KS *)K_ALLOC(sizeof(KS) * cap);
         memcpy(d, b->data, sizeof(KS) * b->used);
@@ -715,6 +731,7 @@ static KStr *k_replace(KStr *s, KStr *old, KStr *new_) {
 }
 static KStr *k_repeat(KStr *s, int64_t n) {
     if (n < 0) n = 0;
+    if (s->len && n > K_MAX_ALLOC / s->len) k_oom(n);
     KStr *r = k_str_alloc(s->len * n);
     for (int64_t i = 0; i < n; i++) memcpy(r->data + i * s->len, s->data, s->len);
     return r;

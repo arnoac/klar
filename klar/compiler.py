@@ -31,7 +31,7 @@ for _mod, _names in {
     "randomlib": "seed int_between unit_float",
     "processlib": "run env_get exit",
     "jsonlib": "parse stringify pretty",
-    "cryptolib": "sha256 hmac_sha256 token password_hash password_verify equal",
+    "cryptolib": "sha256 hmac_sha256 token password_hash password_verify needs_rehash equal",
 }.items():
     for _n in _names.split():
         NATIVE[f"klar.stdpy.{_mod}.{_n}"] = (f"kx_{_mod[:-3]}_{_n}", None)

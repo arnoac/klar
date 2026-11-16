@@ -62,6 +62,7 @@ function $http_response(status, headers, body) {
   return new $structs.HttpResponse(status, headers, body);
 }
 let $sqlite = null;
+const $PBKDF2_ITERS = 600000;
 
 Object.assign($std, {
   "klar.stdpy.fslib.read": p => $tryio(() => $fs.readFileSync(p, "utf8"), p),
@@ -82,10 +83,17 @@ Object.assign($std, {
   },
   "klar.stdpy.cryptolib.sha256": t => $crypto.createHash("sha256").update(t, "utf8").digest("hex"),
   "klar.stdpy.cryptolib.hmac_sha256": (k, t) => $crypto.createHmac("sha256", Buffer.from(k, "utf8")).update(t, "utf8").digest("hex"),
-  "klar.stdpy.cryptolib.token": n => $crypto.randomBytes(Math.max(0, Number(n))).toString("hex"),
+  "klar.stdpy.cryptolib.token": n => {
+    if (!(n >= 16 && n <= 1048576)) throw new Error(`ValueError: crypto_token(${n}): use between 16 and 1048576 bytes (16 bytes = 128 bits is the least that cannot be guessed)`);
+    return $crypto.randomBytes(Number(n)).toString("hex");
+  },
   "klar.stdpy.cryptolib.password_hash": p => {
     const salt = $crypto.randomBytes(16).toString("hex");
-    return `pbkdf2_sha256$100000$${salt}$${$crypto.pbkdf2Sync(Buffer.from(p, "utf8"), Buffer.from(salt, "utf8"), 100000, 32, "sha256").toString("hex")}`;
+    return `pbkdf2_sha256$${$PBKDF2_ITERS}$${salt}$${$crypto.pbkdf2Sync(Buffer.from(p, "utf8"), Buffer.from(salt, "utf8"), $PBKDF2_ITERS, 32, "sha256").toString("hex")}`;
+  },
+  "klar.stdpy.cryptolib.needs_rehash": stored => {
+    const parts = stored.split("$");
+    return !(parts.length === 4 && parts[0] === "pbkdf2_sha256" && /^[0-9]+$/.test(parts[1]) && Number(parts[1]) >= $PBKDF2_ITERS);
   },
   "klar.stdpy.cryptolib.password_verify": (p, stored) => {
     const parts = stored.split("$");
@@ -131,6 +139,7 @@ Object.assign($std, {
   "klar.stdpy.sqlitelib.close": db => { db.close(); },
 
   "klar.stdpy.httplib.request": async (method, url, headers, body) => {
+    if (!/^https?:\/\//i.test(url)) return $Err(`ValueError: unknown url type: '${url}' (http_request only fetches http:// and https:// URLs)`);
     try {
       const r = await fetch(url, { method, headers: Object.fromEntries($entries(headers)), body: body === "" ? undefined : body });
       const hs = $M([...r.headers.entries()].map(([k, v]) => [k.toLowerCase(), v]));
@@ -185,19 +194,41 @@ function $stream(res, topic) {
   const ping = setInterval(() => res.write(": ping\n\n"), 15000);
   res.on("close", () => { clearInterval(ping); subs.delete(res); });
 }
+// Request limits, the same in every backend: bodies up to KLAR_MAX_BODY bytes (default 10 MiB), 30 s to send a
+// request, 1024 open connections.
+function $max_body() { const n = Number(process.env.KLAR_MAX_BODY || 0); return n > 0 ? n : 10 * 1024 * 1024; }
+// a header name or value that would end the header line early (response splitting)
+function $bad_header(s, name) { return /[\r\n\0]/.test(s) || (name && !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(s)); }
+function $refuse(res, status) {
+  res.writeHead(status, { "content-type": "text/plain; charset=utf-8", "content-length": "0", "connection": "close" });
+  res.end();
+}
 // HTTP server: each request is handled as it arrives; handlers are async, so requests interleave at io calls.
 function $serve(port, handler, max) {
   $flush();
   return new Promise(resolve => {
     let served = 0;
-    const server = $http.createServer((req, res) => {
+    const server = $http.createServer({ requestTimeout: 30000, headersTimeout: 30000, maxHeaderSize: 65536 }, (req, res) => {
+      if ("transfer-encoding" in req.headers) return $refuse(res, 501);
+      const limit = $max_body();
+      if (Number(req.headers["content-length"] || 0) > limit) return $refuse(res, 413);
       const chunks = [];
-      req.on("data", c => chunks.push(c));
-      req.on("end", async () => {
+      let size = 0;
+      req.on("data", c => {
+        size += c.length;
+        if (size > limit) { req.destroy(); return; }
+        chunks.push(c);
+      });
+      req.on("end", () => respond().catch(e => {
+        $write(2, $render_error(e) + "\n");
+        if (!res.headersSent) $refuse(res, 500); else res.destroy();
+      }));
+      const respond = async () => {
         const u = new URL(req.url, "http://x");
         const query = $M([...u.searchParams]);
         const headers = $M(Object.entries(req.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : v]));
-        const kreq = new $structs.HttpRequest(req.method, decodeURIComponent(u.pathname), query, headers,
+        // the path as sent (still percent-encoded), as the other backends see it; std.web decodes parameters
+        const kreq = new $structs.HttpRequest(req.method, u.pathname, query, headers,
           Buffer.concat(chunks).toString("utf8"), $M([]));
         let status = 500, hs = { "content-type": "text/plain; charset=utf-8" }, body = "internal error\n";
         try {
@@ -223,15 +254,25 @@ function $serve(port, handler, max) {
           try { payload = $fs.readFileSync(p); }
           catch { status = 404; payload = Buffer.from("not found\n"); hs = { "content-type": "text/plain; charset=utf-8" }; }
         }
-        if (hs["set-cookie"]) hs["set-cookie"] = hs["set-cookie"].split("\n");
-        hs["content-length"] = String(payload.length);
-        res.writeHead(status, hs);
+        const out = {};
+        for (const [k, v] of Object.entries(hs)) {
+          if ($bad_header(k, true)) { $write(2, "klar: dropped a response header with an invalid name\n"); continue; }
+          const lines = (k === "set-cookie" ? v.split("\n") : [v]).filter(line => {
+            if (!$bad_header(line, false)) return true;
+            $write(2, `klar: dropped response header \`${k}\`: its value contains a line break\n`);
+            return false;
+          });
+          if (lines.length) out[k] = k === "set-cookie" ? lines : lines[0];
+        }
+        out["content-length"] = String(payload.length);
+        res.writeHead(status, out);
         res.end(req.method === "HEAD" ? undefined : payload);
         $flush();
         served++;
         if (max > 0 && served >= max) server.close(() => resolve($Ok(undefined)));
-      });
+      };
     });
+    server.maxConnections = 1024;
     server.on("error", e => resolve($Err(`OSError: ${e.message}`)));
     server.listen(port, process.env.HOST || "127.0.0.1");
   });

@@ -8,10 +8,13 @@
 extern "klar.stdpy.cryptolib.sha256" fn crypto_sha256(text: str) -> str
 // HMAC-SHA-256 (for signing cookies or webhooks), as hex.
 extern "klar.stdpy.cryptolib.hmac_sha256" fn crypto_hmac(key: str, text: str) -> str
-// `bytes` secure random bytes, as hex (twice as many characters).
+// `bytes` secure random bytes, as hex (twice as many characters). At least 16 bytes (128 bits): fewer can be guessed.
 extern "klar.stdpy.cryptolib.token" fn crypto_token(bytes: int) -> str uses io
 // A salted, slow hash for storing a password: "pbkdf2_sha256$ITERATIONS$SALT$HASH".
 extern "klar.stdpy.cryptolib.password_hash" fn crypto_password_hash(password: str) -> str uses io
+// Whether a stored hash was made with fewer iterations than today's default: after a successful login, hash
+// the password again and store the new value.
+extern "klar.stdpy.cryptolib.needs_rehash" fn crypto_password_needs_rehash(stored: str) -> bool
 // Whether `password` matches a value made by crypto_password_hash (compared in constant time).
 extern "klar.stdpy.cryptolib.password_verify" fn crypto_password_verify(password: str, stored: str) -> bool
 // Compare two secrets without leaking where they differ through timing.

@@ -442,13 +442,13 @@ static void krandom_bytes(uint8_t *p, size_t n) {
     fclose(f);
 }
 static KStr *kx_crypto_token(int64_t n) {
-    if (n < 0) n = 0;
-    uint8_t *buf = (uint8_t *)malloc((size_t)n + 1);
+    if (n < 16 || n > (1 << 20))
+        k_fail("E407", kx_line, kx_col, "ValueError: crypto_token(%lld): use between 16 and 1048576 bytes (16 bytes = 128 bits is the least that cannot be guessed)", (long long)n);
+    uint8_t *buf = (uint8_t *)K_ALLOC_ATOMIC(n + 1);
     krandom_bytes(buf, (size_t)n);
-    KStr *s = khex(buf, (size_t)n);
-    free(buf);
-    return s;
+    return khex(buf, (size_t)n);
 }
+#define KX_PBKDF2_ITERS 600000
 /* PBKDF2-HMAC-SHA-256 with one 32-byte block; the HMAC pads are hashed once and reused for every iteration */
 static void kpbkdf2(const uint8_t *pw, size_t pn, const uint8_t *salt, size_t sn, int64_t iters, uint8_t out[32]) {
     uint8_t k[64] = {0}, pad[64], u[32];
@@ -473,15 +473,16 @@ static KStr *kx_crypto_password_hash(KStr *pw) {
     krandom_bytes(salt_raw, 16);
     KStr *salt = khex(salt_raw, 16);
     KX_IO_BEGIN;
-    kpbkdf2((const uint8_t *)pw->data, (size_t)pw->len, (const uint8_t *)salt->data, 32, 100000, dk);
+    kpbkdf2((const uint8_t *)pw->data, (size_t)pw->len, (const uint8_t *)salt->data, 32, KX_PBKDF2_ITERS, dk);
     KX_IO_END;
-    KStr *h = khex(dk, 32);
-    size_t n = 22 + 32 + 64 + 1;
-    char *buf = (char *)malloc(n + 1);
-    snprintf(buf, n + 1, "pbkdf2_sha256$100000$%s$%s", salt->data, h->data);
-    KStr *r = k_cstr(buf);
-    free(buf);
-    return r;
+    return kx_fmt("pbkdf2_sha256$%d$%s$%s", KX_PBKDF2_ITERS, salt->data, khex(dk, 32)->data);
+}
+static int64_t kx_crypto_needs_rehash(KStr *stored) {
+    const char *p = stored->data;
+    if (strncmp(p, "pbkdf2_sha256$", 14) != 0) return 1;
+    long long n = 0;
+    for (p += 14; *p >= '0' && *p <= '9' && n < 1000000000; p++) n = n * 10 + (*p - '0');
+    return *p != '$' || n < KX_PBKDF2_ITERS;
 }
 static int64_t kx_crypto_equal(KStr *a, KStr *b) {
     if (a->len != b->len) return 0;
@@ -1704,23 +1705,49 @@ static const char *kx_reason(int64_t s) {
     case 503: return "Service Unavailable"; default: return "";
     }
 }
+/* request limits: headers up to 64 KiB, bodies up to KLAR_MAX_BODY bytes (default 10 MiB) */
+#define KX_MAX_HEAD 65536
+static int64_t kx_max_body(void) {
+    const char *v = getenv("KLAR_MAX_BODY");
+    long long n = v && *v ? atoll(v) : 0;
+    return n > 0 ? (int64_t)n : 10 * 1024 * 1024;
+}
+static void kx_refuse(int fd, const char *status) {
+    char t[160];
+    int n = snprintf(t, sizeof t, "HTTP/1.0 %s\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", status);
+    KConn c = {fd, NULL};
+    kx_conn_write(&c, t, n);
+    shutdown(fd, SHUT_WR);
+    close(fd);
+}
+/* a header name or value that would end the header line early (response splitting) */
+static int kx_bad_header(KStr *s, int name) {
+    for (int64_t i = 0; i < s->len; i++) {
+        unsigned char c = (unsigned char)s->data[i];
+        if (c == '\r' || c == '\n' || c == 0 || (name && (c <= ' ' || c == ':' || c >= 127))) return 1;
+    }
+    return name && s->len == 0;
+}
 static void kx_serve_one(int fd, KClo *handler) {
     struct timeval tv = {30, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
     KSB in; ksb_init(&in);
     char buf[65536]; ssize_t n;
     const char *hend = NULL;
     while (!(hend = kx_find(in.p, in.len, "\r\n\r\n"))) {
+        if (in.len > KX_MAX_HEAD) { kx_refuse(fd, "431 Request Header Fields Too Large"); return; }
         n = read(fd, buf, sizeof buf);
         if (n <= 0) { close(fd); return; }
         ksb_add(&in, buf, n);
     }
     int64_t hlen = hend - in.p + 4;
-    const char *sp1 = memchr(in.p, ' ', hend - in.p);
-    const char *sp2 = sp1 ? memchr(sp1 + 1, ' ', hend - sp1 - 1) : NULL;
+    if (hlen > KX_MAX_HEAD) { kx_refuse(fd, "431 Request Header Fields Too Large"); return; }
     const char *eol = kx_find(in.p, in.len, "\r\n");
-    if (!sp1) { close(fd); return; }
-    if (!sp2 || sp2 > eol) sp2 = eol;
+    const char *sp1 = memchr(in.p, ' ', eol - in.p);
+    const char *sp2 = sp1 ? memchr(sp1 + 1, ' ', eol - sp1 - 1) : NULL;
+    if (!sp1 || sp1 == in.p) { kx_refuse(fd, "400 Bad Request"); return; }
+    if (!sp2) sp2 = eol;
     KStr *method = k_str_new(in.p, sp1 - in.p);
     const char *target = sp1 + 1; int64_t tl = sp2 - target;
     const char *qm = memchr(target, '?', tl);
@@ -1736,10 +1763,20 @@ static void kx_serve_one(int fd, KClo *handler) {
             KStr *k = kx_lower(line, col - line);
             const char *v = col + 1; while (v < le && *v == ' ') v++;
             hs = k_map_put(hs, k_p2s(k), k_p2s(k_str_new(v, le - v)));
-            if (!strcmp(k->data, "content-length")) clen = atoll(v);
+            if (!strcmp(k->data, "content-length")) {
+                const char *d = v; clen = 0;
+                if (d == le) clen = -1;
+                for (; d < le && clen >= 0; d++) {
+                    if (*d < '0' || *d > '9' || clen > ((int64_t)1 << 50)) clen = -1;
+                    else clen = clen * 10 + (*d - '0');
+                }
+                if (clen < 0) { kx_refuse(fd, "400 Bad Request"); return; }
+            }
+            if (!strcmp(k->data, "transfer-encoding")) { kx_refuse(fd, "501 Not Implemented"); return; }
         }
         line = le + 2;
     }
+    if (clen > kx_max_body()) { kx_refuse(fd, "413 Payload Too Large"); return; }
     while (in.len - hlen < clen) {
         n = read(fd, buf, sizeof buf);
         if (n <= 0) break;
@@ -1781,10 +1818,13 @@ static void kx_serve_one(int fd, KClo *handler) {
     KList *ks = k_map_keys(rh), *vs = k_map_values(rh);
     for (int64_t i = 0; i < ks->len; i++) {
         KStr *k = kx_list_str(ks, i), *v = kx_list_str(vs, i);
+        if (kx_bad_header(k, 1)) { fprintf(stderr, "klar: dropped a response header with an invalid name\n"); continue; }
         const char *p = v->data, *e = p + v->len;
         for (;;) {
             const char *nl = strcmp(k->data, "set-cookie") ? NULL : memchr(p, '\n', e - p);
-            ksb_str(&out, k); ksb_c(&out, ": "); ksb_add(&out, p, (nl ? nl : e) - p); ksb_c(&out, "\r\n");
+            KStr *one = k_str_new(p, (nl ? nl : e) - p);
+            if (kx_bad_header(one, 0)) fprintf(stderr, "klar: dropped response header `%s`: its value contains a line break\n", k->data);
+            else { ksb_str(&out, k); ksb_c(&out, ": "); ksb_str(&out, one); ksb_c(&out, "\r\n"); }
             if (!nl) break;
             p = nl + 1;
         }
@@ -1843,6 +1883,7 @@ static KEnum *kx_http_serve(int64_t port, KClo *handler, int64_t max) {
             continue;
         }
         if (c < 0) continue;
+        if (kx_conn_active >= 1024) { kx_refuse(c, "503 Service Unavailable"); continue; }   /* bounded threads */
         setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
         KSrvConn *a = (KSrvConn *)K_ALLOC(sizeof(KSrvConn));
         a->fd = c; a->handler = handler;
