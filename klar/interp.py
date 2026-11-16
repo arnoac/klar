@@ -248,12 +248,14 @@ class Interpreter:
         raise KlarError(code, msg, line, col, hint, file, trace=self.trace(line))
 
     def show_file(self, module):
-        """How a module's path is shown in errors: as given on the command line for the entry file, else
-        relative to the current directory."""
-        if module is None or module == self.file:
-            return self.file
-        if self.file and os.path.abspath(module) == os.path.abspath(self.file):
-            return self.file
+        """How a module's path is shown in errors and traces: relative to the current directory when it is
+        below it, as given otherwise."""
+        if module is None:
+            module = self.file
+        if not module or module.startswith("<"):
+            return module
+        if not os.path.isabs(module):
+            return module
         rel = os.path.relpath(module)
         return module if rel.startswith("..") else rel
 
