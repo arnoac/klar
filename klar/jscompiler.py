@@ -882,8 +882,12 @@ class JSCompiler:
             return self.to_str(a[0], ts[0])
         if name == "panic":
             return f"$fail(\"E403\", {L}, \"panic: \" + {a[0]})"
+        if name == "eprint":
+            return f"$eprint({self.to_str(a[0], ts[0])})"
         if name == "read_line":
             return "$read_line()"
+        if name == "read_all":
+            return "$read_all()"
         if name == "read_file":
             return f"$read_file({a[0]})"
         if name == "write_file":

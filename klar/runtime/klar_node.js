@@ -42,6 +42,24 @@ function $read_line() {
   }
 }
 
+function $eprint(s) { $flush(); $write(2, s + "\n"); }
+function $read_all() {
+  $flush();
+  const chunk = Buffer.alloc(65536);
+  while (!$in_eof) {
+    let n = 0;
+    try { n = $fs.readSync(0, chunk, 0, chunk.length, null); }
+    catch (e) {
+      if (e.code === "EAGAIN") { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); continue; }
+      if (e.code === "EOF") n = 0; else throw e;
+    }
+    if (n === 0) $in_eof = true; else $in_buf = Buffer.concat([$in_buf, chunk.subarray(0, n)]);
+  }
+  const all = $in_buf.toString("utf8");
+  $in_buf = Buffer.alloc(0);
+  return all;
+}
+
 const $ERRNO = { ENOENT: [2, "No such file or directory"], EACCES: [13, "Permission denied"], EISDIR: [21, "Is a directory"],
   ENOTDIR: [20, "Not a directory"], EEXIST: [17, "File exists"], ENOTEMPTY: [39, "Directory not empty"], EPERM: [1, "Operation not permitted"] };
 function $oserr(e, path) {

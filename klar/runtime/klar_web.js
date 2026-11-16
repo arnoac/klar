@@ -8,6 +8,8 @@ function $flush() {
 }
 function $print_now(s) { console.log(s); }
 function $read_line() { return $None; }
+function $read_all() { return ""; }
+function $eprint(s) { $flush(); console.error(s); }
 function $read_file(p) { return $Err(`read_file is not available in the browser: '${p}'`); }
 function $write_file(p) { return $Err(`write_file is not available in the browser: '${p}'`); }
 function $args() { return $L([]); }

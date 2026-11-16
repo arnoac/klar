@@ -104,18 +104,6 @@ fn summarize(orders: list[Json]) -> Summary {
   return Summary(valid: len(seen), invalid: invalid, customers: customers, top_sku: top)
 }
 
-fn read_all() -> str uses io {
-  var lines: list[str] = []
-  var more = true
-  while more {
-    match read_line() {
-      Some(l) => lines = push(lines, l),
-      None => more = false,
-    }
-  }
-  return join(lines, "\n")
-}
-
 fn main() uses io {
   let orders = match json_parse(read_all()) {
     Ok(doc) => json_get(doc, "orders"),

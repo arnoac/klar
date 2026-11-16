@@ -61,20 +61,28 @@ From the agents' own notes and the tool logs, most important first. None of thes
    `None => break` as an arm and says an always-returning block arm does not affect the type. `break` and
    `continue` (bare or in a block) should be treated like `return`. Hit by the ledger agent; the reference
    solution hit it too. Reading every line of input is the most common loop there is, so this matters.
+   **Fixed:** `break` and `continue` arms now end value matches in every backend, and an E301 caused by a
+   `{ }` arm names that arm and says how to fix it.
 3. **No way to read all of standard input, and no stderr.** Agents loop over `read_line()` and join the
    lines. There is no `print` to standard error at all. Wanted: `read_all() -> str` (or `read_stdin`) and
-   `eprint`.
+   `eprint`. **Fixed:** built-ins `read_all()` and `eprint(value)`.
 4. **Exit codes are hard to find.** SPEC §7 has no built-in for the exit status; agents found `process_exit`
-   in `std.process` (and one wondered whether it counts as a forbidden Python extern). One line in SPEC would
-   fix this.
+   in `std.process` (and one wondered whether it counts as a forbidden Python extern). **Fixed:** SPEC §7 now
+   says how the exit status is set.
 5. **JSON numbers are floats.** `std.json` reads every number as a float, so whole numbers above 2^53 lose
    precision and a literal like `1e400` makes `json_parse` fail the whole document. `json_int` floors NaN or
    infinity without saying what happens. The typed `json_decode` reads into `int` fields, so this mostly bites
    code that has to validate untyped JSON (the `orders` task). SPEC says only "Numbers are floats".
+   **Fixed:** `json_int` returns None for numbers it cannot hold exactly (from 2^53 up, infinity), the
+   interpreter rejects `NaN` like the other backends, and SPEC says to decode into an `int` field for exact
+   integers. `Json` itself still stores floats; an exact integer variant would break existing matches.
 6. **Unwritten behaviour that agents had to read the Python sources for**: whether `read_line` strips `\r`,
    which characters `trim` removes, what `parse_int` accepts (it follows Python's `int()`, so `"+1"`, `" 1"`
    and `"1_0"` parse), whether `sort` on strings is byte or code-point order, whether the HTTP server
    URL-decodes query values and drops empty ones, and which Content-Type a response gets by default.
+   **Fixed in part:** SPEC now states what `read_line`, `parse_int`/`parse_float` and string ordering do, and
+   `parse_float` accepts the same text in every backend (it took `1_0` in the interpreter and Node and hex
+   in native code).
 7. **`null` and absent are the same in typed JSON.** `web_body` into a struct with `Option` fields cannot tell
    `{"body": null}` from `{}`, so APIs that must reject `null` have to fall back to the `Json` enum. (Found while
    writing the reference solution; the pilot agent used SQLite and the `Json` enum from the start.)

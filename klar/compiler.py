@@ -1118,11 +1118,16 @@ class Compiler:
             return self.to_str(a[0], ts[0])
         if name == "panic":
             return f"(k_fail(\"E403\", {L}, \"panic: %s\", ({a[0]})->data), (int64_t)0)"
+        if name == "eprint":
+            text = a[0] if k0 == "str" else self.to_str(a[0], ts[0])
+            return f"(k_eprint_str({text}), (int64_t)0)"
         if name == "read_line":
             return "k_read_line()"
         if name in ("read_file", "write_file") and self.target == "wasm":
             raise KlarError("E501", f"`{name}` cannot run in WebAssembly (there is no file system)", e.line, e.col,
                             "read files in the JavaScript part of the app and pass their contents in", self.file)
+        if name == "read_all":
+            return "k_read_all()"
         if name == "read_file":
             return f"k_read_file({a[0]})"
         if name == "write_file":

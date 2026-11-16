@@ -32,10 +32,12 @@ fn json_num(value: Json) -> Option[float] {
   return match value { JNum(n) => Some(n), _ => None }
 }
 
-// Whole numbers only: 3.0 -> Some(3), 3.5 -> None.
+// Whole numbers only: 3.0 -> Some(3), 3.5 -> None. Json numbers are floats, so None also from 2^53 up
+// (in size), where a float can no longer hold every whole number exactly (and for infinity). For exact 64-bit
+// integers decode into an `int` field instead: `let r: Result[Order, str] = json_decode(text)`.
 fn json_int(value: Json) -> Option[int] {
   return match value {
-    JNum(n) => if to_float(floor(n)) == n then Some(floor(n)) else None,
+    JNum(n) => if abs(n) < 9007199254740992.0 and to_float(floor(n)) == n then Some(floor(n)) else None,
     _ => None,
   }
 }

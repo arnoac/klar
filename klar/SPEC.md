@@ -299,9 +299,11 @@ section 7) cannot be passed as values directly; wrap them: `fn(x) => str(x)`.
 ## 7. Built-in functions
 
 IO (require `uses io`):
-`print(value)` (any value, adds newline) · `read_line() -> Option[str]` (None at end of input) ·
+`print(value)` (any value, adds newline) · `eprint(value)` (to standard error) · `read_line() -> Option[str]`
+(one line, without its `\n`; None at end of input) · `read_all() -> str` (the rest of the input) ·
 `read_file(path: str) -> Result[str, str]` · `write_file(path: str, content: str) -> Result[unit, str]` ·
-`args() -> list[str]`
+`args() -> list[str]`. Exit status: 1 after a runtime error, else 0, or any with `process_exit(code)`
+(`std.process`).
 
 General: `str(value) -> str`\* · `panic(message: str) -> never`
 
@@ -314,7 +316,8 @@ Lists: `len(xs)`\* · `push(xs, x)` · `set_at(xs, i, x)` · `get(xs, i) -> Opti
 Strings: `len(s)`\* · `chars(s) -> list[str]` · `split(s, sep) -> list[str]` · `trim(s)` · `upper(s)` ·
 `lower(s)` · `starts_with(s, p)` · `ends_with(s, p)` · `contains(s, sub)`\* · `replace(s, old, new)` ·
 `repeat(s, n)` · `slice(s, start, end)`\* · `reverse(s)`\* · `parse_int(s) -> Option[int]` ·
-`parse_float(s) -> Option[float]`
+`parse_float(s) -> Option[float]` (both trim whitespace and allow a sign). Strings compare and `sort` by
+code point.
 
 Numbers: `to_float(n: int) -> float` · `floor(x) -> int` · `round(x) -> int` (half up) · `sqrt(x)` ·
 `abs(x)`\* · `min(a, b)`\* · `max(a, b)`\*
@@ -390,7 +393,8 @@ web_json(201, todo)                             // {"id":1,"title":"Buy milk","d
 Structs are objects (unknown keys ignored; a missing `Option` field is `None`), `map[str, V]` is an object
 (other keys: `[key, value]` pairs), `Option` is `null` or the value, `Result` is `{"ok": ...}`/`{"err": ...}`,
 enums are `"Variant"` or `{"type": "Variant", field: ...}`, tuples arrays. Reading needs
-a known type (else E304).
+a known type (else E304). `Json` numbers are floats: `json_int` gives None from 2^53 up, so decode into an
+`int` field for exact integers.
 
 **Typed calls** need no routes or JSON code. Declare each call once in a module both sides import:
 
@@ -490,15 +494,10 @@ databases or servers (E501), and `print` goes to the console. Python externs are
 
 | You might write | In Klar |
 |---|---|
-| `x += 1`, `i++` | `x = x + 1` (x must be `var`) |
 | `&&`, `\|\|`, `!x` | `and`, `or`, `not x` |
 | `null`, `nil` | `Option[T]`: `Some(x)` / `None` |
 | `throw` / `try` / `except` | return `Result[T, E]`; propagate with `?` |
-| `xs.append(4)` | `xs = push(xs, 4)` |
-| `for i in 0..n` | `for i in range(0, n)` |
 | `for k, v in m` | `for (k, v) in entries(m)` |
-| `from y import x` | `use y { x }` |
 | `class` with methods | `struct` + functions, called as `p.area()` |
 | `interface`, Rust `trait` | `trait` + `impl Trait for Type` |
 | `switch`; Rust `Some(x) => { ...; x }` | `match`; inside `{ }` arms write `return x` |
-| `p.x = 5` | `p = p with (x: 5)` (p must be `var`) |

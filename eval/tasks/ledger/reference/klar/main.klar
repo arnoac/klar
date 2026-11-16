@@ -131,12 +131,10 @@ fn main() uses io {
   var errors = 0
   var line_no = 0
   while true {
-    // `None => break` cannot end a value match yet (E301), so test first
-    let got = read_line()
-    if is_none(got) {
-      break
+    let raw = match read_line() {
+      Some(l) => l,
+      None => break,
     }
-    let raw = unwrap(got)
     line_no = line_no + 1
     let line = trim(raw)
     if line == "" or starts_with(line, "#") {

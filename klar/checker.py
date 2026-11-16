@@ -591,8 +591,8 @@ class Checker:
         k = node.kind
         if k == "Block":
             return any(self.always_exits(s) for s in node.stmts)
-        if k == "Return":
-            return True
+        if k in ("Return", "Break", "Continue"):
+            return True   # leaves this block (a loop's break/continue is checked by the loop itself)
         if k == "If":
             return node.els is not None and self.always_exits(node.then) and self.always_exits(node.els)
         if k == "ExprStmt":
@@ -651,6 +651,12 @@ class Checker:
             else:
                 ty = self.infer(s.value)
                 if show(ty) == "unit":
+                    arm = getattr(s.value, "fallthrough_arm", None) if s.value.kind == "Match" else None
+                    if arm is not None:
+                        self.err("E301", f"`{s.name}` would hold no value: the match arm at line {arm.line} is a "
+                                 "`{ }` block that can end without one", arm,
+                                 "a block arm gives no value; write the value without braces (`Some(x) => x`), or "
+                                 "end every path of the block with return, break or continue")
                     self.err("E301", f"`{s.name}` would hold no value (the expression has type unit)", s.value)
             s.ty = ty
             if getattr(s, "unpack", None):
@@ -1177,7 +1183,7 @@ class Checker:
     def infer_overloaded(self, e, name, expected):
         if e.named:
             self.err("E206", f"built-in `{name}` takes positional arguments only", e)
-        arity = {"print": 1, "str": 1, "len": 1, "get": 2, "slice": 3, "contains": 2, "reverse": 1, "sort": 1,
+        arity = {"print": 1, "eprint": 1, "str": 1, "len": 1, "get": 2, "slice": 3, "contains": 2, "reverse": 1, "sort": 1,
                  "sum": 1, "abs": 1, "min": 2, "max": 2, "unwrap": 1, "unwrap_or": 2}[name]
         if len(e.args) != arity:
             self.err("E205", f"`{name}` takes {arity} argument(s) but {len(e.args)} were given", e)
@@ -1190,10 +1196,10 @@ class Checker:
         def bad(desc):
             self.err("E301", f"`{name}` expects {desc}, got `{s0}`", a0)
 
-        if name in ("print", "str"):
+        if name in ("print", "eprint", "str"):
             if isinstance(t0, TFn):
                 bad("a printable value")
-            return UNIT if name == "print" else STR
+            return STR if name == "str" else UNIT
         if name == "len":
             if is_list or is_map or s0 == "str":
                 return INT
@@ -1324,6 +1330,8 @@ class Checker:
                         tail.arm_tail = True
                     self.check_block(arm.body)
                     if not self.always_exits(arm.body) and not getattr(tail, "arm_value", False):
+                        if not falls_through:
+                            e.fallthrough_arm = arm
                         falls_through = True
                 else:
                     bt = self.infer(arm.body, result or expected)

@@ -28,8 +28,13 @@ def _from_klar(v):
     return val
 
 
+def _no_constant(name):
+    # NaN and Infinity are not JSON; Node and the native runtime reject them too
+    raise ValueError(f"{name} is not valid JSON")
+
+
 def parse(text):
-    return _to_klar(json.loads(text))
+    return _to_klar(json.loads(text, parse_constant=_no_constant))
 
 
 def stringify(value):

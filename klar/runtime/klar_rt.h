@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdarg.h>
 #include <math.h>
 #include <errno.h>
@@ -760,9 +761,29 @@ static KEnum *k_parse_int(KStr *s) {
     }
     return k_some((KS)v);
 }
+#define K_DIGIT(c) ((c) >= '0' && (c) <= '9')
+#define K_ALPHA(c) (((c) | 32) >= 'a' && ((c) | 32) <= 'z')
 static KEnum *k_parse_float(KStr *s) {
     KStr *t = k_trim(s);
     if (t->len == 0) return K_NONE;
+    /* the same text every backend accepts: [+-]digits[.digits][e[+-]digits], or inf / infinity / nan */
+    const char *q = t->data; int digits = 0;
+    if (*q == '+' || *q == '-') q++;
+    if (!K_DIGIT(*q) && *q != '.' && !K_ALPHA(*q)) return K_NONE;
+    if (K_ALPHA(*q)) {
+        if (strcasecmp(q, "inf") && strcasecmp(q, "infinity") && strcasecmp(q, "nan")) return K_NONE;
+    } else {
+        while (K_DIGIT(*q)) { q++; digits++; }
+        if (*q == '.') { q++; while (K_DIGIT(*q)) { q++; digits++; } }
+        if (!digits) return K_NONE;
+        if (*q == 'e' || *q == 'E') {
+            q++;
+            if (*q == '+' || *q == '-') q++;
+            if (!K_DIGIT(*q)) return K_NONE;
+            while (K_DIGIT(*q)) q++;
+        }
+        if (q != t->data + t->len) return K_NONE;
+    }
     char *end;
     double d = strtod(t->data, &end);
     if (end != t->data + t->len) return K_NONE;
@@ -771,6 +792,17 @@ static KEnum *k_parse_float(KStr *s) {
 
 /* ------------------------------------------------------------------ io */
 static inline void k_print_str(KStr *s) { fwrite(s->data, 1, s->len, stdout); fputc('\n', stdout); }
+static void k_eprint_str(KStr *s) {
+    fflush(stdout);
+    fwrite(s->data, 1, s->len, stderr); fputc('\n', stderr); fflush(stderr);
+}
+static KStr *k_read_all(void) {
+    fflush(stdout);
+    KSB b; ksb_init(&b);
+    char buf[65536]; size_t n;
+    while ((n = fread(buf, 1, sizeof buf, stdin)) > 0) ksb_add(&b, buf, n);
+    return ksb_done(&b);
+}
 static KEnum *k_read_line(void) {
     fflush(stdout);
     KSB b; ksb_init(&b);

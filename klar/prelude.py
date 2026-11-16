@@ -9,6 +9,8 @@ PRELUDE = r'''
 // ---- io (require `uses io`)
 fn print[T](value: T) uses io {}
 fn read_line() -> Option[str] uses io {}
+fn read_all() -> str uses io {}
+fn eprint[T](value: T) uses io {}
 fn read_file(path: str) -> Result[str, str] uses io {}
 fn write_file(path: str, content: str) -> Result[unit, str] uses io {}
 fn args() -> list[str] uses io {}
@@ -80,6 +82,6 @@ fn is_err[T, E](r: Result[T, E]) -> bool {}
 
 # Built-ins whose argument types are checked by dedicated rules.
 OVERLOADED = {
-    "print", "str", "len", "get", "slice", "contains", "reverse", "sort", "sum",
+    "print", "eprint", "str", "len", "get", "slice", "contains", "reverse", "sort", "sum",
     "abs", "min", "max", "unwrap", "unwrap_or",
 }

@@ -2,6 +2,7 @@
 
 import math
 import os
+import re
 import sys
 import threading
 from dataclasses import dataclass
@@ -11,6 +12,9 @@ from .ownership import self_update
 from .syntax import Node, MAX_TUPLE, tuple_name, is_tuple_name
 from .interop import Converter, Opaque, PyFn, InteropError, resolve_target
 from .types import TCon, prune, resolve, substitute
+
+# What parse_float accepts after trimming, in every backend.
+FLOAT_TEXT = re.compile(r"[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?|[+-]?(?i:inf|infinity|nan)")
 
 
 @dataclass(frozen=True)
@@ -725,7 +729,7 @@ class Interpreter:
             raw = jsonlib._from_klar(conv._json_to_py_tuple(args[0]))
         else:
             try:
-                raw = pyjson.loads(args[0])
+                raw = pyjson.loads(args[0], parse_constant=jsonlib._no_constant)
             except ValueError as ex:
                 return errv(f"invalid JSON: {ex}")
         try:
@@ -762,6 +766,14 @@ class Interpreter:
 
     def b_print(self, n, v):
         self.out.write(fmt(v) + "\n")
+
+    def b_eprint(self, n, v):
+        self.out.flush()
+        sys.stderr.write(fmt(v) + "\n")
+        sys.stderr.flush()
+
+    def b_read_all(self, n):
+        return self.inp.read()
 
     def b_read_line(self, n):
         line = self.inp.readline()
@@ -902,10 +914,10 @@ class Interpreter:
         return NONE
 
     def b_parse_float(self, n, s):
-        try:
-            return some(float(s.strip()))
-        except ValueError:
+        t = s.strip()
+        if not FLOAT_TEXT.fullmatch(t):   # same rule in every backend: no `1_0`, no hex
             return NONE
+        return some(float(t))
 
     def b_to_float(self, n, x):
         return float(x)

@@ -125,7 +125,7 @@ function $parse_int(s) {
   return big > $I64_MAX || big < $I64_MIN ? $None : $Some(big);
 }
 function $parse_float(s) {
-  const t = $trim(s).toLowerCase().replaceAll("_", "");
+  const t = $trim(s).toLowerCase();
   if (/^[+-]?(inf|infinity)$/.test(t)) return $Some(t[0] === "-" ? -Infinity : Infinity);
   if (/^[+-]?nan$/.test(t)) return $Some(NaN);
   if (!/^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)(e[+-]?[0-9]+)?$/.test(t)) return $None;
