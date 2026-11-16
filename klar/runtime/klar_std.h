@@ -1904,7 +1904,7 @@ static void kx_serve_one(int fd, KClo *handler) {
     const char *target = sp1 + 1; int64_t tl = sp2 - target;
     const char *qm = memchr(target, '?', tl);
     KStr *path = k_str_new(target, (qm ? qm : target + tl) - target);
-    KMap *query = qm ? kx_query_decode(qm + 1, target + tl - qm - 1, 0) : k_map_empty(1);
+    KMap *query = qm ? kx_query_decode(qm + 1, target + tl - qm - 1, 1) : k_map_empty(1);
     KMap *hs = k_map_empty(1);
     int64_t clen = 0;
     const char *line = eol + 2;

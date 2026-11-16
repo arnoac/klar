@@ -89,7 +89,7 @@ def serve(port, handler, max_requests):
             req = {
                 "method": self.command,
                 "path": parsed.path,
-                "query": {k: v[-1] for k, v in urllib.parse.parse_qs(parsed.query).items()},
+                "query": {k: v[-1] for k, v in urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items()},
                 "headers": {k.lower(): v for k, v in self.headers.items()},
                 "body": body,
                 "params": {},

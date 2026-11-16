@@ -20,9 +20,9 @@ For each task, language and model, one *trial*:
 1. A fresh workspace is prepared with `TASK.md` (the same task text for both languages, plus a short footer
    naming the file to write and the commands available) and the toolchain.
 2. The agent works until it says it is done. It may check, compile and run its code as often as it likes.
-   Every call to `klarc` or `tsc` goes through a logging wrapper (`bin/`), so the number of checks and every
+   Every call to `klar` or `tsc` goes through a logging wrapper (`bin/`), so the number of checks and every
    error code it hit (`E301`, `TS2345`) are recorded in `.eval/tools.jsonl`.
-3. The program is built the way CI would build it (`klarc check`; `tsc -p .` with `strict` and
+3. The program is built the way CI would build it (`klar check`; `tsc -p .` with `strict` and
    `noEmitOnError`, using the original `tsconfig.json`) and the task's hidden tests run against it as a black
    box (standard input and output, exit status, or HTTP).
 4. If tests fail, the agent gets `FEEDBACK.md`, which lists each failing test with a one-line reason, and

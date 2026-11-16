@@ -5,7 +5,7 @@ use std.json { Json, json_stringify }
 struct HttpRequest {
   method: str,               // "GET", "POST", ...
   path: str,                 // "/todos/3" (no query string)
-  query: map[str, str],      // ?a=1&b=2  ->  ["a": "1", "b": "2"]
+  query: map[str, str],      // ?a=1&b=&c=x+y%21  ->  ["a": "1", "b": "", "c": "x y!"] (decoded; a repeated key keeps the last)
   headers: map[str, str],    // lowercase names
   body: str,
   params: map[str, str],     // path parameters filled in by std.web routes, e.g. "/todos/:id" -> ["id": "3"]

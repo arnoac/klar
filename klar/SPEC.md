@@ -368,7 +368,7 @@ parameters and a final `*`, read through `req.params["name"]`:
 ```klar
 let routes = [web_get("/", home), web_get("/items/:id", show_item), web_post("/items", create),
               web_get("/assets/*", web_static("public"))]
-web_serve(8080, routes)   // 404 / 405 automatically; HOST=0.0.0.0 to listen beyond localhost
+web_serve(8080, routes)   // 404 / 405 automatically (or web_fallback(handler)); HOST=0.0.0.0 for remote
 ```
 
 `web_form`, `web_body` and `web_cookies` read requests; `web_page`, `web_redirect`, `web_set_cookie`, `web_json`

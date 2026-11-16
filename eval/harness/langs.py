@@ -2,7 +2,7 @@
 
 Each language gives the agent the same task text plus a short footer that says which file to write and which
 commands exist. Building is part of grading: a program that does not pass the language's own static check
-(`klarc check` for Klar, `tsc` in strict mode for TypeScript) scores zero for that round, as it would in CI.
+(`klar check` for Klar, `tsc` in strict mode for TypeScript) scores zero for that round, as it would in CI.
 """
 
 import json
@@ -29,9 +29,9 @@ folder:
 
 Commands (run them from this folder, with `bin` on your `PATH`):
 
-* `klarc check main.klar` type-checks (`--json` for machine-readable errors); `klarc explain E301` explains a code.
-* `klarc run main.klar` runs the program. This is exactly how it will be graded.
-* `klarc test main.klar` runs `test` blocks.
+* `klar check main.klar` type-checks (`--json` for machine-readable errors); `klar explain E301` explains a code.
+* `klar run main.klar` runs the program. This is exactly how it will be graded.
+* `klar test main.klar` runs `test` blocks.
 
 Only the standard library is available (no packages). Python externs are not allowed.
 """
@@ -50,13 +50,13 @@ have seen it before. Everything you need to learn it is in this folder:
 
 Commands (run them from this folder, with `bin` on your `PATH`):
 
-* `klarc check main.klar` type-checks (`--json` for machine-readable errors); `klarc explain E301` explains a code.
-* `klarc build --target web main.klar` makes `main.html`, a self-contained page. The tests open `main.html`
+* `klar check main.klar` type-checks (`--json` for machine-readable errors); `klar explain E301` explains a code.
+* `klar build --target web main.klar` makes `main.html`, a self-contained page. The tests open `main.html`
   (served over HTTP) in a browser. This is exactly how it will be graded.
-* `klarc test main.klar` runs `test` blocks.
+* `klar test main.klar` runs `test` blocks.
 
 Only the standard library is available (no packages). A headless Chromium with Playwright is installed for
-Node.js (`require("playwright")`) if you want to try the page in a browser.
+Node.js (`require("playwright")`, with `NODE_PATH=$(npm root -g)` set) if you want to try the page in a browser.
 """
 
 TS_WEB_FOOTER = """
@@ -70,11 +70,12 @@ nothing can be installed.
 
 Commands (run them from this folder, with `bin` on your `PATH`):
 
-* `tsc -p .` type-checks and compiles to `dist/`. Grading runs `tsc -p .` and then opens `index.html`; a type
-  error fails the build.
+* `tsc -p .` type-checks and compiles `main.ts` (and what it imports) to `dist/`. Grading runs `tsc -p .` and
+  then opens `index.html`; a type error fails the build. `package.json` makes `.js` files ES modules, so a test
+  script that uses `require` must end in `.cjs`.
 
-A headless Chromium with Playwright is installed for Node.js (`require("playwright")`) if you want to try the
-page in a browser.
+A headless Chromium with Playwright is installed for Node.js (`require("playwright")`, with
+`NODE_PATH=$(npm root -g)` set) if you want to try the page in a browser.
 """
 
 TS_FOOTER = """
@@ -106,7 +107,7 @@ TSCONFIG = {
         "types": ["node"],
         "skipLibCheck": True,
     },
-    "include": ["*.ts", "**/*.ts"],
+    "include": ["main.ts"],   # imports are followed; test scripts elsewhere in the folder are not compiled
     "exclude": ["dist", "node_modules", "bin"],
 }
 
@@ -155,7 +156,7 @@ class Klar:
                 shutil.copy(os.path.join(REPO, f), os.path.join(tc, f))
             shutil.copytree(os.path.join(REPO, "examples"), os.path.join(tc, "examples"),
                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.db"))
-        _install_wrapper(ws, "klarc", os.path.join(tc, "klarc"))
+        _install_wrapper(ws, "klar", os.path.join(tc, "klarc"))
 
     def build(self, ws):
         p = subprocess.run(["sh", os.path.join(ws, "toolchain", "klarc"), "check", "--json", self.entry],

@@ -65,6 +65,9 @@ extern "klar:json.encode" fn json_encode[T](value: T) -> str
 extern "klar:json.pretty" fn json_encode_pretty[T](value: T) -> str
 // The type to read comes from where the result goes: `let r: Result[Todo, str] = json_decode(text)`.
 // Errors name the place: "expected a whole number at $.items[2].id, found a string".
+// A missing key and `null` both read as None in an Option field. To tell them apart (an API that must refuse
+// {"note": null}), parse to Json and look: `json_get(j, "note")` is None when the key is missing and
+// Some(JNull) when it is null.
 extern "klar:json.decode" fn json_decode[T](text: str) -> Result[T, str]
 // The same between Klar values and Json values.
 extern "klar:json.of" fn json_of[T](value: T) -> Json

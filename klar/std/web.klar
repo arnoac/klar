@@ -36,6 +36,11 @@ fn web_put(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Ro
 fn web_patch(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("PATCH", pattern, handler, false) }
 fn web_delete(pattern: str, handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("DELETE", pattern, handler, false) }
 
+// Answer requests that no route takes, instead of the plain-text 404 / 405: `req.params["status"]` is "404"
+// (no route has this path) or "405" (a route has it with another method). Put it anywhere in the routes.
+//   web_fallback(fn(req) => web_json(if req.params["status"] == "405" then 405 else 404, Problem("no such endpoint")))
+fn web_fallback(handler: fn(HttpRequest) -> HttpResponse uses io) -> Route { return Route("", "", handler, false) }
+
 // Let pages on other sites send this request (a public API or a webhook). Such a route must not rely on
 // cookies to decide who is asking: check a token in a header or the body instead.
 fn web_cross_origin(route: Route) -> Route { return route with (cross_origin: true) }
@@ -51,6 +56,9 @@ fn web_handle(routes: list[Route], req: HttpRequest) -> HttpResponse uses io {
   var path_matched = false
   let method = if req.method == "HEAD" then "GET" else req.method
   for r in routes {
+    if r.method == "" {
+      continue
+    }
     match web_match(r.pattern, req.path) {
       Some(params) => {
         if r.method == method {
@@ -64,6 +72,14 @@ fn web_handle(routes: list[Route], req: HttpRequest) -> HttpResponse uses io {
       }
       None => {}
     }
+  }
+  let status = if path_matched then "405" else "404"
+  match find(routes, fn(r) => r.method == "") {
+    Some(r) => {
+      let handler = r.handler
+      return web_secure(req, handler(req with (params: ["status": status])))
+    }
+    None => {}
   }
   if path_matched {
     return web_secure(req, HttpResponse(405, ["content-type": "text/plain; charset=utf-8"], "method not allowed\n"))
@@ -153,9 +169,12 @@ fn web_match(pattern: str, path: str) -> Option[map[str, str]] {
   return if len(xs) == len(ps) then Some(params) else None
 }
 
-// Build a request, for tests: web_request("POST", "/todos", "{\"title\": \"x\"}").
+// Build a request, for tests: web_request("POST", "/todos", "{\"title\": \"x\"}"). A query string in the path
+// is split off into `query` as a server would: web_request("GET", "/search?q=a+b", "").
 fn web_request(method: str, path: str, body: str) -> HttpRequest {
-  return HttpRequest(method: method, path: path, query: [:], headers: [:], body: body, params: [:])
+  let parts = split(path, "?")
+  let query = if len(parts) > 1 then web_form_decode(join(slice(parts, 1, len(parts)), "?")) else [:]
+  return HttpRequest(method: method, path: parts[0], query: query, headers: [:], body: body, params: [:])
 }
 
 // The port to listen on: the PORT environment variable (set by `klar dev` and most hosting platforms), else `fallback`.

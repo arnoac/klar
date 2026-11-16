@@ -155,6 +155,9 @@ def tool_stats(ws):
         "failed_checks": sum(1 for c in checks if c["exit"] not in (0, None)),
         "run_calls": sum(1 for c in calls if c["args"][:1] == ["run"]),
         "error_codes": dict(codes.most_common()),
+        # An agent can reach a tool without the bin/ wrapper (a global tsc, a shell that lost PATH). A trial
+        # whose program was built but logged no calls is marked so its zero is not read as "never checked".
+        "logged": bool(calls),
     }
 
 
@@ -278,9 +281,11 @@ def report(dirs):
         last = t["rounds"][-1] if t["rounds"] else {"passed": 0, "total": 0}
         tools = t.get("tools", {})
         codes = ", ".join(f"{k}x{v}" for k, v in list(tools.get("error_codes", {}).items())[:4]) or "-"
+        checks = (f"{tools.get('check_calls', 0)} ({tools.get('failed_checks', 0)})" if tools.get("logged", True)
+                  else "not logged")
         rows.append(f"| {t['task']} | {t['lang']} | {t.get('model', '')} | {'pass' if t.get('first_try_pass') else 'fail'} "
                     f"| {first['passed']}/{first['total']} | {t.get('rounds_to_pass') or '-'} "
-                    f"| {last['passed']}/{last['total']} | {tools.get('check_calls', 0)} ({tools.get('failed_checks', 0)}) | {codes} "
+                    f"| {last['passed']}/{last['total']} | {checks} | {codes} "
                     f"| {fmt_total(t, 'seconds', '{:.0f} s')} | {fmt_total(t, 'tokens', '{:,}')} |")
     by_lang = collections.defaultdict(list)
     for t in trials:

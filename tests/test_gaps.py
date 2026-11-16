@@ -79,6 +79,47 @@ fn main() uses io {
         self.assertIn("E203", r.stdout + r.stderr)
 
 
+class WebFallback(unittest.TestCase):
+    def test_fallback_answers_404_and_405(self):
+        out, _ = run_everywhere(self, '''
+use std.web { Route, web_get, web_fallback, web_handle, web_request, web_json }
+use std.http { HttpRequest, HttpResponse }
+struct Problem { error: str }
+fn home(req: HttpRequest) -> HttpResponse uses io {
+  return web_json(200, Problem("none"))
+}
+fn missing(req: HttpRequest) -> HttpResponse uses io {
+  let code = if req.params["status"] == "405" then 405 else 404
+  return web_json(code, Problem("no such endpoint"))
+}
+fn main() uses io {
+  let routes = [web_fallback(missing), web_get("/", home)]
+  for (m, p) in [("GET", "/"), ("GET", "/nope"), ("DELETE", "/")] {
+    let r = web_handle(routes, web_request(m, p, ""))
+    print("{r.status} {r.body} {r.headers["content-type"]}")
+  }
+  let plain = web_handle([web_get("/", home)], web_request("GET", "/x", ""))
+  print("{plain.status} {plain.body}")
+}
+''')
+        self.assertEqual(out.splitlines(), [
+            '200 {"error":"none"} application/json', '404 {"error":"no such endpoint"} application/json',
+            '405 {"error":"no such endpoint"} application/json', "404 not found", ""])
+
+    def test_web_request_splits_the_query(self):
+        out, _ = run_everywhere(self, '''
+use std.web { web_request, web_handle, web_get }
+use std.http { HttpRequest, HttpResponse, http_text }
+fn h(req: HttpRequest) -> HttpResponse uses io {
+  return http_text(200, "{req.path} {req.query}")
+}
+fn main() uses io {
+  print(web_handle([web_get("/x", h)], web_request("GET", "/x?a=1%202&b=&c+d=e+f&a=3", "")).body)
+}
+''')
+        self.assertEqual(out, '/x ["a": "3", "b": "", "c d": "e f"]\n')
+
+
 UI_APP = '''
 use std.ui { Next, ui_run }
 use std.html { Html, div, text, button, input, on_click, on_input, value, id }
