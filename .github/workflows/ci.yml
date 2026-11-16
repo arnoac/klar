@@ -45,7 +45,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
-      - name: C libraries (no Boehm GC: it does not mix with AddressSanitizer)
+      - name: C libraries (no Boehm GC, which does not mix with AddressSanitizer)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsqlite3-dev libpcre2-dev libssl-dev
       - name: Tests with sanitizers
         env:
