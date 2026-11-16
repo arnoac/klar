@@ -462,7 +462,7 @@ each with `code, phase, title, message, file, line, col, hint` and exact `fixes`
 
 ```
 klar new NAME [--web]            a project: klar.toml + main.klar (--web: a std.ui app)
-klar run [FILE] [args...]        check, then run main() in the interpreter
+klar run [FILE] [args...]        check, run main() in the interpreter
 klar test|check [FILE] [--json]  run every `test` block | type-check only
 klar fmt [PATH] [--check]        format in place
 klar build [FILE] [--release]    native executable; std.ui apps become a web page (--target native|node|web|wasm)
@@ -477,6 +477,7 @@ Compiled programs match the interpreter except: `int` is 64-bit and
 overflow is E408, and natively `upper`/`lower`/`trim` change only ASCII. Native and Node builds support every
 std module (native regex and sqlite need the PCRE2 and SQLite libraries). The browser has no files, processes,
 databases or servers (E501), and `print` goes to the console. Python externs are interpreter-only.
+Interpreter: near Python speed, call depth up to 1,000,000.
 
 ## 10. Coming from another language
 

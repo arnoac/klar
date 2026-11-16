@@ -1,26 +1,28 @@
-"""Tree-walking evaluator for checked Klar programs."""
+"""Runs checked Klar programs (`klar run`, `klar test`): the program is compiled to Python code by pygen.py, and
+this module holds the value representation, the runtime support and the built-in functions."""
 
 import math
 import os
 import re
 import sys
 import threading
-from dataclasses import dataclass
 
 from .errors import KlarError
-from .ownership import self_update, str_append, LIST_UPDATES, MAP_UPDATES
-from .syntax import Node, MAX_TUPLE, tuple_name, is_tuple_name
-from .interop import Converter, Opaque, PyFn, InteropError, resolve_target
+from .syntax import MAX_TUPLE, tuple_name, is_tuple_name
+from .interop import Converter, Opaque, InteropError, resolve_target
 from .types import TCon, prune, resolve, substitute
 
 # What parse_float accepts after trimming, in every backend.
 FLOAT_TEXT = re.compile(r"[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?|[+-]?(?i:inf|infinity|nan)")
 
 
-@dataclass(frozen=True)
 class StructVal:
-    name: str
-    fields: tuple       # tuple of (name, value)
+    """A struct or tuple value. Immutable by convention: nothing assigns to a value after it is built."""
+    __slots__ = ("name", "fields")
+
+    def __init__(self, name, fields):
+        self.name = name
+        self.fields = fields        # tuple of (name, value)
 
     def get(self, f):
         for k, v in self.fields:
@@ -28,42 +30,38 @@ class StructVal:
                 return v
         raise KeyError(f)
 
+    def __eq__(self, other):
+        return type(other) is StructVal and self.name == other.name and self.fields == other.fields
 
-@dataclass(frozen=True)
+    def __hash__(self):
+        return hash((self.name, self.fields))
+
+    def __repr__(self):
+        return f"StructVal(name={self.name!r}, fields={self.fields!r})"
+
+
 class EnumVal:
-    variant: str
-    values: tuple
-    names: tuple = ()
+    """An enum value (including Option and Result). Immutable by convention, like StructVal."""
+    __slots__ = ("variant", "values", "names")
+
+    def __init__(self, variant, values, names=()):
+        self.variant = variant
+        self.values = values
+        self.names = names
 
     def __eq__(self, other):
-        return isinstance(other, EnumVal) and self.variant == other.variant and self.values == other.values
+        return type(other) is EnumVal and self.variant == other.variant and self.values == other.values
 
     def __hash__(self):
         return hash((self.variant, self.values))
 
-
-class Closure:
-    def __init__(self, params, body, block, env, name="<anonymous fn>"):
-        self.params = params
-        self.body = body
-        self.block = block
-        self.env = env
-        self.name = name
-
-
-class FnRef:
-    def __init__(self, name):
-        self.name = name
+    def __repr__(self):
+        return f"EnumVal(variant={self.variant!r}, values={self.values!r}, names={self.names!r})"
 
 
 class FrozenMap(dict):
     def __hash__(self):
         return hash(tuple(sorted(self.items(), key=repr)))
-
-
-def _is_str(t):
-    t = prune(t) if t is not None else None
-    return isinstance(t, TCon) and t.name == "str"
 
 
 class OwnedStr(list):
@@ -89,19 +87,6 @@ def ok(v):
 
 def errv(v):
     return EnumVal("Err", (v,), ("error",))
-
-
-class ReturnSig(Exception):
-    def __init__(self, value):
-        self.value = value
-
-
-class BreakSig(Exception):
-    pass
-
-
-class ContinueSig(Exception):
-    pass
 
 
 def fmt(v, nested=False):
@@ -141,29 +126,40 @@ def fmt(v, nested=False):
     return "<fn>"
 
 
-class Env:
-    __slots__ = ("vars", "parent")
+# How deep Klar calls may nest under `klar run`. Each Klar call is one Python call. From Python 3.12 on, calls
+# between Python functions don't use the C stack (frames live on the heap, about 0.3 KB each), so only memory
+# bounds the depth; older versions run the program on a thread with a large C stack instead.
+RECURSION_LIMIT = 1_000_000 if sys.version_info >= (3, 11) else 250_000     # 3.10 puts every call on the C stack
+BIG_STACK = 1024 * 1024 * 1024
 
-    def __init__(self, parent=None):
-        self.vars = {}
-        self.parent = parent
 
-    def get(self, name):
-        e = self
-        while e is not None:
-            if name in e.vars:
-                return e.vars[name]
-            e = e.parent
-        raise KeyError(name)
+def deep_call(fn):
+    """fn() with the recursion limit raised to RECURSION_LIMIT (on a big-stack thread before Python 3.12)."""
+    old = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(old, RECURSION_LIMIT))
+    try:
+        if sys.version_info >= (3, 12):
+            return fn()
+        result = {}
 
-    def set(self, name, value):
-        e = self
-        while e is not None:
-            if name in e.vars:
-                e.vars[name] = value
-                return
-            e = e.parent
-        raise KeyError(name)
+        def run():
+            try:
+                result["value"] = fn()
+            except BaseException as ex:      # handed to the calling thread below
+                result["error"] = ex
+        size = threading.stack_size()
+        threading.stack_size(BIG_STACK)
+        try:
+            t = threading.Thread(target=run, daemon=True)
+            t.start()
+        finally:
+            threading.stack_size(size)
+        t.join()
+        if "error" in result:
+            raise result["error"]
+        return result.get("value")
+    finally:
+        sys.setrecursionlimit(old)
 
 
 class _PerTask(threading.local):
@@ -217,64 +213,144 @@ class Interpreter:
         self.variants.update({"Some": ["value"], "None": [], "Ok": ["value"], "Err": ["error"]})
         for n in range(2, MAX_TUPLE + 1):
             self.structs[tuple_name(n)] = [str(i) for i in range(n)]
+        self.compile()
 
+    def compile(self, everything=False):
+        """Turn the functions main and the tests can reach, and the tests, into Python code (see pygen.py)."""
+        from .pygen import PyGen, namespace
+        self.gen_file = f"<klar {self.file or 'program'} {id(self):x}>"
+        gen = PyGen(self, self.gen_file)
+        source, self.line_map, self.file_map, test_names = gen.program(self.tests, "all" if everything else None)
+        ns = namespace(self)
+        ns.update(gen.consts)
+        exec(compile(source, self.gen_file, "exec"), ns)
+        self.py_fns = {name: ns[py] for name, py in gen.pynames.items() if py in ns}
+        self.named_code = {f.__code__: name for name, f in self.py_fns.items()}
+        self.test_fns = [ns[t] for t in test_names]
+        self.py_source = source
+        # a label for every generated code object (Klar functions, anonymous functions, tests), for debuggers
+        self.code_labels = {}
+        pending = [(f.__code__, name) for name, f in self.py_fns.items()]
+        pending += [(f.__code__, f"test \"{t.name}\"") for t, f in zip(self.tests, self.test_fns)]
+        while pending:
+            code, label = pending.pop()
+            self.code_labels[code] = label
+            pending += [(c, gen.lambda_labels.get(c.co_name, c.co_name)) for c in code.co_consts if hasattr(c, "co_name")]
+
+    # ---------------------------------------------------------- errors and stack traces
     def rt_err(self, code, msg, node, hint=None):
-        # self.stack holds (label, line the frame was called from); each frame is shown at the line it is on:
-        # the innermost at the error, every caller at its call into the next frame.
-        frames = self.stack[-11:]
-        trace = []
-        for k in range(len(frames) - 1, max(len(frames) - 11, -1), -1):
-            label, _ = frames[k]
-            at = node.line if k == len(frames) - 1 else frames[k + 1][1]
-            trace.append(f"{label} ({self.file or '<input>'}:{at})" if at else label)
-        raise KlarError(code, msg, node.line, node.col, hint, self.file, trace=trace)
+        frame = next(self.klar_frames(), (None, None))[0]
+        file = self.show_file(self.file_map[frame.f_lineno - 1]) if frame is not None else self.file
+        if node is not None:
+            line, col = node.line, node.col
+        else:
+            line, col = (self.line_map[frame.f_lineno - 1] if frame is not None else 0), 0
+        raise KlarError(code, msg, line, col, hint, file, trace=self.trace(line))
+
+    def show_file(self, module):
+        """How a module's path is shown in errors: as given on the command line for the entry file, else
+        relative to the current directory."""
+        if module is None or module == self.file:
+            return self.file
+        if self.file and os.path.abspath(module) == os.path.abspath(self.file):
+            return self.file
+        rel = os.path.relpath(module)
+        return module if rel.startswith("..") else rel
+
+    def klar_frames(self):
+        """(frame, Klar function name or None) for each running frame of generated code, innermost first."""
+        f = sys._getframe(1)
+        fname, named = self.gen_file, self.named_code
+        while f is not None:
+            if f.f_code.co_filename == fname:
+                yield f, named.get(f.f_code)
+            f = f.f_back
+
+    def trace(self, line):
+        """Call trace, innermost first: each frame at the line it is on (the innermost at the error, every
+        caller at its call into the next frame). self.stack holds the frames that are not Klar functions:
+        tests, tasks and Python externs, as (label, line it was called from)."""
+        out = []
+        cur = line
+        where = None
+        extra = self.stack
+        for label, called in reversed([e for e in extra if e[0].startswith("extern ")]):
+            out.append((label, cur, None))
+            cur = None
+        for f, name in self.klar_frames():
+            if cur is None:
+                cur = self.line_map[f.f_lineno - 1]
+            if where is None:
+                where = self.file_map[f.f_lineno - 1]
+            if name is not None:
+                out.append((name, cur, where))
+                cur = where = None
+            if len(out) > 10:
+                break
+        for label, called in reversed([e for e in extra if not e[0].startswith("extern ")]):
+            out.append((label, cur, where))
+            cur, where = called, None
+        return [f"{label} ({self.show_file(w) or '<input>'}:{at})" if at else label for label, at, w in out[:10]]
+
+    def overflow(self, ex, fallback):
+        """The KlarError for a RecursionError: it names the innermost Klar function that was running."""
+        tb, last = ex.__traceback__, None
+        while tb is not None:
+            name = self.named_code.get(tb.tb_frame.f_code)
+            if name is not None:
+                last = name
+            tb = tb.tb_next
+        if last is None:
+            return fallback
+        d = self.fns[last]
+        return KlarError("E406", f"stack overflow in `{last}` (recursion too deep)", d.line, d.col,
+                         "check the recursion's base case, or rewrite it as a loop", self.file)
 
     # ---------------------------------------------------------- entry points
     def run_main(self):
+        return deep_call(self._run_main)
+
+    def _run_main(self):
         with self.rt.cond:
-            return self.call_fn("main", [], None)
+            try:
+                return self.call_fn("main", [], None)
+            except RecursionError as ex:
+                d = self.fns["main"]
+                raise self.overflow(ex, KlarError("E406", "stack overflow (recursion too deep)", d.line, d.col,
+                                                  None, self.file)) from None
 
     def run_tests(self):
+        return deep_call(self._run_tests_locked)
+
+    def _run_tests_locked(self):
         with self.rt.cond:
             return self._run_tests()
 
     def _run_tests(self):
         results = []
-        for t in self.tests:
+        for t, fn in zip(self.tests, self.test_fns):
             try:
                 self.stack = [(f"test \"{t.name}\"", None)]
-                self.exec_block(t.body, Env())
+                fn()
                 results.append((t.name, None))
             except KlarError as e:
                 results.append((t.name, e))
-            except RecursionError:
-                results.append((t.name, KlarError("E406", "stack overflow (recursion too deep)", t.line, t.col, None, self.file)))
+            except RecursionError as ex:
+                results.append((t.name, self.overflow(ex, KlarError("E406", "stack overflow (recursion too deep)",
+                                                                    t.line, t.col, None, self.file))))
         return results
 
     # ---------------------------------------------------------- calls
     def call_fn(self, name, args, node, tenv=None):
         d = self.fns[name]
-        env = Env()
-        for (pname, _), a in zip(d.params, args):
-            env.vars[pname] = a
-        self.stack.append((name, node.line if node else None))
-        saved_tenv = self.tenv
-        inst = getattr(node, "inst", None) if d.tparams else None
-        if tenv is not None:
-            self.tenv = tenv
-        else:
-            self.tenv = {tp: self.concrete_type(t) for tp, t in zip(d.tparams, inst)} if inst else {}
-        try:
-            self.exec_block(d.body, env)
-            return None
-        except ReturnSig as r:
-            return r.value
-        except RecursionError:
-            raise KlarError("E406", f"stack overflow in `{name}` (recursion too deep)", d.line, d.col,
-                            "check the recursion's base case, or rewrite it as a loop", self.file)
-        finally:
-            self.stack.pop()
-            self.tenv = saved_tenv
+        fn = self.py_fns.get(name)
+        if fn is None:          # not reachable from main (e.g. a WebAssembly module's export): compile everything
+            self.compile(everything=True)
+            fn = self.py_fns[name]
+        if tenv is None:
+            inst = getattr(node, "inst", None) if d.tparams else None
+            tenv = {tp: self.concrete_type(t) for tp, t in zip(d.tparams, inst)} if inst else {}
+        return fn(*args, _tenv=tenv)
 
     def concrete_type(self, t):
         """t with the running generic function's type parameters replaced by the types it was called with."""
@@ -309,349 +385,43 @@ class Interpreter:
             return v.type_name
         return "fn"
 
-    def call_trait(self, method, args, node):
-        """A trait method runs the impl for the type of its first argument."""
+    def trait_target(self, method, first, node):
+        """A trait method runs the impl for the type of its first argument: (generated function name, its tenv)."""
         from .checker import match_type
         c = self.conv.checker
         sig = c.fns[method]
-        info = c.impls.get((sig.trait, self.runtime_head(args[0])))
+        info = c.impls.get((sig.trait, self.runtime_head(first)))
         if info is None:
-            self.rt_err("E312", f"no impl of {sig.trait} for this {self.runtime_head(args[0])} value", node or sig.node)
+            self.rt_err("E312", f"no impl of {sig.trait} for this {self.runtime_head(first)} value", node or sig.node)
         tenv = {}
         inst = getattr(node, "inst", None)
         if inst:
             binding = {}
             if match_type(info.ty, self.concrete_type(inst[0]), info.tparams, binding):
                 tenv = binding
-        return self.call_fn(info.fn_names[method], args, node, tenv)
+        return info.fn_names[method], tenv
+
+    def call_trait(self, method, args, node):
+        name, tenv = self.trait_target(method, args[0], node)
+        return self.call_fn(name, args, node, tenv)
 
     def call_value(self, f, args, node):
-        if isinstance(f, FnRef):
-            if f.name in self.trait_methods:
-                return self.call_trait(f.name, args, node)
-            if f.name in self.fns:
-                return self.call_fn(f.name, args, node)
-            if f.name in self.externs:
-                return self.call_extern(f.name, args, node)
-            return self.call_builtin(f.name, args, node)
-        if isinstance(f, PyFn):
-            return self.call_python(f.fn, args, f.ty.params, f.ty.ret, node, "a Python function value")
-        env = Env(f.env)
-        for (pname, _), a in zip(f.params, args):
-            env.vars[pname] = a
-        saved_tenv = self.tenv
-        self.tenv = getattr(f, "tenv", {})
-        try:
-            if f.block:
-                try:
-                    self.exec_block(f.body, env)
-                    return None
-                except ReturnSig as r:
-                    return r.value
-            return self.eval(f.body, env)
-        finally:
-            self.tenv = saved_tenv
+        """Call a Klar function value: every one (named, anonymous, built-in or from Python) is a Python callable."""
+        return f(*args)
 
-    # ---------------------------------------------------------- statements
-    def exec_block(self, block, env):
-        local = Env(env)
-        for s in block.stmts:
-            self.exec(s, local)
+    # function values for names that are not plain Klar functions
+    def make_enum(self, name, values):
+        return EnumVal(name, values)
 
-    def exec(self, s, env):
-        k = s.kind
-        if k == "Let":
-            env.vars[s.name] = self.eval(s.value, env)
-        elif k == "Assign":
-            steps = self_update(s, self.fns, LIST_UPDATES) or self_update(s, self.fns, MAP_UPDATES)
-            parts = str_append(s) if steps is None and _is_str(getattr(s.value, "ty", None)) else None
-            if steps is not None:
-                self.update_in_place(s.name, steps, env)
-            elif parts is not None:
-                vals = [self.eval(x, env) for x in parts]
-                cur = env.get(s.name)
-                if type(cur) is not OwnedStr:
-                    cur = OwnedStr([cur])
-                cur.extend(vals)
-                env.set(s.name, cur)
-            else:
-                env.set(s.name, self.eval(s.value, env))
-        elif k == "ExprStmt":
-            self.eval(s.expr, env)
-        elif k == "If":
-            if self.eval(s.cond, env):
-                self.exec_block(s.then, env)
-            elif s.els is not None:
-                self.exec_block(s.els, env)
-        elif k == "While":
-            while self.eval(s.cond, env):
-                try:
-                    self.exec_block(s.body, env)
-                except BreakSig:
-                    break
-                except ContinueSig:
-                    continue
-        elif k == "For":
-            for item in self.eval(s.iter, env):
-                local = Env(env)
-                local.vars[s.var] = item
-                try:
-                    self.exec_block(s.body, local)
-                except BreakSig:
-                    break
-                except ContinueSig:
-                    continue
-        elif k == "Return":
-            raise ReturnSig(None if s.value is None else self.eval(s.value, env))
-        elif k == "Break":
-            raise BreakSig()
-        elif k == "Continue":
-            raise ContinueSig()
-        elif k == "Assert":
-            if not self.eval(s.cond, env):
-                msg = "assertion failed"
-                if s.msg is not None:
-                    msg += ": " + self.eval(s.msg, env)
-                detail = self.explain_assert(s.cond, env)
-                self.rt_err("E404", msg, s, detail)
+    def trait_value(self, name, node):
+        return lambda *a: self.call_trait(name, list(a), node)
 
-    def explain_assert(self, cond, env):
-        if cond.kind == "Binary" and cond.op in ("==", "!=", "<", "<=", ">", ">="):
-            try:
-                l = self.eval(cond.left, env)
-                r = self.eval(cond.right, env)
-                return f"left side = {fmt(l, True)}, right side = {fmt(r, True)}"
-            except Exception:
-                return None
-        return None
+    def extern_value(self, name, node):
+        return lambda *a: self.call_extern(name, list(a), node)
 
-    # ---------------------------------------------------------- expressions
-    def eval(self, e, env):
-        k = e.kind
-        if k in ("Int", "Float", "Str", "Bool"):
-            return e.value
-        if k == "Unit":
-            return None
-        if k == "Name":
-            try:
-                v = env.get(e.name)
-            except KeyError:
-                pass
-            else:
-                tv = type(v)
-                if tv is list or tv is OwnedMap or tv is OwnedStr:  # an owned var (see update_in_place): snapshot
-                    v = tuple(v) if tv is list else FrozenMap(v) if tv is OwnedMap else "".join(v)
-                    env.set(e.name, v)
-                return v
-            if e.name in self.variants:
-                return EnumVal(e.name, ())
-            return FnRef(e.name)
-        if k == "Interp":
-            return "".join(p if isinstance(p, str) else fmt(self.eval(p, env)) for p in e.parts)
-        if k == "ListLit":
-            return tuple(self.eval(x, env) for x in e.items)
-        if k == "MapLit":
-            return FrozenMap((self.eval(a, env), self.eval(b, env)) for a, b in e.entries)
-        if k == "Unary":
-            v = self.eval(e.operand, env)
-            return (not v) if e.op == "not" else -v
-        if k == "Binary":
-            return self.eval_binary(e, env)
-        if k == "IfExpr":
-            return self.eval(e.then, env) if self.eval(e.cond, env) else self.eval(e.els, env)
-        if k == "Call":
-            return self.eval_call(e, env)
-        if k == "MethodCall":
-            return self.eval(e.desugared, env)
-        if k == "Field":
-            return self.eval(e.target, env).get(e.name)
-        if k == "Index":
-            t = self.raw_read(e.target, env)
-            i = self.eval(e.index, env)
-            if isinstance(t, dict):
-                if i not in t:
-                    self.rt_err("E405", f"map has no key {fmt(i, True)}", e, "use get(m, key) which returns an Option, or check has(m, key) first")
-                return t[i]
-            if not (0 <= i < len(t)):
-                self.rt_err("E401", f"index {i} is out of bounds for length {len(t)}", e,
-                            "use get(xs, i) which returns an Option, or check i < len(xs) first")
-            return t[i]
-        if k == "Try":
-            v = self.eval(e.value, env)
-            if v.variant in ("Some", "Ok"):
-                return v.values[0]
-            wrap = getattr(e, "wrap", None)
-            if wrap is not None:
-                v = errv(EnumVal(wrap, (v.values[0],), tuple(self.variants[wrap])))
-            raise ReturnSig(v)
-        if k == "With":
-            s = self.eval(e.target, env)
-            upd = {f: self.eval(val, env) for f, val, _ in e.updates}
-            return StructVal(s.name, tuple((f, upd.get(f, v)) for f, v in s.fields))
-        if k == "Match":
-            return self.eval_match(e, env)
-        if k == "Lambda":
-            c = Closure(e.params, e.body, e.block, env)
-            c.tenv = self.tenv
-            return c
-        raise RuntimeError(f"cannot evaluate {k}")
+    def builtin_value(self, name, node):
+        return lambda *a: self.call_builtin(name, a, node)
 
-    def eval_binary(self, e, env):
-        op = e.op
-        if op == "and":
-            return self.eval(e.left, env) and self.eval(e.right, env)
-        if op == "or":
-            return self.eval(e.left, env) or self.eval(e.right, env)
-        a = self.eval(e.left, env)
-        b = self.eval(e.right, env)
-        if op == "+":
-            return a + b
-        if op == "-":
-            return a - b
-        if op == "*":
-            return a * b
-        if op == "/":
-            if isinstance(a, int):
-                if b == 0:
-                    self.rt_err("E402", "integer division by zero", e)
-                q = abs(a) // abs(b)
-                return q if (a >= 0) == (b >= 0) else -q
-            if b == 0:
-                return math.inf if a > 0 else -math.inf if a < 0 else math.nan
-            return a / b
-        if op == "%":
-            if b == 0:
-                self.rt_err("E402", "remainder by zero", e)
-            r = abs(a) % abs(b)
-            return r if a >= 0 else -r
-        if op == "==":
-            return a == b
-        if op == "!=":
-            return a != b
-        if op == "<":
-            return a < b
-        if op == "<=":
-            return a <= b
-        if op == ">":
-            return a > b
-        if op == ">=":
-            return a >= b
-        raise RuntimeError(op)
-
-    def raw_read(self, e, env):
-        """Evaluate e, but read an owned list var without snapshotting it (for xs[i] and len(xs))."""
-        if e.kind == "Name":
-            try:
-                v = env.get(e.name)
-            except KeyError:
-                pass
-            else:
-                if type(v) is not OwnedStr:
-                    return v
-        return self.eval(e, env)
-
-    def update_in_place(self, name, steps, env):
-        """`xs = set_at(xs, i, v)` / `xs = push(xs, v)` on a var. The var then holds a Python list that only it
-        references, so later updates are O(1), as in compiled code; any other read of the var turns it back
-        into an immutable tuple first (eval of Name), so no other value can see a write."""
-        vals = [[self.eval(a, env) for a in call.args[1:]] for _, call in steps]
-        cur = env.get(name)
-        if steps[0][0] == "put":
-            if type(cur) is not OwnedMap:
-                cur = OwnedMap(cur)
-            for k, x in vals:
-                cur[k] = x
-            env.set(name, cur)
-            return
-        if type(cur) is not list:
-            cur = list(cur)
-        for (op, call), args in zip(steps, vals):
-            if op == "push":
-                cur.append(args[0])
-            elif op == "pop":
-                if not cur:
-                    self.rt_err("E401", "pop on an empty list", call)
-                cur.pop()
-            else:
-                i, x = args
-                if not (0 <= i < len(cur)):
-                    self.rt_err("E401", f"set_at index {i} is out of bounds for length {len(cur)}", call)
-                cur[i] = x
-        env.set(name, cur)
-
-    def eval_call(self, e, env):
-        tk = getattr(e, "target_kind", "value")
-        if (tk == "fn" and not e.named and e.args and e.callee.kind == "Name" and e.callee.name in ("len", "get", "has")
-                and e.callee.name not in self.fns):
-            first = self.raw_read(e.args[0], env)
-            if e.callee.name == "len":
-                return len(first)
-            rest = [self.eval(a, env) for a in e.args[1:]]
-            return (self.b_get if e.callee.name == "get" else self.b_has)(e, first, *rest)
-        if e.named:
-            # reorder to declaration order
-            if tk == "struct":
-                order = self.structs[e.callee.name]
-            elif tk == "variant":
-                order = self.variants[e.callee.name]
-            elif tk == "trait":
-                order = [p for p, _ in self.conv.checker.fns[e.callee.name].params]
-            else:
-                decl = self.fns.get(e.callee.name) or self.externs[e.callee.name]
-                order = [p for p, _ in decl.params]
-            named = {n: v for n, v, _ in e.named}
-            args = [self.eval(named[n], env) for n in order]
-        else:
-            args = [self.eval(a, env) for a in e.args]
-        if tk == "struct":
-            name = e.callee.name
-            return StructVal(name, tuple(zip(self.structs[name], args)))
-        if tk == "variant":
-            name = e.callee.name
-            return EnumVal(name, tuple(args), tuple(self.variants[name]))
-        if tk == "extern":
-            return self.call_extern(e.callee.name, args, e)
-        if tk == "trait":
-            return self.call_trait(e.callee.name, args, e)
-        if tk == "fn":
-            name = e.callee.name
-            if name in self.fns:
-                return self.call_fn(name, args, e)
-            return self.call_builtin(name, args, e)
-        f = self.eval(e.callee, env)
-        return self.call_value(f, args, e)
-
-    def eval_match(self, e, env):
-        v = self.eval(e.scrutinee, env)
-        for arm in e.arms:
-            binds = {}
-            if self.match_pat(arm.pattern, v, binds):
-                local = Env(env)
-                local.vars.update(binds)
-                if arm.body.kind == "Block":
-                    self.exec_block(arm.body, local)
-                    return None
-                return self.eval(arm.body, local)
-        self.rt_err("E306", "no match arm matched", e)
-
-    def match_pat(self, p, v, binds):
-        k = p.kind
-        if k == "PWild":
-            return True
-        if k == "PBind":
-            binds[p.name] = v
-            return True
-        if k == "PLit":
-            return type(v) is type(p.value) and v == p.value
-        if k == "PTuple":
-            return all(self.match_pat(sp, sv, binds) for sp, (_, sv) in zip(p.subs, v.fields))
-        if k == "PVariant":
-            if not isinstance(v, EnumVal) or v.variant != p.name:
-                return False
-            return all(self.match_pat(sp, sv, binds) for sp, sv in zip(p.subs, v.values))
-        return False
-
-    # ---------------------------------------------------------- python interop
     def call_extern(self, name, args, node):
         d = self.externs[name]
         if d.target.startswith("klar:"):
@@ -904,26 +674,32 @@ class Interpreter:
         return tuple(range(a, b))
 
     def b_map(self, n, xs, f):
-        return tuple(self.call_value(f, [x], n) for x in xs)
+        return tuple([f(x) for x in xs])
 
     def b_filter(self, n, xs, f):
-        return tuple(x for x in xs if self.call_value(f, [x], n))
+        return tuple([x for x in xs if f(x)])
 
     def b_fold(self, n, xs, init, f):
         acc = init
         for x in xs:
-            acc = self.call_value(f, [acc, x], n)
+            acc = f(acc, x)
         return acc
 
     def b_any(self, n, xs, f):
-        return any(self.call_value(f, [x], n) for x in xs)
+        for x in xs:
+            if f(x):
+                return True
+        return False
 
     def b_all(self, n, xs, f):
-        return all(self.call_value(f, [x], n) for x in xs)
+        for x in xs:
+            if not f(x):
+                return False
+        return True
 
     def b_find(self, n, xs, f):
         for x in xs:
-            if self.call_value(f, [x], n):
+            if f(x):
                 return some(x)
         return NONE
 
@@ -937,7 +713,8 @@ class Interpreter:
         return tuple(sorted(xs))
 
     def b_sort_by(self, n, xs, f):
-        return tuple(sorted(xs, key=lambda x: self.call_value(f, [x], n)))
+        keys = [f(x) for x in xs]      # a Python loop, so deep recursion in f doesn't use the C stack
+        return tuple(xs[i] for i in sorted(range(len(xs)), key=keys.__getitem__))
 
     def b_sum(self, n, xs):
         return sum(xs, 0.0 if xs and isinstance(xs[0], float) else 0)

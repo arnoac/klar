@@ -178,7 +178,8 @@ reach you, and the known limits.
 |---|---|
 | `klar/syntax.py` | lexer and parser |
 | `klar/checker.py` | type checker: inference, generics, effects, exhaustiveness, definite return |
-| `klar/interp.py` | tree-walking interpreter and built-ins |
+| `klar/interp.py` | `klar run` / `klar test`: value representation, runtime support and built-ins |
+| `klar/pygen.py` | compiles a checked program to Python code for `klar run` (one Python function per Klar function) |
 | `klar/prelude.py` | built-in function signatures, written in Klar |
 | `klar/errors.py` | diagnostic codes, rendering and JSON output |
 | `klar/loader.py` | module loading for `use` |

@@ -19,6 +19,7 @@ Klar type, so an extern's signature is a checked contract:
 import importlib
 import os
 import sys
+import types
 
 from .types import TCon, TFn, prune
 
@@ -69,7 +70,7 @@ class Converter:
 
     # ---- Klar -> Python
     def to_py(self, v, ty=None):
-        from .interp import StructVal, EnumVal, Closure, FnRef, FrozenMap
+        from .interp import StructVal, EnumVal
         t = prune(ty) if ty is not None else None
         if isinstance(v, (bool, int, float, str)) or v is None:
             return v
@@ -93,7 +94,9 @@ class Converter:
             return v.obj
         if isinstance(v, PyFn):
             return v.fn
-        if isinstance(v, (Closure, FnRef)):
+        if isinstance(v, types.FunctionType):
+            if hasattr(v, "pyfn"):
+                return v.pyfn
             interp = self.interp
             fty = t if isinstance(t, TFn) else None
 
@@ -111,7 +114,12 @@ class Converter:
         if isinstance(t, TFn):
             if not callable(v):
                 raise InteropError(f"{where}: expected a callable for `{t}`, got {type(v).__name__}")
-            return PyFn(v, t)
+            interp = self.interp
+
+            def call_python_fn(*args):
+                return interp.call_python(v, args, t.params, t.ret, None, "a Python function value")
+            call_python_fn.pyfn = v
+            return call_python_fn
         if not isinstance(t, TCon):
             return v
         n = t.name

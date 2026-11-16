@@ -129,6 +129,14 @@ The interpreter remains the reference implementation and the only one that suppo
 suite runs every example and a feature-coverage program through both and requires identical output and
 error codes.
 
+`klar run` itself is a compiler too: after checking, klar/pygen.py turns each Klar function into one Python
+function (Klar locals become Python locals, loops become Python loops, calls are direct Python calls), with
+the same value representation, runtime checks and error messages as before, and runs it. A tree-walking
+evaluator spent 20 to 100 times longer than Python on the same program; the generated code runs within a
+small factor of hand-written Python, and because Python 3.11+ keeps Python-to-Python calls off the C stack,
+recursion can go 1,000,000 calls deep. Error traces are rebuilt from the Python frames only when an error
+happens, so a call costs nothing extra for them.
+
 ## 10. The web: one language for the page and the server
 
 Agents write a large share of their code for the web, and the web is where they make the most invisible

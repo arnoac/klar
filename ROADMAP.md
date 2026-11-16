@@ -56,8 +56,9 @@ structured errors).
   CPU-heavy handler still holds up the others (io waits do not). A runtime error in a handler answers that
   request with 500 in every backend (a stack overflow still ends a native server). Servers bind to 127.0.0.1
   unless HOST is set.
-* The interpreter is about 20 to 100 times slower than Python; use `klar build` for speed. (`push` and `set_at`
-  on a list `var` are O(1) there too.)
+* `klar run` compiles the program to Python code, so it runs about as fast as the same program written in
+  Python (1 to 6 times Python's time on most of bench/INTERP.md, 10 to 100 times faster than the old evaluator);
+  use `klar build` for compiled speed. Calls may nest 1,000,000 deep (250,000 on Python 3.10).
 * Python externs run only in the interpreter, `js:` externs only in JavaScript builds.
 * npm: `klar bind` cannot express unions of different types, intersections, `any`, tuples, rest parameters
   or built-ins like `Date` and `Uint8Array` (it lists what it skipped), and it marks every function
