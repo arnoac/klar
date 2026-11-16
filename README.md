@@ -52,32 +52,56 @@ test "rectangle area" {
 }
 ```
 
-## Running it
+## Getting started
 
-Requires Python 3.10+. `klar build` also needs a C compiler (tcc for dev builds, falling back to cc; gcc or
-clang for `--release`); the Boehm GC (`libgc-dev`) is used when installed. JavaScript builds need Node.js 22+
-to run on a server (any modern browser for `--target web`).
+You need Python 3.10+ and git. Install the `klar` command, make a project and run it:
 
 ```sh
-./klarc run examples/shapes.klar       # check and run main()
-./klarc build examples/shapes.klar     # native executable via tcc (fast build)
-./klarc build --release prog.klar      # via gcc/clang -O2 (fast code)
-./klarc build --target node prog.klar  # Node.js module: node prog.mjs
-./klarc build --target web app.klar    # browser app: open app.html
-./klarc build --target wasm prog.klar  # WebAssembly (clang + lld): node prog.mjs
-./klarc test examples/bank.klar        # run test blocks
-./klarc check --json some_file.klar    # machine-readable diagnostics
-./klarc fmt examples/                  # one canonical layout (--check to only report)
-./klarc new my_app                     # a package: klar.toml + main.klar
-./klarc add textkit --git URL --tag v1.0.0   # a dependency, pinned in klar.lock
-./klarc spec                           # print the language reference
-./klarc explain E306                   # explain an error code
-echo "2 * (3 + 4)" | ./klarc run examples/calc.klar
+git clone https://github.com/arnoac/klar && cd klar
+pipx install .              # or: ln -s "$PWD/klarc" ~/.local/bin/klar   (no install at all)
 
-PORT=8080 ./klarc run examples/apps/todo_api/main.klar     # JSON API + HTML page on SQLite
-./klarc run examples/apps/notes_cli/main.klar add "buy milk"  # CLI tool storing JSON
-./klarc run examples/apps/py_interop/main.klar             # calling Python libraries
-./klarc run examples/apps/guestbook/main.klar              # server-rendered site with forms and cookies
+klar new hello && cd hello
+klar run                    # Hello, world!
+klar test                   # runs the test in main.klar
+klar build && ./hello       # a native executable
+```
+
+For a browser app, `klar new shop --web`, then `klar dev` in that folder and open http://127.0.0.1:8000: the page
+reloads every time you save. `klar build` turns it into one self-contained `shop.html`.
+
+Every command works on the project you are in, so you rarely name a file. `klar help` lists them all and
+`klar help COMMAND` shows the options with examples:
+
+```
+klar new NAME [--web]       create a project               klar add SOURCE        add a dependency
+klar run [FILE] [ARGS]      check and run                  klar remove NAME       remove one
+klar dev [FILE...]          serve, reload on save          klar install           fetch the pinned dependencies
+klar test [FILE]            run test blocks                klar update [NAME]     move git dependencies forward
+klar check [FILE]           type-check (--json)            klar spec              the language reference
+klar fmt [PATH]             format in place                klar explain E306      explain an error code
+klar build [FILE]           compile                        klar lsp               language server for editors
+```
+
+`klar add` takes one source and says what it is: `npm:marked`, `py:requests==2.32.3`,
+`https://github.com/someone/textkit@v1.2.0` or `../geometry`. Versions are always pinned and npm install
+scripts never run. A mistyped command answers with the right one (`klar compile` says `klar build`).
+
+`klar build` also needs a C compiler (tcc for dev builds, falling back to cc; gcc or clang for `--release`); the
+Boehm GC (`libgc-dev`) is used when installed. JavaScript builds need Node.js 22+ to run on a server (any
+modern browser for web pages).
+
+```sh
+klar run examples/shapes.klar           # any file runs directly
+klar build --release prog.klar          # gcc/clang -O2: fast code
+klar build --target node server.klar    # Node.js module: node server.mjs
+klar build --target wasm prog.klar      # WebAssembly (clang + lld): node prog.mjs
+klar check --json some_file.klar        # machine-readable diagnostics
+echo "2 * (3 + 4)" | klar run examples/calc.klar
+
+PORT=8080 klar run examples/apps/todo_api      # JSON API + HTML page on SQLite (a folder runs its main.klar)
+klar run examples/apps/notes_cli add "buy milk"  # CLI tool storing JSON
+klar run examples/apps/py_interop              # calling Python libraries
+klar run examples/apps/guestbook               # server-rendered site with forms and cookies
 ```
 
 The largest example is **Klar Board** (`examples/apps/board`): a team task board with accounts, shared boards
@@ -85,14 +109,14 @@ and live updates, about 1,400 lines of Klar tested in every backend and in the b
 building it taught us about the language.
 
 ```sh
-./klarc dev examples/apps/board/server.klar examples/apps/board/app.klar     # open http://127.0.0.1:8000
+klar dev examples/apps/board               # open http://127.0.0.1:8000 (serves server.klar and app.klar)
 ```
 
 The full-stack example (`examples/apps/todo_web`) has a browser app and a JSON backend, both in Klar:
 
 ```sh
-./klarc dev examples/apps/todo_web/server.klar examples/apps/todo_web/app.klar   # open http://127.0.0.1:8000
-./klarc test examples/apps/todo_web/app.klar               # the UI logic, tested without a browser
+klar dev examples/apps/todo_web            # open http://127.0.0.1:8000
+klar test examples/apps/todo_web/app.klar               # the UI logic, tested without a browser
 ```
 
 Both sides share their types and calls (`api.klar`): the server answers `add_todo()` with `api_serve`, the
@@ -101,26 +125,24 @@ code to write, rows come out of SQLite as typed records (`sqlite_rows`), and eve
 through live updates. To build it yourself instead of `klar dev`:
 
 ```sh
-./klarc build --target web examples/apps/todo_web/app.klar -o examples/apps/todo_web/app.html
-./klarc build --target node examples/apps/todo_web/server.klar -o todo.mjs
+klar build examples/apps/todo_web/app.klar                 # a std.ui app, so: app.html
+klar build --target node examples/apps/todo_web/server.klar -o todo.mjs
 APP_DIR=examples/apps/todo_web node todo.mjs              # then open http://127.0.0.1:8080
 ```
-
-(`./klarc` is a wrapper for `python3 -m klar`.)
 
 npm packages work in JavaScript builds with typed declarations, and never hand Klar code a null or an
 exception (see SPEC "JavaScript interop and npm" and `examples/apps/markdown_notes`):
 
 ```
-./klarc add --npm marked                 # pins the exact version in klar.toml [npm]; install scripts never run
-./klarc bind marked                      # npm/marked.klar: extern declarations generated from marked's .d.ts
+klar add npm:typescript                # once per project: lets klar read packages' .d.ts types
+klar add npm:marked                    # pins the exact version in klar.toml [npm] and writes npm/marked.klar
 ```
 
 ```klar
 extern "js:marked.parse" fn markdown_to_html(markdown: str) -> str
 ```
 
-For editors, `./klarc lsp` is a language server: errors as you type with quick fixes, hover types, go to
+For editors, `klar lsp` is a language server: errors as you type with quick fixes, hover types, go to
 definition, rename and completion. Setup for VS Code, Neovim and Helix is in [editors/README.md](editors/README.md).
 
 ## Security
@@ -128,7 +150,7 @@ definition, rename and completion. Setup for VS Code, Neovim and Helix is in [ed
 Web apps are safe by default: escaped HTML, no event-handler or `javascript:` attributes, cross-site form
 posts refused, security headers and Secure, HttpOnly cookies, on-site redirects, request size limits. SQL
 built from strings is a compile error (E313). Dependencies are pinned and hash-checked, and no install script
-ever runs. `./klarc audit` checks every Python, npm and git dependency, and Klar itself, against published
+ever runs. `klar audit` checks every Python, npm and git dependency, and Klar itself, against published
 vulnerability advisories; run it in CI. [SECURITY.md](SECURITY.md) covers reporting a vulnerability, how fixes
 reach you, and the known limits.
 
@@ -165,4 +187,4 @@ reach you, and the known limits.
 | `examples/apps/` | component showcase (`showcase`), Klar Board (multi-user task board with logins and live updates, ~1,400 lines), full-stack todo app, Game of Life on WebAssembly (`life`), server-rendered guestbook, todo JSON API, notes CLI, Python interop demo, Markdown notes (npm packages `marked` and `dompurify` in the browser and on Node) |
 | `editors/` | VS Code extension (highlighting + language server) and Neovim / Helix setup |
 | `bench/` | benchmarks against C, Go and Python (`python3 bench/run.py`), the Benchmarks Game programs (`bench/benchmarksgame`), and WebAssembly vs JavaScript in the browser (`bench/wasm`) |
-| `tests/` | 148 tests: `python3 -m unittest discover tests` |
+| `tests/` | 172 tests: `python3 -m unittest discover tests` |

@@ -19,13 +19,17 @@ packages for externs, and `klar.lock`, which pins every git dependency to a comm
 Git dependencies (and their own dependencies, flattened) live in .klar/deps/, Python packages in .klar/python/,
 npm packages in node_modules/ (klar writes package.json from [npm]; npm's package-lock.json pins the rest).
 
-    klar new NAME                      a new package folder
-    klar add NAME --path DIR           depend on a local package
-    klar add NAME --git URL [--tag T | --rev R | --branch B]
-    klar add --python NAME==VERSION    a pinned Python package for externs
-    klar add --npm NAME[@VERSION]      a pinned npm package for "js:" externs (latest version if none given)
+    klar new NAME                      a new package folder (--web: a browser app)
+    klar add ../geometry               depend on a local package (its klar.toml names it)
+    klar add https://github.com/someone/textkit@v1.2.0     a git package; @ a tag or a commit
+    klar add py:requests==2.32.3       a pinned Python package for externs
+    klar add npm:marked[@VERSION]      a pinned npm package for "js:" externs (latest version if none given)
+    klar remove NAME                   drop a dependency of any kind
     klar install                       fetch what klar.toml and klar.lock name
     klar update [NAME...]              move git dependencies to the newest commit their tag/branch allows
+
+The long forms `klar add NAME --path DIR`, `--git URL [--tag T | --rev R | --branch B]`, `--python` and `--npm`
+still work.
 """
 
 import os
@@ -517,7 +521,66 @@ def _set_entry(path, section, name, value):
         f.write("\n".join(lines))
 
 
-def cmd_new(name):
+CONSOLE_MAIN = """fn main() uses io {
+  print(greeting("world"))
+}
+
+fn greeting(name: str) -> str {
+  return "Hello, {name}!"
+}
+
+test "greeting" {
+  assert greeting("Klar") == "Hello, Klar!"
+}
+"""
+
+WEB_MAIN = """// A browser app: `klar dev` serves it and reloads on every save; `klar build` makes main.html.
+
+use std.ui { Next, ui_run }
+use std.html { Html, h1, p, button, text, on_click }
+use std.layout { container, stack, row, gap, Sm }
+
+enum Msg {
+  Add,
+  Reset,
+}
+
+fn init() -> Next[int, Msg] {
+  return Next(0, [])
+}
+
+fn update(count: int, msg: Msg) -> Next[int, Msg] {
+  return match msg {
+    Add => Next(count + 1, []),
+    Reset => Next(0, []),
+  }
+}
+
+fn view(count: int) -> Html[Msg] {
+  return container([], [
+    stack([gap(Sm)], [
+      h1([], [text("Hello from Klar")]),
+      p([], [text("Clicked {count} times")]),
+      row([gap(Sm)], [
+        button([on_click(Add)], [text("Add one")]),
+        button([on_click(Reset)], [text("Reset")]),
+      ]),
+    ]),
+  ])
+}
+
+fn main() uses io {
+  ui_run(init(), update, view)
+}
+
+test "add and reset" {
+  assert update(1, Add).model == 2
+  assert update(5, Reset).model == 0
+}
+"""
+
+
+def cmd_new(name, web=False):
     if not NAME_RE.match(os.path.basename(name.rstrip("/"))):
         print("klar new: the name must be lower_snake_case, e.g. `klar new my_app`", file=sys.stderr)
         return 2
@@ -528,14 +591,110 @@ def cmd_new(name):
     pkg = os.path.basename(name.rstrip("/"))
     files = {
         MANIFEST: f'[package]\nname = "{pkg}"\nversion = "0.1.0"\n\n[dependencies]\n',
-        "main.klar": 'fn main() uses io {\n  print(greeting("world"))\n}\n\nfn greeting(name: str) -> str {\n'
-                     '  return "Hello, {name}!"\n}\n\ntest "greeting" {\n  assert greeting("Klar") == "Hello, Klar!"\n}\n',
-        ".gitignore": ".klar/\n",
+        "main.klar": WEB_MAIN if web else CONSOLE_MAIN,
+        ".gitignore": f".klar/\nnode_modules/\n/{pkg}\n/*.html\n/*.mjs\n",
     }
     for f, text in files.items():
         with open(os.path.join(name, f), "w", encoding="utf-8") as fh:
             fh.write(text)
-    print(f"created {name}/ (klar.toml, main.klar). Run: cd {name} && klar run main.klar", file=sys.stderr)
+    first = "klar dev        # open http://127.0.0.1:8000, edit main.klar, watch it reload" if web else \
+        "klar run        # Hello, world!"
+    print(f"created {name}/ (klar.toml, main.klar). Next:\n\n  cd {name}\n  {first}\n  klar test\n  klar build\n",
+          file=sys.stderr)
+    return 0
+
+
+GIT_HOST_RE = re.compile(r"^[a-z0-9.-]+\.[a-z]{2,}/[^/\s]+/[^/\s]+")
+
+
+def parse_source(src, name=None):
+    """`klar add SOURCE`: what a single source argument means, as keyword arguments for cmd_add.
+
+        npm:marked  npm:marked@18.2.0        an npm package
+        py:requests==2.32.3                   a Python package (pip:, python: work too)
+        ../geometry  ./libs/x  /abs/dir       a local Klar package
+        https://host/owner/repo[@REF]         a git Klar package; REF is a tag or a commit (github.com/... works too)
+    """
+    for prefix in ("npm:",):
+        if src.startswith(prefix):
+            return {"npm": src[len(prefix):]}
+    for prefix in ("py:", "pip:", "python:", "pypi:"):
+        if src.startswith(prefix):
+            return {"python": src[len(prefix):]}
+    if src.startswith((".", "/", "~")) or os.path.isdir(src):
+        path = os.path.expanduser(src)
+        if name is None:
+            try:
+                name = Manifest(os.path.abspath(path)).name if os.path.isfile(os.path.join(path, MANIFEST)) else None
+            except PkgError:
+                name = None
+            name = name or _guess_name(os.path.basename(os.path.abspath(path)))
+        return {"name": name, "path": path}
+    if "://" in src or src.startswith("git@") or GIT_HOST_RE.match(src):
+        url, ref = src, None
+        head, _, last = url.rpartition("/")
+        if "@" in last:
+            last, _, ref = last.partition("@")
+            url = head + "/" + last
+        if "://" not in url and not url.startswith("git@"):
+            url = "https://" + url
+        out = {"name": name or _guess_name(last), "git": url}
+        if ref:
+            out["rev" if re.match(r"^[0-9a-f]{7,40}$", ref) else "tag"] = ref
+        return out
+    raise PkgError(f"`{src}` does not say where the package comes from",
+                   f"say which kind: klar add npm:{src}  (npm)  |  klar add py:{src}==VERSION  (Python)  |  "
+                   f"klar add https://github.com/OWNER/{src}  (a Klar package in git)  |  klar add ./{src}  (a folder)")
+
+
+def _guess_name(base):
+    base = base[:-4] if base.endswith(".git") else base
+    return re.sub(r"[^a-z0-9_]", "_", base.lower()).strip("_") or base
+
+
+def _del_entry(path, section, name):
+    """Remove `name = ...` from [section]; True if it was there."""
+    with open(path, encoding="utf-8") as f:
+        lines = f.read().split("\n")
+    header = f"[{section}]"
+    try:
+        start = next(i for i, l in enumerate(lines) if l.strip() == header)
+    except StopIteration:
+        return False
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+    pat = re.compile(rf"^\s*(\"{re.escape(name)}\"|{re.escape(name)})\s*=")
+    hit = next((i for i in range(start + 1, end) if pat.match(lines[i])), None)
+    if hit is None:
+        return False
+    del lines[hit]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return True
+
+
+def cmd_remove(names):
+    try:
+        root = _root_or_fail()
+    except PkgError as ex:
+        return _report(ex)
+    man_path = os.path.join(root, MANIFEST)
+    with open(man_path, encoding="utf-8") as f:
+        before = f.read()
+    for name in names:
+        name = name.split(":", 1)[1] if name.startswith(("npm:", "py:", "pip:", "python:", "pypi:")) else name
+        if not any(_del_entry(man_path, sec, name) for sec in ("dependencies", "python", "npm")):
+            with open(man_path, "w", encoding="utf-8") as f:
+                f.write(before)
+            return _report(PkgError(f"klar.toml has no dependency `{name}`", "see the names in klar.toml"))
+    try:
+        install(root)
+    except PkgError as ex:
+        with open(man_path, "w", encoding="utf-8") as f:
+            f.write(before)
+        _report(ex)
+        print("klar.toml was left unchanged", file=sys.stderr)
+        return 1
+    print("removed " + ", ".join(names), file=sys.stderr)
     return 0
 
 
@@ -601,7 +760,28 @@ def cmd_add(name, path=None, git=None, rev=None, tag=None, branch=None, python=N
         print("klar.toml was left unchanged", file=sys.stderr)
         return 1
     print("added " + (python or npm or name), file=sys.stderr)
+    if npm:
+        _bind_quietly(root, npm.rpartition("@")[0] if npm.rfind("@") > 0 else npm)
     return 0
+
+
+def _bind_quietly(root, name):
+    """After `klar add npm:NAME`: write npm/NAME.klar from the package's TypeScript types when that is possible
+    (Node.js, `typescript` installed, the package ships types) and the file does not exist yet. Never fails the add."""
+    from . import npm as npmmod
+    out = os.path.join(root, "npm", npmmod.module_file_name(name) + ".klar")
+    if os.path.exists(out):
+        return
+    if not shutil.which("node") or not npmmod._typescript(root):
+        print(f"  typed declarations: `klar bind {name}` writes them (it needs `klar add npm:typescript` first)",
+              file=sys.stderr)
+        return
+    cwd = os.getcwd()
+    try:
+        os.chdir(root)
+        npmmod.cmd_bind(name)
+    finally:
+        os.chdir(cwd)
 
 
 def cmd_install(update=None):

@@ -1,0 +1,24 @@
+# `pipx install .` (or `pip install .`) puts a `klar` command on your PATH. Klar has no dependencies.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "klar"
+dynamic = ["version"]
+description = "A statically typed language designed to be easy for AI agents to write"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+klar = "klar.cli:entry_point"
+
+[tool.setuptools]
+packages = ["klar", "klar.stdpy"]
+
+[tool.setuptools.package-data]
+klar = ["SPEC.md", "std/*.klar", "runtime/**/*", "tools/*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "klar.__version__" }

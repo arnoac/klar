@@ -158,8 +158,8 @@ marked = "18.2.0"
 ```
 
 `use textkit { shout }` loads the dependency's `lib.klar`; `use textkit.case { ... }` its `case.klar`.
-`klar add NAME --path DIR | --git URL [--tag T]` (or `klar add --python NAME==VERSION`) edits `klar.toml` and
-installs; `klar install` fetches into `.klar/`; `klar.lock` pins each dependency by commit or hash (commit it);
+`klar add ../dir | URL@TAG | py:NAME==VERSION | npm:NAME` edits `klar.toml` and installs; `klar install`
+fetches into `.klar/`; `klar.lock` pins each dependency by commit or hash (commit it);
 `klar update` moves pins. Unimported dependency functions never clash with yours. Package errors are E601.
 
 ### Python interop
@@ -182,8 +182,8 @@ else E407 (also for a value of the wrong type). Declare `uses io` for side effec
 JavaScript builds call `"js:..."` targets: `"js:node:crypto.randomUUID"`, `"js:globalThis.Math.hypot"`, npm
 packages (`"js:marked.parse"`, `"js:new pkg.Class"`), first-argument members (`"js:.add"`, `"js:get .size"`,
 `set`). Values convert by type; null arrives only as `None`, a throw only as `Err` (if declared
-`Result[T, str]`), a Promise only with `uses io`, else E407. `klar add --npm marked` pins packages in
-`[npm]`; `klar bind marked` writes `npm/marked.klar` from `.d.ts` types. `"wasm:mod.f"` runs `f` from
+`Result[T, str]`), a Promise only with `uses io`, else E407. `klar add npm:marked` pins packages in
+`[npm]` and, given `typescript`, writes `npm/marked.klar` from `.d.ts` types (`klar bind marked` redoes it). `"wasm:mod.f"` runs `f` from
 `mod.klar` as WebAssembly (values copied).
 
 ## 5. Statements
@@ -468,21 +468,16 @@ checker reports all independent errors in one run. `klar check --json file.klar`
 ## 9. Tooling
 
 ```
-klar run file.klar [args...]     check, then run main() in the interpreter
-klar build file.klar [-o exe]    native executable
-klar build --release file.klar   gcc/clang -O2 (fastest code)
-klar build --target node f.klar  Node.js module: node f.mjs
-klar build --target web f.klar   self-contained web page: f.html
-klar build --target wasm f.klar  WebAssembly: f.wasm, f.mjs
-klar dev server.klar app.klar    serve a backend and/or app, reloading on save (--port N)
-klar check file.klar [--json]    type-check only
-klar test file.klar [--json]     run every `test` block
-klar fmt file.klar dir/          format in place (--check: list unformatted files)
-klar new|add|install|update      packages (see Packages)
-klar audit                       check dependencies for known vulnerabilities
-klar lsp                         language server for editors (see editors/README.md)
-klar spec                        print this reference
-klar explain CODE                explain an error code
+klar new NAME [--web]            a project: klar.toml + main.klar (--web: a std.ui app)
+klar run [FILE] [args...]        check, then run main() in the interpreter
+klar test|check [FILE] [--json]  run every `test` block | type-check only
+klar fmt [PATH] [--check]        format in place
+klar build [FILE] [--release]    native executable; std.ui apps become a web page (--target native|node|web|wasm)
+klar dev [FILE...]               serve app and/or backend; rebuild and reload on save
+klar add|remove|install|update   packages (see Packages)
+klar audit [--json]              check dependencies for known vulnerabilities
+klar lsp | spec | explain CODE   language server | this reference | explain an error code
+FILE defaults to the project's main.klar; test, check and fmt cover the whole project.
 ```
 
 Compiled programs match the interpreter except: `int` is 64-bit and

@@ -1,4 +1,4 @@
-// Starts `klarc lsp` for .klar files; everything else (diagnostics, hover, rename, formatting...) comes from it.
+// Starts `klar lsp` for .klar files; everything else (diagnostics, hover, rename, formatting...) comes from it.
 const vscode = require("vscode");
 const { LanguageClient } = require("vscode-languageclient/node");
 
@@ -14,7 +14,7 @@ function activate(context) {
   client.start().catch((err) => {
     vscode.window.showErrorMessage(
       `Could not start the Klar language server (${command} ${args.join(" ")}): ${err.message}. ` +
-      "Set klar.command to the path of klarc.");
+      "Set klar.command to the klar command (or the path of klarc in your clone).");
   });
   context.subscriptions.push({ dispose: () => client && client.stop() });
 }

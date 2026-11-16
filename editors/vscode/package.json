@@ -24,7 +24,7 @@
         "klar.command": {
           "type": "array",
           "items": { "type": "string" },
-          "default": ["klarc", "lsp"],
+          "default": ["klar", "lsp"],
           "description": "Command that starts the Klar language server, e.g. [\"/path/to/klar/klarc\", \"lsp\"] or [\"python3\", \"-m\", \"klar\", \"lsp\"]."
         }
       }

@@ -1,5 +1,12 @@
 #!/bin/sh
-DIR=$(cd "$(dirname "$0")" && pwd)
+# The `klar` command, run straight from a clone. Put it on your PATH once:
+#   ln -s "$PWD/klarc" ~/.local/bin/klar          (or: pipx install .)
+SELF=$0
+while [ -L "$SELF" ]; do                 # follow symlinks to find the clone
+  LINK=$(readlink "$SELF")
+  case $LINK in /*) SELF=$LINK ;; *) SELF=$(dirname "$SELF")/$LINK ;; esac
+done
+DIR=$(cd "$(dirname "$SELF")" && pwd)
 if [ "$1" = "build" ]; then
   # building needs no site-packages; skipping them makes compiles start faster
   PYTHONPATH="$DIR" exec python3 -S -m klar "$@"

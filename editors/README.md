@@ -1,6 +1,6 @@
 # Klar in your editor
 
-`klarc lsp` is a language server (LSP over stdin/stdout). Any editor with LSP support gets:
+`klar lsp` is a language server (LSP over stdin/stdout). Any editor with LSP support gets:
 
 * **diagnostics while you type**: the same errors as `klar check`, with their codes and hints;
 * **quick fixes** taken from the hints: "did you mean `area`?", missing `use` imports, missing `uses io`;
@@ -14,7 +14,7 @@
 Unsaved buffers are used in place of the files on disk, so an edit in one module shows up at once in the files
 that import it. Analysis takes a few milliseconds to about 50 ms for the largest example app.
 
-In every snippet below, replace `/path/to/klar` with the folder that holds `klarc`.
+In every snippet below, use `klar` if it is on your PATH (see the main README), or the full path to `klarc` in your clone.
 
 ## VS Code
 
@@ -27,8 +27,8 @@ npx @vscode/vsce package          # makes klar-0.10.0.vsix
 code --install-extension klar-0.10.0.vsix
 ```
 
-Then set `"klar.command": ["/path/to/klar/klarc", "lsp"]` in your settings (the default, `["klarc", "lsp"]`,
-works when `klarc` is on your PATH).
+Then set `"klar.command": ["/path/to/klar/klarc", "lsp"]` in your settings if needed (the default, `["klar", "lsp"]`,
+works when `klar` is on your PATH).
 
 ## Neovim (0.11+)
 
