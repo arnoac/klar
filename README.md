@@ -18,6 +18,9 @@ renders on the server and in the browser, and it all ships with a theme that loo
 `klar build --target web` makes a self-contained page; `--target node` makes a Node.js server. JSON is
 derived from your types (`json_encode`, `json_decode`, `web_json`, `web_body`), servers push live updates
 to browsers (`web_publish`, `ui_listen`), and `klar dev` rebuilds and reloads the browser on every save.
+Heavy computation in a web app can run as WebAssembly: `extern "wasm:fractal.render" fn render(...)` compiles
+`fractal.klar` to a module embedded in the page, 1.1-5.7x faster than the JavaScript backend in Chromium and on a
+par with hand-written JavaScript on half the kernels measured ([bench/wasm](bench/wasm/README.md)).
 
 `klar build` compiles a program to a native executable through C: a dev build takes about 40 ms (tcc), and
 `--release` (gcc -O2) produces code that runs within 1-3x of C and Go on the Computer Language Benchmarks Game
@@ -61,6 +64,7 @@ to run on a server (any modern browser for `--target web`).
 ./klarc build --release prog.klar      # via gcc/clang -O2 (fast code)
 ./klarc build --target node prog.klar  # Node.js module: node prog.mjs
 ./klarc build --target web app.klar    # browser app: open app.html
+./klarc build --target wasm prog.klar  # WebAssembly (clang + lld): node prog.mjs
 ./klarc test examples/bank.klar        # run test blocks
 ./klarc check --json some_file.klar    # machine-readable diagnostics
 ./klarc fmt examples/                  # one canonical layout (--check to only report)
@@ -130,6 +134,7 @@ definition, rename and completion. Setup for VS Code, Neovim and Helix is in [ed
 | `klar/interop.py` | Python interop for `extern` |
 | `klar/compiler.py` | Klar to C translation for `klar build` |
 | `klar/jscompiler.py` | Klar to JavaScript translation for `--target node` and `--target web` |
+| `klar/wasm.py` | WebAssembly builds: `--target wasm` and `extern "wasm:module.fn"` (C backend + clang wasm32) |
 | `klar/ownership.py` | which list variables can be updated in place (shared by both compilers) |
 | `klar/jsonconv.py` | automatic JSON for any type (interpreter; `klar_std.js` has the same rules) |
 | `klar/dev.py` | `klar dev`: rebuild on save, reload the browser, run the backend |
@@ -142,10 +147,11 @@ definition, rename and completion. Setup for VS Code, Neovim and Helix is in [ed
 | `klar/runtime/*.js` | JavaScript runtime: values, standard library on Node, browser UI runtime |
 | `klar/runtime/klar_rt.h` | C runtime: lists, maps, strings, checked arithmetic, errors |
 | `klar/runtime/klar_std.h` | the standard library in C (fs, process, JSON, regex, SQLite, HTTP client and server, tasks) |
+| `klar/runtime/wasm/`, `klar_wasm.js` | WebAssembly: the libc subset and allocator the C runtime needs, and the JavaScript host |
 | `klar/std/`, `klar/stdpy/` | standard library (Klar modules and their Python implementations) |
 | `klar/SPEC.md` | the complete language reference |
 | `examples/` | 7 small programs with expected output |
-| `examples/apps/` | component showcase (`showcase`), Klar Board (multi-user task board with logins and live updates, ~1,400 lines), full-stack todo app, server-rendered guestbook, todo JSON API, notes CLI, Python interop demo, Markdown notes (npm packages `marked` and `dompurify` in the browser and on Node) |
+| `examples/apps/` | component showcase (`showcase`), Klar Board (multi-user task board with logins and live updates, ~1,400 lines), full-stack todo app, Game of Life on WebAssembly (`life`), server-rendered guestbook, todo JSON API, notes CLI, Python interop demo, Markdown notes (npm packages `marked` and `dompurify` in the browser and on Node) |
 | `editors/` | VS Code extension (highlighting + language server) and Neovim / Helix setup |
-| `bench/` | benchmarks against C, Go and Python (`python3 bench/run.py`), and the Benchmarks Game programs (`bench/benchmarksgame`) |
-| `tests/` | 137 tests: `python3 -m unittest discover tests` |
+| `bench/` | benchmarks against C, Go and Python (`python3 bench/run.py`), the Benchmarks Game programs (`bench/benchmarksgame`), and WebAssembly vs JavaScript in the browser (`bench/wasm`) |
+| `tests/` | 148 tests: `python3 -m unittest discover tests` |

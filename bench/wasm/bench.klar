@@ -1,0 +1,48 @@
+// The WebAssembly benchmark: every kernel in kernels.klar, compiled to JavaScript (`use kernels`) and to
+// WebAssembly (the wasm externs below), run in the same JavaScript engine. Prints one tab-separated line per run:
+//   kernel  variant  run  milliseconds  result
+// Run 1 is cold (the engine is still compiling), the others are warm. run.mjs builds this for Node
+// (--target node) and for the browser (--target web), adds the hand-written JavaScript in kernels.js and
+// writes RESULTS.md.
+use std.time { time_millis }
+use kernels { nbody, spectralnorm, fannkuch, mandelbrot, binarytrees, smooth }
+
+extern "wasm:kernels.nbody" fn wasm_nbody(steps: int) -> str
+extern "wasm:kernels.spectralnorm" fn wasm_spectralnorm(n: int) -> str
+extern "wasm:kernels.fannkuch" fn wasm_fannkuch(n: int) -> str
+extern "wasm:kernels.mandelbrot" fn wasm_mandelbrot(size: int) -> int
+extern "wasm:kernels.binarytrees" fn wasm_binarytrees(n: int) -> int
+extern "wasm:kernels.smooth" fn wasm_smooth(xs: list[float], passes: int) -> list[float]
+
+fn runs() -> int { return 5 }
+
+fn measure(kernel: str, variant: str, f: fn() -> str) uses io {
+  for r in range(1, runs() + 1) {
+    let t0 = time_millis()
+    let result = f()
+    let ms = time_millis() - t0
+    print("{kernel}\t{variant}\t{r}\t{ms}\t{result}")
+  }
+}
+
+fn checksum(xs: list[float]) -> str {
+  var s = 0.0
+  for x in xs { s = s + x }
+  return "{len(xs)} values, sum {round(s * 1000.0)}"
+}
+
+fn main() uses io {
+  let signal = map(range(0, 1000000), fn(i) => to_float(i % 1000) / 1000.0)
+  measure("nbody 1M", "Klar -> JS", fn() => nbody(1000000))
+  measure("nbody 1M", "Klar -> wasm", fn() => wasm_nbody(1000000))
+  measure("spectralnorm 1000", "Klar -> JS", fn() => spectralnorm(1000))
+  measure("spectralnorm 1000", "Klar -> wasm", fn() => wasm_spectralnorm(1000))
+  measure("fannkuch 10", "Klar -> JS", fn() => fannkuch(10))
+  measure("fannkuch 10", "Klar -> wasm", fn() => wasm_fannkuch(10))
+  measure("mandelbrot 2000", "Klar -> JS", fn() => str(mandelbrot(2000)))
+  measure("mandelbrot 2000", "Klar -> wasm", fn() => str(wasm_mandelbrot(2000)))
+  measure("binarytrees 16", "Klar -> JS", fn() => str(binarytrees(16)))
+  measure("binarytrees 16", "Klar -> wasm", fn() => str(wasm_binarytrees(16)))
+  measure("smooth 1M floats x 10", "Klar -> JS", fn() => checksum(smooth(signal, 10)))
+  measure("smooth 1M floats x 10", "Klar -> wasm", fn() => checksum(wasm_smooth(signal, 10)))
+}

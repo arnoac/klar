@@ -553,6 +553,8 @@ class Interpreter:
         d = self.externs[name]
         if d.target.startswith("klar:"):
             return self.call_intrinsic(d, args, node or d)
+        if d.target.startswith("wasm:"):
+            return self.call_wasm_module(d, args, node or d)
         if d.target.startswith("js:"):
             self.rt_err("E407", f"extern `{name}` calls JavaScript (\"{d.target}\"), which only exists in compiled programs", node or d,
                         "build it with `klar build --target node` (or `--target web` for the browser)")
@@ -570,6 +572,28 @@ class Interpreter:
                 return self.call_python(fn, args, d.ptypes, d.rtype, node or d, f"extern `{name}`")
         finally:
             self.stack.pop()
+
+    def call_wasm_module(self, d, args, node):
+        """`extern "wasm:module.fn"` runs module.klar as WebAssembly in compiled web/node apps; here it is
+        interpreted like any Klar code, so `klar run` and `klar test` give the same results."""
+        hit = self.extern_cache.get(d.name)
+        if hit is None:
+            from . import tasks
+            from .wasm import parse_target, load_module, check_extern
+            path, fn = parse_target(d.target, d.module)
+            if not os.path.exists(path):
+                self.rt_err("E407", f"extern `{d.name}`: WebAssembly module {path} does not exist", node,
+                            'the target is "wasm:module.function", where module.klar sits next to this file')
+            prog, errors = load_module(path)
+            if errors:
+                raise errors[0]
+            check_extern(d, self.conv.checker, prog, fn, path)
+            saved = tasks.RUNTIME
+            sub = Interpreter(prog, path, self.argv, self.out, self.inp)
+            sub.rt = tasks.RUNTIME = saved          # one runtime (and one lock) for both
+            hit = self.extern_cache[d.name] = (sub, fn)
+        sub, fn = hit
+        return sub.call_fn(fn, list(args), None)
 
     def call_intrinsic(self, d, args, node):
         """`extern "klar:..."` functions are implemented by each backend on its own value representation."""

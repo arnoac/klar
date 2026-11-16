@@ -1,0 +1,57 @@
+// Conway's Game of Life on a wrapping grid: pure list computation, compiled to WebAssembly by app.klar's
+// wasm externs (and to JavaScript too, so the app can compare the two). Nothing here knows about the browser.
+// A grid is a list[int] of w * h cells, row by row: 1 alive, 0 dead.
+
+fn step(cells: list[int], w: int, h: int) -> list[int] {
+  var next: list[int] = []
+  for y in range(0, h) {
+    let up = ((y + h - 1) % h) * w
+    let row = y * w
+    let down = ((y + 1) % h) * w
+    for x in range(0, w) {
+      let l = (x + w - 1) % w
+      let r = (x + 1) % w
+      let n = cells[up + l] + cells[up + x] + cells[up + r] + cells[row + l] + cells[row + r]
+        + cells[down + l] + cells[down + x] + cells[down + r]
+      let alive = cells[row + x] == 1
+      next = push(next, if n == 3 or (alive and n == 2) then 1 else 0)
+    }
+  }
+  return next
+}
+
+fn run(cells: list[int], w: int, h: int, generations: int) -> list[int] {
+  var c = cells
+  for _g in range(0, generations) { c = step(c, w, h) }
+  return c
+}
+
+// A reproducible random start: about one cell in three alive.
+fn seed(w: int, h: int, s: int) -> list[int] {
+  var x = s
+  var out: list[int] = []
+  for _i in range(0, w * h) {
+    x = (x * 1103515245 + 12345) % 2147483648
+    out = push(out, if x % 3 == 0 then 1 else 0)
+  }
+  return out
+}
+
+fn picture(cells: list[int], w: int, h: int) -> str {
+  var lines: list[str] = []
+  for y in range(0, h) {
+    var line: list[str] = []
+    for x in range(0, w) { line = push(line, if cells[y * w + x] == 1 then "#" else " ") }
+    lines = push(lines, join(line, ""))
+  }
+  return join(lines, "\n")
+}
+
+fn population(cells: list[int]) -> int { return sum(cells) }
+
+test "a blinker turns" {
+  let flat = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  let tall = [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+  assert step(flat, 5, 5) == tall
+  assert run(flat, 5, 5, 2) == flat
+}

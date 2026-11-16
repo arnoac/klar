@@ -15,6 +15,11 @@ from .types import TCon, TFn, TVar, INT, prune, resolve, substitute, show
 
 RUNTIME = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime", "klar_rt.h")
 STD_RUNTIME = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime", "klar_std.h")
+WASM_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime", "wasm")
+# std modules a WebAssembly build can use (the rest need an operating system: files, processes, sockets, threads)
+WASM_STD = ("klar.stdpy.mathlib.", "klar.stdpy.timelib.now", "klar.stdpy.timelib.millis", "klar.stdpy.timelib.format_utc",
+            "klar.stdpy.timelib.iso_utc", "klar.stdpy.randomlib.", "klar.stdpy.jsonlib.", "klar.stdpy.cryptolib.", "klar.stdpy.fslib.join",
+            "klar:web.form_decode", "klar:web.url_encode", "klar:web.url_decode", "klar:web.mime_type")
 
 # Standard-library externs with a C implementation in klar_std.h: target -> (C function, feature).
 # A feature names the library a program then links (see FEATURES); None needs only libc.
@@ -88,7 +93,9 @@ class FnCtx:
 
 
 class Compiler:
-    def __init__(self, prog, file):
+    def __init__(self, prog, file, target="native", exports=None):
+        self.target = target     # "native" or "wasm"
+        self.exports = exports   # wasm: names of functions JavaScript calls (None: a program with main)
         self.prog = prog
         self.file = file or "<input>"
         self.c = prog.checker
@@ -193,6 +200,8 @@ class Compiler:
 
     # ------------------------------------------------------------------ driver
     def compile(self):
+        if self.target == "wasm":
+            return self.compile_wasm()
         if "main" not in self.fns:
             raise KlarError("E201", "no `main` function to compile", 1, 1, "add: fn main() uses io { ... }", self.file)
         main = self.request_fn("main", [])
@@ -215,6 +224,112 @@ class Compiler:
                      f"  k_init(argc, argv);\n  {main}();\n  fflush(stdout);\n  return 0;\n}}\n")
         return "\n".join(parts)
 
+    # ------------------------------------------------------------------ WebAssembly
+    def wasm_kind(self, t):
+        """How a value crosses the JavaScript <-> WebAssembly boundary: i64 / f64 / str / ints / floats / json."""
+        k = self.kind(t)
+        n = prune(t).name if isinstance(prune(t), TCon) else ""
+        if k == "int":
+            return "bool" if n == "bool" else "unit" if n in ("unit", "never") else "i64"
+        if k == "float":
+            return "f64"
+        if k == "str":
+            return "str"
+        if k == "list":
+            ek = self.kind(t.args[0])
+            en = prune(t.args[0]).name if isinstance(prune(t.args[0]), TCon) else ""
+            if ek == "int" and en == "int":
+                return "ints"
+            if ek == "float":
+                return "floats"
+        if k in ("fn", "extern"):
+            return None
+        return "json"
+
+    def compile_wasm(self):
+        main = None
+        if self.exports is None:
+            if "main" not in self.fns:
+                raise KlarError("E201", "no `main` function to compile", 1, 1, "add: fn main() uses io { ... }", self.file)
+            main = self.request_fn("main", [])
+        wrappers = []
+        self.export_sigs = {}
+        for name in self.exports or []:
+            d = self.fns.get(name)
+            if d is None:
+                raise KlarError("E201", f"`{name}` is not a function in {self.file}", 1, 1,
+                                "a wasm extern names a top-level `fn` of that module", self.file)
+            if d.tparams:
+                raise KlarError("E501", f"generic function `{name}` cannot be called from JavaScript", d.line, d.col,
+                                "export a non-generic wrapper, e.g. fn sum_ints(xs: list[int]) -> int { return sum(xs) }",
+                                self.file)
+            sig = self.c.fns[name]
+            cname = self.request_fn(name, [])
+            ps, args, kinds, pre = [], [], [], []
+            for i, (p, t) in enumerate(sig.params):
+                t = self.T(t)
+                wk = self.wasm_kind(t)
+                if wk is None:
+                    raise KlarError("E501", f"`{name}` takes a `{show(t)}`, which cannot cross from JavaScript", d.line,
+                                    d.col, "pass plain data (numbers, strings, lists, maps, structs, enums)", self.file)
+                kinds.append(wk)
+                if wk in ("i64", "bool", "unit"):
+                    ps.append(f"int64_t a{i}")
+                    args.append(f"a{i}")
+                elif wk == "f64":
+                    ps.append(f"double a{i}")
+                    args.append(f"a{i}")
+                elif wk in ("str", "ints", "floats"):
+                    ps.append(f"{self.ctype(t)} a{i}")
+                    args.append(f"a{i}")
+                else:
+                    self.uses_std = True
+                    ps.append(f"KStr *a{i}")
+                    pre.append(f"KEnum *d{i} = kx_json_decode(a{i}, &{self.desc(t)}); "
+                               f"if (d{i}->tag != K_TAG_OK) k_fail(\"E407\", 0, 0, \"argument `{p}` of `{name}`: %s\", "
+                               f"K_S2P(KStr *, d{i}->f[0])->data);")
+                    args.append(self.from_s(f"d{i}->f[0]", t))
+            rt = self.T(sig.ret)
+            rk = self.wasm_kind(rt)
+            if rk is None:
+                raise KlarError("E501", f"`{name}` returns a `{show(rt)}`, which cannot cross to JavaScript", d.line, d.col,
+                                "return plain data (numbers, strings, lists, maps, structs, enums)", self.file)
+            call = f"{cname}({', '.join(args)})"
+            if rk in ("i64", "bool", "unit"):
+                ret, body = "int64_t", f"int64_t r = {call};"
+            elif rk == "f64":
+                ret, body = "double", f"double r = {call};"
+            elif rk == "str":
+                ret, body = "KStr *", f"KStr *r = {call};"
+            elif rk in ("ints", "floats"):
+                ret, body = "KList *", f"KList *r = {call}; k_list_data(r);"
+            else:
+                self.uses_std = True
+                ret, body = "KStr *", f"KStr *r = kx_json_encode({self.to_s(call, rt)}, &{self.desc(rt)});"
+            wrappers.append(f'K_EXPORT("{name}") {ret} kw_{name}({", ".join(ps) or "void"}) {{\n'
+                            f'  {" ".join(pre)}\n  {body}\n  fflush(stdout);\n  return r;\n}}\n')
+            self.export_sigs[name] = (kinds, rk)
+        while self.work:
+            fname, targs, cname = self.work.pop()
+            self.gen_fn(self.fns[fname], targs, cname)
+        parts = [open(os.path.join(WASM_DIR, "klar_wasm.h"), encoding="utf-8").read(),
+                 open(RUNTIME, encoding="utf-8").read()]
+        if self.uses_std:
+            parts.append("".join(f"#define KT_{v} {t}\n" for v, t in self.tags.items() if t > 3))
+            parts.append(open(STD_RUNTIME, encoding="utf-8").read())
+        parts.append(WASM_GLUE)
+        parts.append("\n/* ---- generated ---- */\n")
+        parts += self.descs
+        parts += self.statics
+        parts += [p + ";" for p in self.protos]
+        parts += self.defs
+        parts += wrappers
+        parts.append(f"K_EXPORT(\"klar_init\") void klar_init(void) {{ k_file = {c_string_literal(self.file.encode())}; }}\n")
+        if main:
+            parts.append(f'K_EXPORT("klar_main") int klar_main(void) {{\n  k_argv = kw_args(&k_argc);\n  {main}();\n'
+                         f'  fflush(stdout);\n  return 0;\n}}\n')
+        return "\n".join(parts)
+
     def feature_defines(self, f):
         if f == "http_client":
             return ["K_STD_NET", "K_STD_TASKS"] + (["K_STD_TLS"] if has_header("openssl/ssl.h") else [])
@@ -232,6 +347,11 @@ class Compiler:
     def native_extern(self, e, d):
         """C function for a standard-library extern, or E501 for anything else (Python / JavaScript interop)."""
         target = d.target
+        if self.target == "wasm" and not target.startswith(WASM_STD) and target in NATIVE:
+            raise KlarError("E501", f"`{d.name}` cannot run in WebAssembly (it needs an operating system: files, "
+                            f"processes, sockets, threads, SQLite or regex)", e.line, e.col,
+                            "keep WebAssembly modules to computation; do the io in the JavaScript part of the app "
+                            "(`--target web` / `--target node`) and pass the data in", node_file(e, self.file))
         if target in NATIVE:
             cname, feature = NATIVE[target]
             if feature in FEATURES and FEATURES[feature][2] and not has_header(FEATURES[feature][2]):
@@ -979,6 +1099,9 @@ class Compiler:
             return f"(k_fail(\"E403\", {L}, \"panic: %s\", ({a[0]})->data), (int64_t)0)"
         if name == "read_line":
             return "k_read_line()"
+        if name in ("read_file", "write_file") and self.target == "wasm":
+            raise KlarError("E501", f"`{name}` cannot run in WebAssembly (there is no file system)", e.line, e.col,
+                            "read files in the JavaScript part of the app and pass their contents in", self.file)
         if name == "read_file":
             return f"k_read_file({a[0]})"
         if name == "write_file":
@@ -1140,9 +1263,22 @@ def walk_names(node, used, bound):
             walk_names(x, used, bound)
 
 
-def compile_to_c(prog, file, info=None):
-    c = Compiler(prog, file)
+# Exported helpers the JavaScript side uses to build and read strings and number lists in linear memory.
+WASM_GLUE = """
+K_EXPORT("klar_str_new") KStr *klar_str_new(int n) { return k_str_alloc(n); }
+K_EXPORT("klar_str_data") char *klar_str_data(KStr *s) { return s->data; }
+K_EXPORT("klar_str_len") int klar_str_len(KStr *s) { return (int)s->len; }
+K_EXPORT("klar_list_new") KList *klar_list_new(int n) { return k_list_with_cap(n, n); }
+K_EXPORT("klar_list_data") KS *klar_list_data(KList *l) { return k_list_data(l); }
+K_EXPORT("klar_list_len") int klar_list_len(KList *l) { return (int)l->len; }
+"""
+
+
+def compile_to_c(prog, file, info=None, target="native", exports=None):
+    c = Compiler(prog, file, target, exports)
     out = c.compile()
     if info is not None:
         info["libs"] = c.libs()
+        if target == "wasm":
+            info["exports"] = c.export_sigs
     return out

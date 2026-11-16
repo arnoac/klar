@@ -54,6 +54,7 @@ class JSCompiler:
         self.sub = {}
         self.ctx = None
         self.out = None
+        self.wasm = {}           # WebAssembly module path -> (JS variable, compiled export kinds)
 
     # ------------------------------------------------------------------ errors and types
     def unsupported(self, node, what, hint=None):
@@ -104,6 +105,8 @@ class JSCompiler:
             name, targs, jsname = self.work.pop()
             self.gen_fn(self.fns[name], targs, jsname)
         files = ["klar_rt.js", "klar_std.js", "klar_node.js" if self.target == "node" else "klar_web.js"]
+        if self.wasm:
+            files.append("klar_wasm.js")
         parts = []
         if self.target == "node":
             parts.append('import $fs from "node:fs"; import $path from "node:path"; import $http from "node:http";\n'
@@ -616,6 +619,8 @@ class JSCompiler:
             self.helpers[key] = name
             self.js_extern(d, sig, name, node)
             return name
+        if target.startswith("wasm:"):
+            return self.wasm_extern(d, node, key, name, sig)
         if self.target == "web" and target.startswith(NODE_ONLY):
             self.unsupported(node, f"`{d.name}` (it needs a server: files, processes and databases are not available in "
                                    f"the browser)", "use it in a backend built with `--target node`, and call that backend "
@@ -702,6 +707,40 @@ class JSCompiler:
                     f"$fail(\"E407\", {where}, {what} + \" threw \" + $js_err(e) + \" (declare the result as Result[T, str] to handle it)\"); }} "
                     f"return $from_js(r, {self.desc(rt)}, {what}, {where});")
         self.defs.append(f"{'async ' if is_io else ''}function {name}({', '.join(ps + ['$l = 0', '$c = 0'])}) {{ {body} }}")
+
+    def wasm_extern(self, d, node, key, name, sig):
+        """extern "wasm:module.function": compile module.klar to WebAssembly once, call the function through it."""
+        from .compiler import compile_to_c
+        from .wasm import parse_target, load_module, check_extern, c_to_wasm, b64
+        path, fn = parse_target(d.target, d.module)
+        if path not in self.wasm:
+            if not os.path.exists(path):
+                raise KlarError("E201", f"extern `{d.name}`: WebAssembly module {path} does not exist", d.line, d.col,
+                                'the target is "wasm:module.function", where module.klar sits next to this file', d.module)
+            prog, errors = load_module(path)
+            if errors:
+                raise errors[0]
+            fns = []
+            for x in self.externs.values():      # every function this app calls in that module: one .wasm
+                if x.target.startswith("wasm:") and parse_target(x.target, x.module)[0] == path:
+                    check_extern(x, self.c, prog, parse_target(x.target, x.module)[1], path)
+                    fns.append(parse_target(x.target, x.module)[1])
+            info = {}
+            c_src = compile_to_c(prog, path, info, "wasm", sorted(set(fns)))
+            var = f"$wasm{len(self.wasm)}"
+            self.consts.append(f"const {var} = await $wasm_load($wasm_b64(\"{b64(c_to_wasm(c_src, where=path))}\"));")
+            self.wasm[path] = (var, info["exports"])
+        var, exports = self.wasm[path]
+        kinds, rkind = exports[fn]
+        ptypes = [self._subst(t, {}) for _, t in sig.params]
+        rt = self._subst(sig.ret, {})
+        ps = [f"a{i}" for i in range(len(ptypes))]
+        descs = ", ".join(self.desc(t) if k == "json" else "null" for t, k in zip(ptypes, kinds))
+        rdesc = self.desc(rt) if rkind == "json" else "null"
+        self.helpers[key] = name
+        self.defs.append(f"function {name}({', '.join(ps)}) {{ return $wasm_call({var}, {json.dumps(fn)}, "
+                         f"{json.dumps(kinds)}, [{descs}], {json.dumps(rkind)}, {rdesc}, [{', '.join(ps)}]); }}")
+        return name
 
     # ------------------------------------------------------------------ match
     def e_Match(self, e):

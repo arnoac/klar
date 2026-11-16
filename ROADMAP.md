@@ -26,6 +26,7 @@ structured errors).
 | 15. Components (v0.13) | `std.kit`: buttons with typed variants and sizes, fields with hints and problems, select, checkbox, switch, radio group, badges, alerts, toasts, dialogs, tabs, menus, panels, empty states, stats, avatars, breadcrumbs, progress, spinners and skeletons; a slim neutral theme (light and dark) restyled by one typed `kit_theme`; roles, labels, focus and keyboard handling built in; state stays in the app model; `on_key`; type parameters usable in local annotations | modern-looking apps with no CSS; Klar Board and the todo app use it |
 | 16. Tables, combobox, drag and drop (v0.14) | `data_table` (sortable, paged, `aria-sort`), `combobox` (filter as you type, arrow keys, `aria-activedescendant`), dialogs that keep Tab inside and give focus back, `on_drag`/`on_drop`/`on_drag_end` with a drop highlight, `on_blur`, `on_press`; Klar Board cards move by dragging | the components most data apps need, with keyboard and screen reader support |
 | 17. npm packages | typed `js:` externs for npm packages: constructors, methods, properties, callbacks both ways; null only as `None`, exceptions only as `Err`, Promises only with `uses io` (else E407); `[npm]` in klar.toml with exact versions, `npm ci` against package-lock.json, install scripts off; web builds embed the packages' ES modules (still one offline .html); `klar bind` generates declarations from `.d.ts` | the npm ecosystem from Klar without giving up its guarantees; `examples/apps/markdown_notes` (marked + DOMPurify) |
+| 18. WebAssembly | `klar build --target wasm` and `extern "wasm:module.fn"` in web and Node apps: the C backend through clang's wasm32 target, with Klar's own small libc and a per-call heap; values are copied across as typed arrays, strings or JSON; runtime errors keep their codes; `klar run` interprets the module | heavy computation in the browser 1.1-5.7x faster than the JavaScript backend, on a par with hand-written JavaScript for float and allocation-heavy code |
 
 ## Next
 
@@ -39,7 +40,8 @@ structured errors).
    * a precompiled runtime object so tcc doesn't re-parse the runtime on every build;
    * faster maps and strings (the `words` benchmark is about 2 times behind Go) and unchecked arithmetic
      where the checker can prove no overflow (recursive `fib` is about 2 times behind C);
-   * WebAssembly for CPU-heavy browser code.
+   * WebAssembly: a garbage collector for long allocation-heavy calls (today each call gets a fresh heap, up
+     to 4 GB), and closing the 1.7-1.9x gap to hand-written JavaScript on list-heavy kernels (bench/wasm).
 5. **More for the web.** Keyed list diffing for long lists, websockets for two-way messages, CSRF protection in
    `std.web` (the board relies on SameSite cookies), and keeping the app's state across `klar dev` reloads.
 6. **GUI and games.** Browser apps work today through `std.ui` (and a canvas command is a small addition);

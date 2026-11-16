@@ -219,6 +219,47 @@ def cmd_build_js(path, out, target, as_json, quiet=False):
     return 0
 
 
+def cmd_build_wasm(path, out, release, emit_c, as_json, quiet=False):
+    import time
+    from .compiler import compile_to_c
+    from .wasm import c_to_wasm, runner_js
+    t0 = time.perf_counter()
+    src = load(path)
+    prog, errors = check_source(src, path)
+    if not errors:
+        e = check_main_signature(prog, path)
+        if e:
+            errors = [e]
+    wasm = None
+    if not errors:
+        try:
+            c_src = compile_to_c(prog, path, None, "wasm")
+            if emit_c:
+                c_path = (out or os.path.splitext(os.path.basename(path))[0]) + ".c"
+                with open(c_path, "w", encoding="utf-8") as f:
+                    f.write(c_src)
+                print(f"wrote {c_path}")
+                return 0
+            t1 = time.perf_counter()
+            wasm = c_to_wasm(c_src, release=True, where=path)
+        except KlarError as e:
+            errors = [e]
+    if errors:
+        report(errors, src, as_json)
+        return 1
+    stem = out[:-4] if out and out.endswith(".mjs") else out or os.path.splitext(os.path.basename(path))[0]
+    wasm_path, js_path = stem + ".wasm", stem + ".mjs"
+    with open(wasm_path, "wb") as f:
+        f.write(wasm)
+    with open(js_path, "w", encoding="utf-8") as f:
+        f.write("#!/usr/bin/env node\n" + runner_js(os.path.basename(wasm_path)))
+    os.chmod(js_path, 0o755)
+    if not quiet:
+        print(f"built {wasm_path} ({len(wasm) // 1024 + 1} KB) + {js_path}: klar {1000 * (t1 - t0):.0f} ms + clang "
+              f"{1000 * (time.perf_counter() - t1):.0f} ms; run it with: node {js_path}", file=sys.stderr)
+    return 0
+
+
 def cmd_explain(code):
     code = code.upper()
     if code not in CATALOG:
@@ -255,12 +296,14 @@ def main(argv=None):
                 return 2
             i += 1
         if opts["file"] is None:
-            print("usage: klar build FILE [--target native|node|web] [-o OUT] [--release] [--emit-c] [--json]", file=sys.stderr)
+            print("usage: klar build FILE [--target native|node|web|wasm] [-o OUT] [--release] [--emit-c] [--json]", file=sys.stderr)
             return 2
         if opts["target"] in ("node", "web"):
             return cmd_build_js(opts["file"], opts["out"], opts["target"], opts["json"])
+        if opts["target"] == "wasm":
+            return cmd_build_wasm(opts["file"], opts["out"], opts["release"], opts["emit_c"], opts["json"])
         if opts["target"] != "native":
-            print(f"klar build: unknown target {opts['target']!r} (choose native, node or web)", file=sys.stderr)
+            print(f"klar build: unknown target {opts['target']!r} (choose native, node, web or wasm)", file=sys.stderr)
             return 2
         return cmd_build(opts["file"], opts["out"], opts["release"], opts["emit_c"], opts["json"])
     import argparse
@@ -282,8 +325,9 @@ def main(argv=None):
     b.add_argument("--release", action="store_true", help="optimise with gcc/clang -O2 (default: fastest compile, tcc if installed)")
     b.add_argument("--emit-c", action="store_true", help="write the generated C file and stop")
     b.add_argument("--json", action="store_true")
-    b.add_argument("--target", default="native", choices=["native", "node", "web"],
-                   help="native executable (default), Node.js module (servers, tools) or web page (browser apps)")
+    b.add_argument("--target", default="native", choices=["native", "node", "web", "wasm"],
+                   help="native executable (default), Node.js module (servers, tools), web page (browser apps) "
+                        "or WebAssembly (.wasm + .mjs loader, for browsers and Node)")
     fm = sub.add_parser("fmt", help="format .klar files in place (one canonical layout)")
     fm.add_argument("paths", nargs="+", help="files or directories")
     fm.add_argument("--check", action="store_true", help="change nothing; list unformatted files and exit 1")
@@ -316,6 +360,8 @@ def main(argv=None):
     if a.cmd == "run":
         return cmd_run(a.file, a.json, a.args)
     if a.cmd == "build":
+        if a.target == "wasm":
+            return cmd_build_wasm(a.file, a.output, a.release, a.emit_c, a.json)
         if a.target != "native":
             return cmd_build_js(a.file, a.output, a.target, a.json)
         return cmd_build(a.file, a.output, a.release, a.emit_c, a.json)

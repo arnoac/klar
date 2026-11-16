@@ -188,7 +188,8 @@ JavaScript builds call `"js:..."` targets: `"js:node:crypto.randomUUID"`, `"js:g
 packages (`"js:marked.parse"`, `"js:new pkg.Class"`), first-argument members (`"js:.add"`, `"js:get .size"`,
 `set`). Values convert by type; null arrives only as `None`, a throw only as `Err` (if declared
 `Result[T, str]`), a Promise only with `uses io`, else E407. `klar add --npm marked` pins packages in
-`[npm]`; `klar bind marked` writes `npm/marked.klar` from `.d.ts` types.
+`[npm]`; `klar bind marked` writes `npm/marked.klar` from `.d.ts` types. `"wasm:mod.f"` runs `f` from
+`mod.klar` as WebAssembly (values copied).
 
 ## 5. Statements
 
@@ -422,8 +423,8 @@ storage (`ui_save`; read back with `ui_load` in `main`), navigation (`ui_go`), f
 back/forward.
 
 **Develop with `klar dev`.** `klar dev server.klar app.klar` runs the backend on Node (PORT set), builds
-`app.html`, and serves both at http://127.0.0.1:8000. Saving rebuilds and reloads open pages, showing
-build errors there. `klar dev app.klar` alone serves a browser app.
+`app.html`, and serves both at http://127.0.0.1:8000. Saving rebuilds and reloads pages, showing
+build errors. `klar dev app.klar` alone serves a browser app.
 
 ## 8. Diagnostics
 
@@ -453,16 +454,17 @@ checker reports all independent errors in one run. `klar check --json file.klar`
 | E601 | klar.toml or a dependency is missing or invalid | E409 | deadlock: every task waiting |
 | E206 | bad named arguments | E401–E407 | runtime: index, div by zero, panic, assert, missing key, stack overflow, io/interop |
 
-`klar explain E306` prints the long explanation of any code.
+`klar explain E306` explains any code.
 
 ## 9. Tooling
 
 ```
 klar run file.klar [args...]     check, then run main() in the interpreter
-klar build file.klar [-o exe]    compile to a native executable (fast compile: tcc if installed)
-klar build --release file.klar   compile with gcc/clang -O2 (fastest code)
-klar build --target node f.klar  compile to a Node.js module (servers, tools): node f.mjs
-klar build --target web f.klar   compile to a self-contained web page (std.ui apps): f.html
+klar build file.klar [-o exe]    native executable (tcc if installed: fast compile)
+klar build --release file.klar   gcc/clang -O2 (fastest code)
+klar build --target node f.klar  Node.js module (servers, tools): node f.mjs
+klar build --target web f.klar   self-contained web page (std.ui apps): f.html
+klar build --target wasm f.klar  WebAssembly: f.wasm, f.mjs
 klar dev server.klar app.klar    serve a backend and/or browser app; rebuild and reload on save (--port N)
 klar check file.klar [--json]    type-check only
 klar test file.klar [--json]     run every `test` block
@@ -476,8 +478,8 @@ klar explain CODE                explain an error code
 Compiled programs match the interpreter except: `int` is 64-bit and
 overflow is E408, and natively `upper`/`lower`/`trim` change only ASCII. Native and Node builds support every
 std module (native regex and sqlite need the PCRE2 and SQLite libraries). The browser has no files, processes,
-databases or servers (E501), and `print` goes to the console. Python externs are interpreter-only; `js:`
-externs JavaScript-only.
+databases or servers (E501), and `print` goes to the console. Python externs are interpreter-only, `js:` ones
+JavaScript-only.
 
 ## 10. Coming from another language
 

@@ -1,0 +1,66 @@
+// Game of Life: the page (model / update / view) runs as JavaScript, the simulation as WebAssembly.
+//
+//   klar build --target web examples/apps/life/app.klar     then open app.html
+//   klar test examples/apps/life/app.klar
+//
+// `run_wasm` is life.klar compiled to WebAssembly and embedded in the page. The same function is also imported
+// normally (`use life`), which compiles it to JavaScript, so the engine switch compares the two on the same
+// code: press "Advance" with each engine.
+
+use std.ui { Next, ui_run }
+use std.html { Html, pre, text, style }
+use std.layout { container, stack, row, gap, Md }
+use std.kit { Choice, Secondary, panel, field, radio_group, badge, Neutral, variant }
+use std.html { button, input, input_type, value, attr, on_input, on_click }
+use life { run, seed, picture, population }
+
+extern "wasm:life.run" fn run_wasm(cells: list[int], w: int, h: int, generations: int) -> list[int]
+
+fn width() -> int { return 160 }
+fn height() -> int { return 60 }
+
+struct Model { engine: str, per_click: int, generation: int, cells: list[int] }
+
+enum Msg { Engine(name: str), PerClick(v: str), Advance, Reset }
+
+fn start() -> Model { return Model("wasm", 100, 0, seed(width(), height(), 42)) }
+
+fn advance(m: Model) -> Model {
+  let cells = if m.engine == "wasm" then run_wasm(m.cells, width(), height(), m.per_click)
+    else run(m.cells, width(), height(), m.per_click)
+  return m with (cells: cells, generation: m.generation + m.per_click)
+}
+
+fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
+  return match msg {
+    Engine(e) => Next(m with (engine: e), []),
+    PerClick(v) => Next(m with (per_click: unwrap_or(parse_int(v), m.per_click)), []),
+    Advance => Next(advance(m), []),
+    Reset => Next(start() with (engine: m.engine, per_click: m.per_click), []),
+  }
+}
+
+fn view(m: Model) -> Html[Msg] {
+  return container([], [stack([gap(Md)], [
+    panel([], "Game of Life", "The page is JavaScript; the simulation is the same Klar code compiled to WebAssembly or to JavaScript.", [
+      radio_group("Engine", "engine", [Choice("wasm", "WebAssembly"), Choice("js", "JavaScript")], m.engine, fn(e) => Engine(e)),
+      field("Generations per click: {m.per_click}", input([input_type("range"), attr("min", "1"), attr("max", "500"),
+        value(str(m.per_click)), on_input(fn(v) => PerClick(v))])),
+      row([gap(Md)], [
+        button([on_click(Advance)], [text("Advance")]),
+        button([variant(Secondary), on_click(Reset)], [text("Reset")]),
+        badge([], Neutral, "generation {m.generation}, {population(m.cells)} alive"),
+      ]),
+    ], []),
+    pre([style("font-size: 8px; line-height: 8px; overflow: auto")], [text(picture(m.cells, width(), height()))]),
+  ])])
+}
+
+fn main() uses io {
+  ui_run(Next(start(), []), update, view)
+}
+
+test "both engines compute the same generations" {
+  let m = start() with (per_click: 5)
+  assert advance(m).cells == advance(m with (engine: "js")).cells
+}

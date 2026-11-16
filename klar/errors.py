@@ -45,6 +45,8 @@ CATALOG = {
     "E408": ("integer overflow", "Compiled programs use 64-bit integers; this operation overflowed. The interpreter has unlimited integers."),
     "E409": ("deadlock", "Every task is waiting (on a channel, or on other tasks) and none can go on. Look for a value that is never sent, a channel that is never closed before a loop reads it to the end, or two tasks waiting on each other."),
     "E501": ("not supported by the compiler", "This feature works with `klar run` but cannot be compiled yet."),
+    "E502": ("no WebAssembly compiler", "WebAssembly builds need clang with its wasm32 target and the wasm-ld linker (LLVM lld). Install clang and lld, or point KLAR_WASM_CC at a clang that has them."),
+    "E503": ("internal compiler error", "The C generated for a WebAssembly build did not compile. This is a bug in Klar; please report it with the program."),
     "E601": ("package error", "klar.toml, klar.lock or a dependency is missing or invalid. Dependencies are listed in klar.toml and fetched with `klar install`; `klar add` edits klar.toml for you."),
 }
 

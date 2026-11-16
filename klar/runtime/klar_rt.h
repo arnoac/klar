@@ -99,7 +99,11 @@ static void k_init(int argc, char **argv) {
 #if defined(__GNUC__) && !defined(__TINYC__)
 #define K_ADD_OVF(a, b, r) __builtin_add_overflow(a, b, r)
 #define K_SUB_OVF(a, b, r) __builtin_sub_overflow(a, b, r)
+#ifdef KLAR_WASM
+#define K_MUL_OVF(a, b, r) k_wasm_mul_ovf(a, b, r)   /* see klar_wasm.h */
+#else
 #define K_MUL_OVF(a, b, r) __builtin_mul_overflow(a, b, r)
+#endif
 #else
 static inline int K_ADD_OVF(int64_t a, int64_t b, int64_t *r) {
     if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b)) return 1;
