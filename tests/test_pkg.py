@@ -183,6 +183,17 @@ class PackageTest(unittest.TestCase):
               'extern "tinycomma.intcomma" fn intcomma(n: int) -> str\n\nfn main() uses io {\n  print(intcomma(1234567))\n}\n')
         self.assertEqual(self.run_app().stdout, "1,234,567\n")
         self.add("--python", "tinycomma", ok=False)
+        # klar.lock records the wheel's hash, and a changed file with the same name and version is refused
+        with open(os.path.join(self.app, "klar.lock"), encoding="utf-8") as f:
+            lock = f.read()
+        self.assertRegex(lock, r'hashes = \[\n  "sha256:[0-9a-f]{64}",\n\]')
+        self.assertIn("direct = true", lock)
+        with zipfile.ZipFile(os.path.join(wheels, "tinycomma-1.0.0-py3-none-any.whl"), "a") as z:
+            z.writestr("extra.py", "print('changed')\n")
+        shutil.rmtree(os.path.join(self.app, ".klar", "python"))
+        r = klar("install", cwd=self.app, env={"PIP_NO_INDEX": "1", "PIP_FIND_LINKS": wheels})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("hash", r.stderr.lower())
 
     def test_bad_manifest(self):
         write(os.path.join(self.app, "klar.toml"), '[package]\nname = "app"\n\n[dependencies]\nx = { }\n')

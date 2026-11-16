@@ -191,6 +191,13 @@ def read_lock(root):
     return git, py
 
 
+def read_lock_python(root):
+    """The [[python]] entries of klar.lock: every installed Python package (including the ones pulled in by
+    others) with its version and the sha256 hashes its files may have."""
+    p = os.path.join(root, LOCK)
+    return _toml(p).get("python", []) if os.path.exists(p) else []
+
+
 def _q(s):
     return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -204,8 +211,13 @@ def write_lock(root, git, py):
             if e.get(k):
                 out.append(f"{k} = {_q(e[k])}")
         out.append("")
-    for name in sorted(py):
-        out += ["[[python]]", f"name = {_q(name)}", f"version = {_q(py[name])}", ""]
+    for e in sorted(py, key=lambda e: e["name"]):
+        out += ["[[python]]", f"name = {_q(e['name'])}", f"version = {_q(e['version'])}"]
+        if e.get("direct"):
+            out.append("direct = true")
+        if e.get("hashes"):
+            out.append("hashes = [\n" + "".join(f"  {_q(h)},\n" for h in e["hashes"]) + "]")
+        out.append("")
     with open(os.path.join(root, LOCK), "w", encoding="utf-8") as f:
         f.write("\n".join(out))
 
@@ -305,31 +317,100 @@ def install(root, update=None, log=None):
                 raise PkgError(f"npm package `{pname}` is pinned to {npm_out[pname]} by {npm_from[pname]} "
                                f"and to {ver} by {sub.name}", "pin the same version in both klar.toml files")
             npm_out[pname], npm_from[pname] = ver, sub.name
-    if py_out:
-        _pip(root, py_out, log)
+    py_lock = _pip(root, py_out, log) if py_out else []
     if npm_out:
         _npm(root, npm_out, log)
-    write_lock(root, git_out, py_out)
+    write_lock(root, git_out, py_lock)
     return git_out, py_out
 
 
+def _norm(name):
+    """A Python package name as PyPI compares them (PEP 503): lower case, runs of -_. as one -."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _pip_run(args):
+    r = subprocess.run([sys.executable, "-m", "pip", *args, "-q", "--disable-pip-version-check"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        msg = (r.stderr.strip() or r.stdout.strip())[-2000:]
+        hint = None
+        if "no matching distribution" in msg.lower() or "only-binary" in msg.lower():
+            hint = ("Klar installs Python packages only as prebuilt wheels, because building one from source runs the "
+                    "package's own setup code on your machine; pick a version that publishes wheels")
+        elif "hash" in msg.lower():
+            hint = ("a downloaded file does not match the hash in klar.lock: the package changed after it was locked. "
+                    "If you trust the new file, delete its [[python]] entry from klar.lock and run `klar install`")
+        raise PkgError("pip install failed:\n" + msg, hint)
+
+
+def _pypi_hashes(name, version):
+    """sha256 of every file PyPI has for name==version (all platforms), so the lock works on other machines too.
+    Empty when PyPI cannot be asked (offline, another index)."""
+    if os.environ.get("PIP_NO_INDEX") or os.environ.get("PIP_INDEX_URL"):
+        return []
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/{version}/json", timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [f"sha256:{u['digests']['sha256']}" for u in data.get("urls", [])
+            if u.get("packagetype") == "bdist_wheel" and u.get("digests", {}).get("sha256")]
+
+
 def _pip(root, reqs, log):
+    """Install the pinned Python packages into .klar/python and return their klar.lock entries.
+
+    Every file is checked against a sha256 hash: hashes recorded in klar.lock when they cover what is asked for,
+    otherwise hashes of freshly resolved downloads (plus PyPI's published hashes for the same versions). Only
+    prebuilt wheels are installed, so no package code runs during installation."""
+    import hashlib
+    import tempfile
     target = os.path.join(root, ".klar", "python")
     stamp = os.path.join(target, ".klar-installed")
-    want = sorted(f"{n}=={v}" for n, v in reqs.items())
-    if os.path.exists(stamp):
-        with open(stamp, encoding="utf-8") as f:
-            if f.read().split() == want:
-                return
-    log(f"installing Python packages: {' '.join(want)}")
-    if os.path.isdir(target):
-        shutil.rmtree(target)
-    r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--disable-pip-version-check",
-                        "--target", target, *want], capture_output=True, text=True)
-    if r.returncode != 0:
-        raise PkgError("pip install failed:\n" + (r.stderr.strip() or r.stdout.strip())[-2000:])
+    locked = {_norm(e["name"]): e for e in read_lock_python(root)}
+    want = {_norm(n): v for n, v in reqs.items()}
+    direct = {n for n, e in locked.items() if e.get("direct")}
+    reuse = direct == set(want) and all(locked[n]["version"] == v and locked[n].get("hashes") for n, v in want.items())
+    entries = [locked[n] for n in sorted(locked)] if reuse else None
+    with tempfile.TemporaryDirectory() as tmp:
+        if entries is None:
+            # resolve: download wheels (with their dependencies) without installing or building anything
+            log(f"resolving Python packages: {' '.join(f'{n}=={v}' for n, v in sorted(reqs.items()))}")
+            dl = os.path.join(tmp, "dl")
+            _pip_run(["download", "--only-binary=:all:", "--dest", dl, *(f"{n}=={v}" for n, v in sorted(reqs.items()))])
+            entries = []
+            for f in sorted(os.listdir(dl)):
+                if not f.endswith(".whl"):
+                    continue
+                name, version = f.split("-")[0], f.split("-")[1]
+                with open(os.path.join(dl, f), "rb") as fh:
+                    digest = "sha256:" + hashlib.sha256(fh.read()).hexdigest()
+                hashes = sorted(set([digest] + _pypi_hashes(name, version)))
+                entries.append({"name": _norm(name), "version": version, "hashes": hashes, "direct": _norm(name) in want})
+            source = ["--no-index", "--find-links", dl]
+        else:
+            source = []
+        lines = [f"{e['name']}=={e['version']} " + " ".join(f"--hash={h}" for h in e["hashes"]) for e in entries]
+        stamp_text = "\n".join(lines)
+        if os.path.exists(stamp):
+            with open(stamp, encoding="utf-8") as f:
+                if f.read() == stamp_text:
+                    return entries
+        reqfile = os.path.join(tmp, "requirements.txt")
+        with open(reqfile, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        names = " ".join(e["name"] + "==" + e["version"] for e in entries)
+        log(f"installing Python packages: {names}")
+        if os.path.isdir(target):
+            shutil.rmtree(target)
+        _pip_run(["install", "--require-hashes", "--no-deps", "--only-binary=:all:", *source, "--target", target,
+                  "-r", reqfile])
     with open(stamp, "w", encoding="utf-8") as f:
-        f.write("\n".join(want))
+        f.write(stamp_text)
+    return entries
 
 
 NPM_NOTE = "Written by `klar install` from the [npm] table of klar.toml: edit klar.toml, not this file."

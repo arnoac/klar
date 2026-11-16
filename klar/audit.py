@@ -55,7 +55,7 @@ def collect(root):
             raise AuditError(str(ex))
     for e in lock.get("python", []):
         pkgs.append({"ecosystem": "PyPI", "name": e["name"], "version": e["version"],
-                     "direct": bool(man and e["name"] in man.python)})
+                     "direct": bool(e.get("direct")) or bool(man and e["name"] in man.python)})
         if not e.get("hashes") and not e.get("sha256"):
             warnings.append(f"Python package {e['name']} {e['version']} has no hashes in klar.lock; run `klar install` "
                             "to record them, so a changed download is refused")
