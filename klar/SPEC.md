@@ -217,7 +217,7 @@ this catches `push(xs, 1)` written instead of `xs = push(xs, 1)`.
 A function with a non-unit return type must `return` on every path (E305).
 
 **Lists in loops.** Values never change, but `xs = set_at(xs, i, v)` and `xs = push(xs, v)` on a `var` cost
-O(1): while only that variable holds the list, compiled code writes in place. Reading `xs[i]` and `len(xs)`
+O(1): while only that variable holds the list, it is updated in place. Reading `xs[i]` and `len(xs)`
 keeps that; passing, storing or iterating `xs` hands out a snapshot. Keep a hot loop's arrays in local
 `var`s (not struct fields) and array code runs within 2-3x of C.
 

@@ -74,6 +74,19 @@ class SemanticsTest(unittest.TestCase):
         src = main_wrap("let xs = [1, 2]\nlet ys = push(xs, 3)\nprint(xs)\nprint(ys)")
         self.assertEqual(run(src), "[1, 2]\n[1, 2, 3]\n")
 
+    def test_list_var_updates_are_in_place_but_invisible(self):
+        # xs = push(xs, v) / set_at on a var is O(1) in the interpreter too; snapshots taken before keep their values
+        src = main_wrap("""var xs: list[int] = []
+for i in range(0, 100000) { xs = push(xs, i) }
+let snap = xs
+xs = set_at(xs, 0, 7)
+xs = push(xs, len(xs))
+var ys = xs
+ys = set_at(set_at(ys, 1, ys[0]), 2, 9)
+let f = fn() => len(snap)
+print("{len(xs)} {xs[0]} {xs[100000]} {snap[0]} {f()} {ys[1]} {ys[2]} {xs[1]} {xs[2]}")""")
+        self.assertEqual(run(src), "100001 7 100000 0 100000 7 9 1 2\n")
+
     def test_var_reassignment_and_loops(self):
         src = main_wrap("var n = 0\nwhile true {\n n = n + 1\n if n == 5 { break }\n}\nprint(n)")
         self.assertEqual(run(src), "5\n")

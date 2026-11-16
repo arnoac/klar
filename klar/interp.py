@@ -7,6 +7,7 @@ import threading
 from dataclasses import dataclass
 
 from .errors import KlarError
+from .ownership import self_update
 from .syntax import Node
 from .interop import Converter, Opaque, PyFn, InteropError, resolve_target
 from .types import TCon, prune, resolve, substitute
@@ -331,7 +332,11 @@ class Interpreter:
         if k == "Let":
             env.vars[s.name] = self.eval(s.value, env)
         elif k == "Assign":
-            env.set(s.name, self.eval(s.value, env))
+            steps = self_update(s, self.fns)
+            if steps is not None:
+                self.update_in_place(s.name, steps, env)
+            else:
+                env.set(s.name, self.eval(s.value, env))
         elif k == "ExprStmt":
             self.eval(s.expr, env)
         elif k == "If":
@@ -390,9 +395,14 @@ class Interpreter:
             return None
         if k == "Name":
             try:
-                return env.get(e.name)
+                v = env.get(e.name)
             except KeyError:
                 pass
+            else:
+                if type(v) is list:     # an owned list var (see update_in_place): hand out a snapshot
+                    v = tuple(v)
+                    env.set(e.name, v)
+                return v
             if e.name in self.variants:
                 return EnumVal(e.name, ())
             return FnRef(e.name)
@@ -416,7 +426,7 @@ class Interpreter:
         if k == "Field":
             return self.eval(e.target, env).get(e.name)
         if k == "Index":
-            t = self.eval(e.target, env)
+            t = self.raw_read(e.target, env)
             i = self.eval(e.index, env)
             if isinstance(t, dict):
                 if i not in t:
@@ -485,8 +495,38 @@ class Interpreter:
             return a >= b
         raise RuntimeError(op)
 
+    def raw_read(self, e, env):
+        """Evaluate e, but read an owned list var without snapshotting it (for xs[i] and len(xs))."""
+        if e.kind == "Name":
+            try:
+                return env.get(e.name)
+            except KeyError:
+                pass
+        return self.eval(e, env)
+
+    def update_in_place(self, name, steps, env):
+        """`xs = set_at(xs, i, v)` / `xs = push(xs, v)` on a var. The var then holds a Python list that only it
+        references, so later updates are O(1), as in compiled code; any other read of the var turns it back
+        into an immutable tuple first (eval of Name), so no other value can see a write."""
+        vals = [[self.eval(a, env) for a in call.args[1:]] for _, call in steps]
+        cur = env.get(name)
+        if type(cur) is not list:
+            cur = list(cur)
+        for (op, call), args in zip(steps, vals):
+            if op == "push":
+                cur.append(args[0])
+            else:
+                i, x = args
+                if not (0 <= i < len(cur)):
+                    self.rt_err("E401", f"set_at index {i} is out of bounds for length {len(cur)}", call)
+                cur[i] = x
+        env.set(name, cur)
+
     def eval_call(self, e, env):
         tk = getattr(e, "target_kind", "value")
+        if (tk == "fn" and not e.named and len(e.args) == 1 and e.callee.kind == "Name" and e.callee.name == "len"
+                and "len" not in self.fns):
+            return len(self.raw_read(e.args[0], env))
         if e.named:
             # reorder to declaration order
             if tk == "struct":
