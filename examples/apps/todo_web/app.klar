@@ -1,18 +1,18 @@
-// Full-stack todo app, frontend: runs in the browser and talks to server.klar's JSON API.
+// Full-stack todo app, frontend: runs in the browser and calls server.klar through the typed calls in api.klar.
 //
 //   klar dev examples/apps/todo_web/server.klar examples/apps/todo_web/app.klar
 //   klar test examples/apps/todo_web/app.klar
 //
 // The whole app is a Model, a Msg enum, a pure `update` and a pure `view` (see std.ui).
 
-use std.ui { Next, ui_run, ui_get, ui_send, ui_focus, ui_listen }
+use std.ui { Next, ui_run, ui_focus, ui_listen }
 use std.html { Html, Attr, div, h1, p, span, ul, li, form, input, button, text, nothing, class, class_if, id, attr,
   placeholder, value, input_type, checked, on_input, on_submit, on_click, on_check, card, html_render }
 use std.layout { Sm, container, row, spread, gap }
 use std.kit { Secondary, Ghost, Neutral, Warning, variant, badge, alert, icon_button, empty_state, panel }
-use std.http { HttpResponse }
-use std.json { JNull, json_of, json_decode }
-use api { Todo, NewTodo, DoneChange }
+use std.api { ApiError, Refused, api_call, api_error_text }
+use std.json { json_decode }
+use api { Todo, DoneChange, list_todos, add_todo, set_done, remove_todo }
 
 enum Filter { All, Active, Finished }
 
@@ -24,49 +24,44 @@ struct Model {
 }
 
 enum Msg {
-  GotTodos(reply: Result[HttpResponse, str]),
+  GotTodos(reply: Result[list[Todo], ApiError]),
   Typed(text: str),
   Submit,
-  Created(reply: Result[HttpResponse, str]),
+  Created(reply: Result[Todo, ApiError]),
   Toggle(todo: Todo),
   Remove(todo_id: int),
-  Saved(reply: Result[HttpResponse, str]),
+  Saved(reply: Result[unit, ApiError]),
   ShowOnly(filter: Filter),
   Synced(data: str),         // the server's live update: every todo, as JSON
 }
 
 fn init() -> Next[Model, Msg] {
   return Next(Model([], "", All, "Loading..."), [
-    ui_get("/api/todos", fn(r) => GotTodos(r)),
+    api_call(list_todos(), (), fn(r) => GotTodos(r)),
     ui_listen("/api/live", fn(data) => Synced(data)),   // changes made in other tabs and devices show up here
   ])
 }
 
 fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
   return match msg {
-    GotTodos(reply) => match read_todos(reply) {
+    GotTodos(reply) => match reply {
       Ok(todos) => Next(m with (todos: todos, status: ""), []),
-      Err(e) => Next(m with (status: e), []),
+      Err(e) => Next(m with (status: api_error_text(e)), []),
     },
     Typed(t) => Next(m with (draft: t), []),
     Submit => if trim(m.draft) == "" then Next(m, []) else Next(m with (draft: ""), [
-      ui_send("POST", "/api/todos", json_of(NewTodo(title: trim(m.draft))), fn(r) => Created(r)),
+      api_call(add_todo(), trim(m.draft), fn(r) => Created(r)),
       ui_focus("new-todo"),
     ]),
-    Created(reply) => match read_todo(reply) {
+    Created(reply) => match reply {
       Ok(t) => Next(m with (todos: upsert(m.todos, t), status: ""), []),
-      Err(e) => Next(m with (status: e), []),
+      Err(e) => Next(m with (status: api_error_text(e)), []),
     },
     Toggle(t) => Next(m with (todos: map(m.todos, fn(x) => if x.id == t.id then x with (done: not x.done) else x)), [
-      ui_send("PUT", "/api/todos/{t.id}", json_of(DoneChange(done: not t.done)), fn(r) => Saved(r)),
+      api_call(set_done(), DoneChange(id: t.id, done: not t.done), fn(r) => Saved(r)),
     ]),
-    Remove(todo_id) => Next(m with (todos: filter(m.todos, fn(x) => x.id != todo_id)), [
-      ui_send("DELETE", "/api/todos/{todo_id}", JNull, fn(r) => Saved(r)),
-    ]),
-    Saved(reply) => match reply {
-      Ok(res) => Next(m with (status: if res.status < 300 then "" else "could not save (HTTP {res.status})"), []),
-      Err(e) => Next(m with (status: e), []),
-    },
+    Remove(todo_id) => Next(m with (todos: filter(m.todos, fn(x) => x.id != todo_id)), [api_call(remove_todo(), todo_id, fn(r) => Saved(r))]),
+    Saved(reply) => Next(m with (status: match reply { Ok(_) => "", Err(e) => "could not save: {api_error_text(e)}" }), []),
     ShowOnly(f) => Next(m with (filter: f), []),
     Synced(data) => match json_decode(data) {
       Ok(todos) => Next(m with (todos: todos), []),
@@ -123,24 +118,6 @@ fn visible(m: Model) -> list[Todo] {
   }
 }
 
-// ---- JSON from the server
-
-fn read_todos(reply: Result[HttpResponse, str]) -> Result[list[Todo], str] {
-  return json_decode(ok_body(reply)?)
-}
-
-fn read_todo(reply: Result[HttpResponse, str]) -> Result[Todo, str] {
-  return json_decode(ok_body(reply)?)
-}
-
-fn ok_body(reply: Result[HttpResponse, str]) -> Result[str, str] {
-  let res = reply?
-  if res.status >= 300 {
-    return Err("server error (HTTP {res.status})")
-  }
-  return Ok(res.body)
-}
-
 fn main() uses io {
   ui_run(init(), update, view)
 }
@@ -182,13 +159,12 @@ test "filters" {
 test "live updates replace the list, and a todo is never added twice" {
   let synced = update(sample(), Synced(r"[{\"id\": 9, \"title\": \"from another tab\", \"done\": true}]")).model
   assert synced.todos == [Todo(9, "from another tab", true)]
-  let created = update(synced, Created(Ok(HttpResponse(201, [:], r"{\"id\": 9, \"title\": \"from another tab\", \"done\": true}")))).model
+  let created = update(synced, Created(Ok(Todo(9, "from another tab", true)))).model
   assert len(created.todos) == 1
 }
 
-test "server replies are parsed" {
-  let reply = Ok(HttpResponse(200, [:], r"[{\"id\": 3, \"title\": \"x\", \"done\": false}]"))
-  assert read_todos(reply) == Ok([Todo(3, "x", false)])
-  assert is_err(read_todos(Ok(HttpResponse(500, [:], ""))))
-  assert read_todos(Ok(HttpResponse(200, [:], r"[{\"id\": 3}]"))) == Err("missing field `title` at $[0] (Todo)")
+test "a refused call shows the server's reason" {
+  let m = update(sample(), Created(Err(Refused(400, "title is required")))).model
+  assert m.status == "title is required"
+  assert update(m, Saved(Ok(()))).model.status == ""
 }

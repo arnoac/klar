@@ -1,6 +1,6 @@
 """Klar Board (examples/apps/board): the larger example app, tested end to end.
 
-The API is driven through every backend (interpreter, Node, native) with two users, and the browser app is
+The typed calls are driven through every backend (interpreter, Node, native) with two users, and the browser app is
 clicked through in Chromium with two signed-in users watching the same board.
 """
 
@@ -22,6 +22,14 @@ APP = os.path.join(EXAMPLES, "apps", "board")
 CC = shutil.which("tcc") or shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 
 
+def decode(body):
+    """JSON when the body is JSON, the plain text otherwise (a 405 or 404 page)."""
+    try:
+        return json.loads(body or b"null")
+    except ValueError:
+        return body.decode()
+
+
 class User:
     """A browser-like client: keeps its session cookie."""
 
@@ -35,9 +43,13 @@ class User:
                                      headers={"content-type": "application/json"})
         try:
             r = self.opener.open(req, timeout=20)
-            return r.status, json.loads(r.read() or b"null")
+            return r.status, decode(r.read())
         except urllib.error.HTTPError as e:
-            return e.code, json.loads(e.read() or b"null")
+            return e.code, decode(e.read())
+
+    def api(self, name, value=None):
+        """A typed call (std.api): POST /api/<name> with the input as JSON."""
+        return self.call("POST", "/api/" + name, value)
 
 
 def start(test, backend, env):
@@ -63,7 +75,7 @@ def start(test, backend, env):
     end = time.time() + 30
     while True:
         try:
-            urllib.request.urlopen(base + "/api/me", timeout=2)
+            urllib.request.urlopen(urllib.request.Request(base + "/api/me", method="POST", data=b"null"), timeout=2)
             break
         except urllib.error.HTTPError:
             break               # any HTTP answer (401 here) means the server is up
@@ -98,65 +110,66 @@ class BoardApp(unittest.TestCase):
 
     def check_api(self, base):
         ada, bob, nobody = User(base), User(base), User(base)
-        self.assertEqual(nobody.call("GET", "/api/boards")[0], 401)
-        self.assertEqual(ada.call("POST", "/api/signup", {"name": "Ada", "password": "short"}),
+        self.assertEqual(nobody.api("boards"), (401, {"error": "not signed in"}))
+        self.assertEqual(ada.api("sign_up", {"name": "Ada", "password": "short"}),
                          (400, {"error": "passwords are at least 8 characters"}))
-        self.assertEqual(ada.call("POST", "/api/signup", {"name": "Ada", "password": "correct horse"}),
-                         (201, {"id": 1, "name": "ada"}))
-        self.assertEqual(bob.call("POST", "/api/signup", {"name": "ada", "password": "correct horse"})[0], 409)
-        self.assertEqual(bob.call("POST", "/api/signup", {"name": "bob", "password": "battery staple"})[0], 201)
-        self.assertEqual(ada.call("GET", "/api/me"), (200, {"id": 1, "name": "ada"}))
+        self.assertEqual(ada.api("sign_up", {"name": "Ada", "password": "correct horse"}), (200, {"id": 1, "name": "ada"}))
+        self.assertEqual(bob.api("sign_up", {"name": "ada", "password": "correct horse"}), (409, {"error": "that name is taken"}))
+        self.assertEqual(bob.api("sign_up", {"name": "bob", "password": "battery staple"})[0], 200)
+        self.assertEqual(ada.api("me"), (200, {"id": 1, "name": "ada"}))
+        self.assertEqual(ada.api("sign_up", {"name": "x"})[0], 400)               # a body that does not fit the type
+        self.assertEqual(ada.call("GET", "/api/me")[0], 405)                       # calls are POST only
 
-        status, board = ada.call("POST", "/api/boards", {"name": "  Launch  "})
-        self.assertEqual((status, board), (201, {"id": 1, "name": "Launch", "owner_id": 1}))
+        status, board = ada.api("create_board", "  Launch  ")
+        self.assertEqual((status, board), (200, {"id": 1, "name": "Launch", "owner_id": 1}))
         for title in ("Write docs", "Fix login", "Ship"):
-            self.assertEqual(ada.call("POST", "/api/boards/1/cards", {"title": title, "column": "Todo"})[0], 201)
-        self.assertEqual(ada.call("POST", "/api/boards/1/cards", {"title": " ", "column": "Todo"}),
+            self.assertEqual(ada.api("add_card", {"board_id": 1, "title": title, "column": "Todo"})[0], 200)
+        self.assertEqual(ada.api("add_card", {"board_id": 1, "title": " ", "column": "Todo"}),
                          (400, {"error": "a title is required"}))
-        self.assertEqual(ada.call("POST", "/api/boards/1/cards", {"title": "x", "column": "Later"})[0], 400)
+        self.assertEqual(ada.api("add_card", {"board_id": 1, "title": "x", "column": "Later"})[0], 400)
 
         # bob cannot see the board (404, as if it did not exist) until ada adds him
-        self.assertEqual(bob.call("GET", "/api/boards/1")[0], 404)
-        self.assertEqual(bob.call("PUT", "/api/cards/1/move", {"column": "Done", "position": 0})[0], 404)
-        self.assertEqual(ada.call("POST", "/api/boards/1/members", {"name": "carol"}), (404, {"error": "nobody is called carol"}))
-        self.assertEqual(ada.call("POST", "/api/boards/1/members", {"name": "Bob"})[0], 200)
-        self.assertEqual(bob.call("GET", "/api/boards")[1], [board])
+        self.assertEqual(bob.api("board", 1), (404, {"error": "not found"}))
+        self.assertEqual(bob.api("move_card", {"card_id": 1, "column": "Done", "position": 0})[0], 404)
+        self.assertEqual(ada.api("invite", {"board_id": 1, "name": "carol"}), (404, {"error": "nobody is called carol"}))
+        self.assertEqual(ada.api("invite", {"board_id": 1, "name": "Bob"})[0], 200)
+        self.assertEqual(bob.api("boards")[1], [board])
 
-        status, page = bob.call("PUT", "/api/cards/2/move", {"column": "Doing", "position": 0})
+        status, page = bob.api("move_card", {"card_id": 2, "column": "Doing", "position": 0})
         self.assertEqual(status, 200)
         layout = sorted((c["column"], c["position"], c["title"]) for c in page["cards"])
         self.assertEqual(layout, [("Doing", 0, "Fix login"), ("Todo", 0, "Write docs"), ("Todo", 1, "Ship")])
-        status, page = bob.call("PUT", "/api/cards/3/move", {"column": "Todo", "position": 0})
+        status, page = bob.api("move_card", {"card_id": 3, "column": "Todo", "position": 0})
         self.assertEqual([c["title"] for c in sorted(page["cards"], key=lambda c: (c["column"], c["position"]))],
                          ["Fix login", "Ship", "Write docs"])
 
-        status, card = bob.call("PUT", "/api/cards/2", {"title": "Fix login on Safari", "notes": " iOS only ", "assignee": 2})
+        edit = {"card_id": 2, "title": "Fix login on Safari", "notes": " iOS only ", "assignee": 2}
+        status, card = bob.api("edit_card", edit)
         self.assertEqual((status, card["notes"], card["assignee"]), (200, "iOS only", 2))
-        self.assertEqual(bob.call("PUT", "/api/cards/2", {"title": "x", "notes": "", "assignee": 99}),
-                         (400, {"error": "only board members can be assigned"}))
-        status, page = ada.call("DELETE", "/api/cards/1")
+        self.assertEqual(bob.api("edit_card", dict(edit, assignee=99)), (400, {"error": "only board members can be assigned"}))
+        status, page = ada.api("delete_card", 1)
         self.assertEqual([c["title"] for c in page["cards"]], ["Fix login on Safari", "Ship"])
         self.assertEqual([e["text"] for e in page["events"]][:3],
                          ["deleted “Write docs”", "edited “Fix login on Safari”", "reordered “Ship”"])
 
         # sessions: wrong password, case-insensitive names, logging out ends the session
-        self.assertEqual(nobody.call("POST", "/api/login", {"name": "ada", "password": "wrong horse"})[0], 401)
-        self.assertEqual(nobody.call("POST", "/api/login", {"name": "ADA", "password": "correct horse"})[0], 200)
-        self.assertEqual(ada.call("POST", "/api/logout")[0], 200)
-        self.assertEqual(ada.call("GET", "/api/me")[0], 401)
-        self.assertEqual(nobody.call("GET", "/api/me")[1]["name"], "ada")
+        self.assertEqual(nobody.api("log_in", {"name": "ada", "password": "wrong horse"}), (401, {"error": "wrong name or password"}))
+        self.assertEqual(nobody.api("log_in", {"name": "ADA", "password": "correct horse"})[0], 200)
+        self.assertEqual(ada.api("log_out"), (200, None))
+        self.assertEqual(ada.api("me")[0], 401)
+        self.assertEqual(nobody.api("me")[1]["name"], "ada")
 
     def test_live_updates_reach_members_only(self):
         base = start(self, "node" if NODE else "interp", {})
         ada, bob = User(base), User(base)
-        ada.call("POST", "/api/signup", {"name": "ada", "password": "correct horse"})
-        bob.call("POST", "/api/signup", {"name": "bob", "password": "battery staple"})
-        ada.call("POST", "/api/boards", {"name": "Launch"})
-        self.assertEqual(bob.call("GET", "/api/boards/1/live")[0], 404)
-        ada.call("POST", "/api/boards/1/members", {"name": "bob"})
+        ada.api("sign_up", {"name": "ada", "password": "correct horse"})
+        bob.api("sign_up", {"name": "bob", "password": "battery staple"})
+        ada.api("create_board", "Launch")
+        self.assertEqual(bob.call("GET", "/api/boards/1/live"), (404, {"error": "not found"}))
+        ada.api("invite", {"board_id": 1, "name": "bob"})
         stream = bob.opener.open(base + "/api/boards/1/live", timeout=10)
         self.assertEqual(stream.readline(), b": connected\n")
-        ada.call("POST", "/api/boards/1/cards", {"title": "pushed", "column": "Done"})
+        ada.api("add_card", {"board_id": 1, "title": "pushed", "column": "Done"})
         self.assertEqual(stream.readline(), b"\n")
         line = stream.readline()
         self.assertTrue(line.startswith(b"data: "), line)
@@ -167,10 +180,10 @@ class BoardApp(unittest.TestCase):
     def test_report_fetches_boards_concurrently(self):
         base = start(self, "node" if NODE else "interp", {})
         ada = User(base)
-        ada.call("POST", "/api/signup", {"name": "ada", "password": "correct horse"})
+        ada.api("sign_up", {"name": "ada", "password": "correct horse"})
         for name in ("Alpha", "Beta", "Gamma"):
-            ada.call("POST", "/api/boards", {"name": name})
-        ada.call("POST", "/api/boards/2/cards", {"title": "one", "column": "Doing"})
+            ada.api("create_board", name)
+        ada.api("add_card", {"board_id": 2, "title": "one", "column": "Doing"})
         r = subprocess.run([sys.executable, "-m", "klar", "run", os.path.join(APP, "report.klar"), base, "ada"],
                            input="correct horse\n", capture_output=True, text=True, timeout=60,
                            env=dict(os.environ, PYTHONPATH=ROOT))

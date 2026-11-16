@@ -80,6 +80,8 @@ def show(t):
     if isinstance(t, TFn):
         return "fn(" + ", ".join(show(p) for p in t.params) + ") -> " + show(t.ret) + (" uses io" if t.io else "")
     if t.args:
+        if t.name.startswith("Tuple") and len(t.name) == 6 and t.name[5].isdigit():
+            return "(" + ", ".join(show(a) for a in t.args) + ")"
         return t.name + "[" + ", ".join(show(a) for a in t.args) + "]"
     return t.name
 

@@ -66,6 +66,25 @@ def wait_for(url, timeout=10):
     raise AssertionError(f"server at {url} did not start")
 
 
+def wait_call(base, name, body="null", timeout=10):
+    """POST a typed call (std.api) once the server is up; returns the reply body."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            req = urllib.request.Request(f"{base}/api/{name}", method="POST", data=body.encode())
+            with urllib.request.urlopen(req, timeout=1) as r:
+                return r.read().decode()
+        except OSError:
+            time.sleep(0.05)
+    raise AssertionError(f"server at {base} did not start")
+
+
+def call(base, name, body="null"):
+    """A typed call (std.api): POST /api/<name> with a JSON body; returns (status, decoded reply)."""
+    status, text, _ = http("POST", f"{base}/api/{name}", body)
+    return status, json.loads(text) if text else None
+
+
 def http(method, url, body=None):
     req = urllib.request.Request(url, method=method, data=body.encode() if body is not None else None)
     try:
@@ -97,7 +116,7 @@ class NodeMatchesInterpreter(unittest.TestCase):
                     self.check_same(os.path.join(EXAMPLES, f), stdin)
 
     def test_feature_programs(self):
-        for f in ("features.klar", "web_features.klar", "web_security.klar", "owned_lists.klar", "json_auto.klar", "traits.klar"):
+        for f in ("features.klar", "web_features.klar", "web_security.klar", "owned_lists.klar", "json_auto.klar", "traits.klar", "glue.klar"):
             with self.subTest(program=f):
                 self.check_same(os.path.join(PROGRAMS, f))
 
@@ -246,10 +265,10 @@ fn main() uses io {
                                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(proc.kill)
         base = f"http://127.0.0.1:{port}"
-        self.assertEqual(wait_for(base + "/api/todos"), "[]")
+        self.assertEqual(wait_call(base, "list_todos"), "[]")
         stream = urllib.request.urlopen(base + "/api/live", timeout=10)
         self.assertEqual(stream.readline(), b": connected\n")
-        http("POST", base + "/api/todos", '{"title": "pushed"}')
+        call(base, "add_todo", '"pushed"')
         lines = [stream.readline() for _ in range(2)]
         self.assertEqual(lines[1], b'data: [{"id":1,"title":"pushed","done":false}]\n')
         stream.close()
@@ -299,11 +318,13 @@ class FullStackApps(unittest.TestCase):
         self.start(os.path.join(EXAMPLES, "apps", "todo_web", "server.klar"),
                    {"PORT": str(port), "APP_DIR": d, "TODO_DB": os.path.join(d, "t.db")})
         base = f"http://127.0.0.1:{port}"
-        self.assertEqual(wait_for(base + "/api/todos"), "[]")
-        status, body, _ = http("POST", base + "/api/todos", '{"title": "from the API"}')
-        self.assertEqual((status, json.loads(body)["title"]), (201, "from the API"))
-        self.assertEqual(http("POST", base + "/api/todos", '{"title": ""}')[0], 400)
-        self.assertEqual(json.loads(http("PUT", base + "/api/todos/1", '{"done": true}')[1])["done"], True)
+        self.assertEqual(wait_call(base, "list_todos"), "[]")
+        self.assertEqual(call(base, "add_todo", '"from the API"'), (200, {"id": 1, "title": "from the API", "done": False}))
+        self.assertEqual(call(base, "add_todo", '"  "'), (400, {"error": "title is required"}))
+        self.assertEqual(call(base, "add_todo", '{"title": "x"}')[0], 400)        # the body must be an str
+        self.assertEqual(call(base, "set_done", '{"id": 1, "done": true}'), (200, None))
+        self.assertEqual(call(base, "set_done", '{"id": 9, "done": true}'), (404, {"error": "no such todo"}))
+        self.assertEqual(http("GET", base + "/api/list_todos")[0], 405)
         self.assertIn('<div id="app">', http("GET", base + "/")[1])
         if subprocess.run([NODE, "-e", "require('playwright')"], capture_output=True).returncode != 0:
             self.skipTest("playwright is not installed")
@@ -315,7 +336,7 @@ class FullStackApps(unittest.TestCase):
         self.assertEqual(r.stdout.splitlines(), [
             "loaded 1", "added 3 2 items left", "toggled 1 item left", "filtered 2", "deleted 2", "other tab 2",
             "errors 0"])
-        todos = json.loads(http("GET", base + "/api/todos")[1])
+        todos = call(base, "list_todos")[1]
         self.assertEqual([(t["title"], t["done"]) for t in todos], [("from the API", True), ("Buy <milk>", True)])
 
 
@@ -339,7 +360,7 @@ class DevServer(unittest.TestCase):
         icon = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "klar", "runtime", "klar_icon.svg")
         if os.path.exists(icon):                                   # the icon file is optional
             self.assertIn("<svg", wait_for(base + "/__klar/icon.svg"))
-        self.assertEqual(wait_for(base + "/api/todos"), "[]")
+        self.assertEqual(wait_call(base, "list_todos"), "[]")
         self.assertTrue(os.path.exists(os.path.join(app_dir, "todos.db")))   # the backend runs in its folder
         events = urllib.request.urlopen(base + "/__klar/events", timeout=10)
         self.assertEqual(events.readline(), b": connected\n")
@@ -350,7 +371,7 @@ class DevServer(unittest.TestCase):
         status, body, _ = http("GET", base + "/")
         self.assertEqual(status, 500)
         self.assertIn("the build failed", body)
-        self.assertIn("api.klar:13", body)
+        self.assertIn("api.klar:14", body)
         with open(os.path.join(app_dir, "api.klar")) as f:
             fixed = f.read().replace("\nfn broken( {\n", "")
         with open(os.path.join(app_dir, "api.klar"), "w") as f:
@@ -359,7 +380,7 @@ class DevServer(unittest.TestCase):
         while http("GET", base + "/")[0] != 200:
             self.assertLess(time.time(), deadline, "the dev server never recovered")
             time.sleep(0.1)
-        self.assertEqual(wait_for(base + "/api/todos"), "[]")
+        self.assertEqual(wait_call(base, "list_todos"), "[]")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

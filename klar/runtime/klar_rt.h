@@ -634,6 +634,13 @@ static KList *k_map_values(KMap *m) {
     return r;
 }
 
+static KList *k_map_entries(KMap *m) {
+    m = k_map_compact(m);
+    KList *r = k_list_with_cap(m->len, m->len);
+    for (int64_t i = 0; i < m->len; i++) r->buf->data[i] = k_p2s(k_struct_new(2, m->d->keys[i], m->d->vals[i]));
+    return r;
+}
+
 /* ------------------------------------------------------------------ string built-ins */
 static KStr *k_str_index(KStr *s, int64_t i, int line, int col) {
     int64_t n = k_str_cps(s);

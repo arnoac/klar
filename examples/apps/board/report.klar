@@ -5,13 +5,10 @@
 // Shows std.task (task_all runs the requests concurrently, results stay in order) and the HTTP client.
 
 use std.http { HttpResponse, http_request }
-use std.json { json_encode, json_decode }
+use std.json { json_encode }
+use std.api { api_fetch, api_path, api_error_text }
 use std.task { task_all }
-use shared { Board, BoardPage, Credentials, summary }
-
-fn fail(message: str) -> Result[unit, str] {
-  return Err(message)
-}
+use shared { Board, Credentials, summary, log_in_call, boards_call, board_call }
 
 // The session cookie from a login reply's set-cookie header.
 fn session_from(res: HttpResponse) -> Option[str] {
@@ -20,30 +17,22 @@ fn session_from(res: HttpResponse) -> Option[str] {
   return if contains(first, "=") then Some(first) else None
 }
 
-fn call(base: str, cookie: str, path: str) -> Result[str, str] uses io {
-  let res = http_request("GET", base + path, ["cookie": cookie], "")?
-  if res.status != 200 {
-    return Err("GET {path} answered {res.status}")
-  }
-  return Ok(res.body)
-}
-
 fn board_line(base: str, cookie: str, b: Board) -> str uses io {
-  let page: Result[BoardPage, str] = match call(base, cookie, "/api/boards/{b.id}") {
-    Ok(body) => json_decode(body),
-    Err(e) => Err(e),
+  return match api_fetch(base, board_call(), b.id, ["cookie": cookie]) {
+    Ok(page) => "{b.name}: {summary(page.cards)}",
+    Err(e) => "{b.name}: {api_error_text(e)}",
   }
-  return match page { Ok(p) => "{b.name}: {summary(p.cards)}", Err(e) => "{b.name}: {e}" }
 }
 
 fn report(base: str, name: str, password: str) -> Result[unit, str] uses io {
-  let login = http_request("POST", base + "/api/login", ["content-type": "application/json"],
+  // Signing in is the one call made by hand: the session comes back as a cookie, not in the reply.
+  let login = http_request("POST", base + api_path(log_in_call()), ["content-type": "application/json"],
     json_encode(Credentials(name: name, password: password)))?
   if login.status != 200 {
-    return fail("could not sign in as {name} ({login.status})")
+    return Err("could not sign in as {name} ({login.status})")
   }
-  let cookie = match session_from(login) { Some(c) => c, None => { return fail("the server sent no session") } }
-  let boards: list[Board] = json_decode(call(base, cookie, "/api/boards")?)?
+  let cookie = session_from(login).ok_or("the server sent no session")?
+  let boards = match api_fetch(base, boards_call(), (), ["cookie": cookie]) { Ok(bs) => bs, Err(e) => { return Err(api_error_text(e)) } }
   var jobs: list[fn() -> str uses io] = []
   for b in boards {
     jobs = push(jobs, fn() => board_line(base, cookie, b))

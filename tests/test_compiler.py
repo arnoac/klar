@@ -67,6 +67,9 @@ class CompiledMatchesInterpreter(unittest.TestCase):
     def test_feature_program_release(self):
         self.check_same(os.path.join(PROGRAMS, "features.klar"), release=True)
 
+    def test_tuples_and_error_wrapping(self):
+        self.check_same(os.path.join(PROGRAMS, "glue.klar"))
+
     def test_traits(self):
         for release in ((False, True) if HAVE_OPT_CC else (False,)):
             with self.subTest(release=release):

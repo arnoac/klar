@@ -1,7 +1,7 @@
 """Static checker: names, types, effects, exhaustiveness, definite return."""
 
 from .errors import KlarError
-from .syntax import parse, Node
+from .syntax import parse, Node, MAX_TUPLE, tuple_name, is_tuple_name
 from .prelude import PRELUDE, OVERLOADED
 from .types import (TCon, TFn, TVar, INT, FLOAT, STR, BOOL, UNIT, NEVER, PRIMS, GENERIC_ARITY,
                     list_of, option_of, prune, resolve, show, has_vars, unify, substitute)
@@ -122,6 +122,10 @@ class Checker:
         raise KlarError(code, msg, node.line, node.col, hint, self.file)
 
     def _load_prelude(self):
+        for n in range(2, MAX_TUPLE + 1):          # (A, B) is the built-in struct Tuple2[A, B] with fields 0 and 1
+            tps = "ABCDEF"[:n]
+            self.structs[tuple_name(n)] = [(str(i), TCon(tp)) for i, tp in enumerate(tps)]
+            self.tparams_of[tuple_name(n)] = list(tps)
         prog = parse(PRELUDE, "<prelude>")
         for d in prog.decls:
             tps = set(d.tparams)
@@ -329,6 +333,8 @@ class Checker:
                     self.err("E202", f"trait `{d.name}` is defined twice", d, "every trait name must be unique")
                 self.define(d.name, d)
             if d.kind in ("Struct", "Enum", "ExternType"):
+                if is_tuple_name(d.name):
+                    self.err("E202", f"`{d.name}` is the built-in name of tuples like (int, str)", d, "choose another name")
                 if d.name in PRIMS or d.name in GENERIC_ARITY or (d.name in self.def_module and self.def_module[d.name] == d.module
                                                                    and (d.name in self.structs or d.name in self.enums or d.name in self.extern_types)):
                     self.err("E202", f"type `{d.name}` is defined twice", d, "every type name must be unique")
@@ -395,8 +401,13 @@ class Checker:
                 tps = set(d.tparams)
                 for v in d.variants:
                     if v.name in self.variants or v.name in self.structs or v.name in self.enums:
-                        self.err("E202", f"variant name `{v.name}` is already used", v,
-                                 "variant names are global and must be unique across all enums and structs")
+                        other = self.variants.get(v.name)
+                        where = ""
+                        if other is not None and other.enum != d.name:
+                            mod = self.def_module.get(other.enum)
+                            where = f" by enum {other.enum}" + (f" in module `{self.module_name.get(mod, mod)}`" if mod else "")
+                        self.err("E202", f"variant name `{v.name}` is already used{where}", v,
+                                 "variant names are global and must be unique across all enums and structs; rename this one")
                     self.variants[v.name] = VariantInfo(d.name, v.name, [(f, self.to_type(t, tps)) for f, t in v.fields],
                                                         d.tparams)
                     self.enums.setdefault(d.name, []).append(v.name)
@@ -620,6 +631,8 @@ class Checker:
                     self.errors.append(err)
                     if s.kind == "Let" and self.lookup(s.name) is None:
                         self.scopes[-1][s.name] = (TVar(), s.mutable, s)
+                        if getattr(s, "unpack", None):
+                            s.unpack_failed = True
         finally:
             if new_scope:
                 self.scopes.pop()
@@ -627,6 +640,11 @@ class Checker:
     def check_stmt(self, s):
         k = s.kind
         if k == "Let":
+            if getattr(s, "from_tuple", False):
+                entry = self.lookup(s.value.target.name)
+                if entry is not None and getattr(entry[2], "unpack_failed", False):
+                    self.declare(s.name, TVar(), s.mutable, s)     # the unpack itself was already reported
+                    return
             if s.ann is not None:
                 ty = self.to_type(s.ann, set(self.cur_bounds))
                 self.expect(self.infer(s.value, ty), ty, s.value, f"the value of `{s.name}`")
@@ -635,6 +653,8 @@ class Checker:
                 if show(ty) == "unit":
                     self.err("E301", f"`{s.name}` would hold no value (the expression has type unit)", s.value)
             s.ty = ty
+            if getattr(s, "unpack", None):
+                self.check_unpack(ty, s.unpack, s.value, "let")
             if s.name == "_":
                 return  # `let _ = expr` evaluates and discards
             self.declare(s.name, ty, s.mutable, s)
@@ -672,12 +692,14 @@ class Checker:
             else:
                 hint = None
                 if isinstance(it, TCon) and it.name == "map":
-                    hint = "iterate over keys(m) or values(m)"
+                    hint = "iterate over keys(m), values(m) or entries(m) (pairs: for (k, v) in entries(m))"
                 elif isinstance(it, TCon) and it.name == "str":
                     hint = "iterate over chars(s)"
                 elif it is INT or show(it) == "int":
                     hint = "iterate over range(0, n)"
                 self.err("E301", f"`for` needs a list but got `{show(it)}`", s.iter, hint)
+            if getattr(s, "unpack", None):
+                self.check_unpack(elem, s.unpack, s.iter, "for")
             self.scopes.append({})
             self.declare(s.var, elem, False, s)
             self.ctx.loop_depth += 1
@@ -811,10 +833,15 @@ class Checker:
                     if f == e.name:
                         self.note(e, f, "field", (t.name, ft))
                         return ft
+                if is_tuple_name(t.name):
+                    self.err("E204", f"`{show(t)}` has no value .{e.name}", e,
+                             f"its values are .0 to .{len(t.args) - 1}, or unpack it: let ({', '.join('abcdef'[:len(t.args)])}) = t")
                 self.err("E204", f"struct `{t.name}` has no field `{e.name}`", e,
                          self.suggest(e.name, [f for f, _ in self.structs[t.name]]) or
                          "fields: " + ", ".join(f for f, _ in self.structs[t.name]))
             hint = None
+            if e.name.isdigit():
+                self.err("E204", f"`.{e.name}` reads a tuple value, but this has type `{show(t)}`", e)
             if e.name in self.fns:
                 hint = f"to call the function, add parentheses: .{e.name}()"
             elif e.name in ("length", "size", "count"):
@@ -847,7 +874,7 @@ class Checker:
                     self.err("E307", f"`?` on a Result requires the function to return a Result, but it returns `{show(ret)}`",
                              e, "use match instead, or change the return type to Result[...]")
                 if not unify(t.args[1], ret.args[1]):
-                    self.err("E307", f"error type `{show(t.args[1])}` does not match the function's error type `{show(ret.args[1])}`", e)
+                    e.wrap = self.error_wrapper(t.args[1], ret.args[1], e)
                 return t.args[0]
             self.err("E307", f"`?` needs an Option or Result, got `{show(t)}`", e)
         if k == "With":
@@ -866,6 +893,50 @@ class Checker:
         if k == "Lambda":
             return self.infer_lambda(e, expected)
         self.err("E103", f"unexpected expression {k}", e)
+
+    def check_unpack(self, t, n, node, form):
+        """`let (a, b) = v` and `for (a, b) in xs` need tuples of exactly n values."""
+        want = TCon(tuple_name(n), [TVar() for _ in range(n)])
+        if unify(t, want):
+            return
+        names = ", ".join("abcdef"[:n])
+        what = "the value" if form == "let" else "each element"
+        pt = prune(t)
+        hint = None
+        if isinstance(pt, TCon) and is_tuple_name(pt.name):
+            hint = f"it has {len(pt.args)} values; name each one (use _ to skip one)"
+        elif isinstance(pt, TCon) and pt.name in self.structs:
+            hint = "structs are not unpacked; bind the value and read its fields"
+        elif form == "for" and isinstance(pt, TCon) and pt.name == "str":
+            hint = "a map's entries are pairs: for (k, v) in entries(m)"
+        self.err("E301", f"`{form} ({names})` unpacks a tuple of {n} values, but {what} has type `{show(t)}`", node, hint)
+
+    def error_wrapper(self, err_t, ret_err, node):
+        """`?` turns an Err(e) into the function's error type when that is an enum with exactly one variant
+        holding just a value of e's type: in a function returning Result[T, ApiError], `db_call()?` with an
+        Err(str) returns Err(Internal(message)). Returns that variant's name, or reports E307."""
+        et, rt = prune(err_t), prune(ret_err)
+        fits = []
+        if isinstance(rt, TCon) and rt.name in self.enums:
+            mapping = dict(zip(self.tparams_of.get(rt.name, []), rt.args))
+            for vn in self.enums[rt.name]:
+                fields = self.variants[vn].fields
+                if len(fields) == 1 and show(resolve(substitute(fields[0][1], mapping))) == show(resolve(et)):
+                    fits.append(vn)
+        if len(fits) == 1:
+            self.check_vis(fits[0], node)
+            return fits[0]
+        es, rs = show(et), show(rt)
+        if len(fits) > 1:
+            hint = (f"`?` can only wrap the error when exactly one variant of {rs} holds a `{es}`, but "
+                    f"{', '.join(fits)} all do; convert it yourself with match")
+        elif isinstance(rt, TCon) and rt.name in self.enums:
+            hint = (f"add a variant that holds it, e.g. `Internal(message: {es})`, to enum {rs}: `?` then wraps the "
+                    f"error in it; or convert it yourself with match")
+        else:
+            hint = (f"make the function return Result[..., {es}], or convert the error with match; `?` wraps errors "
+                    f"automatically only into an enum with one variant holding a `{es}`")
+        self.err("E307", f"error type `{es}` does not match the function's error type `{rs}`", node, hint)
 
     def check_key_type(self, kt, node):
         kt = prune(kt)
@@ -1018,8 +1089,9 @@ class Checker:
                     unify(result, expected)
                 fields = self.struct_fields(result)
                 args = self.bind_args(e, fields, f"struct `{name}`", name)
+                tup = is_tuple_name(name)
                 for (fname, ft), a in zip(fields, args):
-                    self.expect(self.infer(a, ft), ft, a, f"field `{fname}`")
+                    self.expect(self.infer(a, ft), ft, a, f"tuple value .{fname}" if tup else f"field `{fname}`")
                 e.target_kind = "struct"
                 return result
             if name in self.variants:
@@ -1059,7 +1131,8 @@ class Checker:
                 if sig.trait:
                     e.target_kind = "trait"
                     e.trait_ref = (sig.trait, name)
-                if sig.node is not None and sig.node.kind == "Extern" and sig.node.target in ("klar:json.decode", "klar:json.into"):
+                if sig.node is not None and sig.node.kind == "Extern" and sig.node.target in ("klar:json.decode", "klar:json.into",
+                                                                                          "klar:sql.read"):
                     self.json_reads.append((e, name))
                 args = self.bind_args(e, params, f"`{name}`")
                 if expected is not None and not isinstance(prune(expected), TVar):
@@ -1282,6 +1355,16 @@ class Checker:
             if not unify(t, lt):
                 self.err("E310", f"literal pattern of type `{show(lt)}` cannot match a `{show(t)}`", p)
             return
+        if k == "PTuple":
+            n = len(p.subs)
+            vt = TCon(p.name, [TVar() for _ in range(n)])
+            if not unify(t, vt):
+                pt = prune(t)
+                hint = f"the value has {len(pt.args)} parts" if isinstance(pt, TCon) and is_tuple_name(pt.name) else None
+                self.err("E310", f"a tuple pattern of {n} parts cannot match a `{show(t)}`", p, hint)
+            for sub, at in zip(p.subs, prune(vt).args):
+                self.check_pattern(sub, at)
+            return
         if k == "PVariant":
             if p.name not in self.variants:
                 hint = self.suggest(p.name, list(self.variants))
@@ -1312,6 +1395,8 @@ class Checker:
             return [("Some", [t.args[0]]), ("None", [])]
         if t.name == "Result":
             return [("Ok", [t.args[0]]), ("Err", [t.args[1]])]
+        if is_tuple_name(t.name):
+            return [(t.name, list(t.args))]
         if t.name in self.enums:
             mapping = dict(zip(self.tparams_of.get(t.name, []), t.args))
             return [(vn, [substitute(ft, mapping) for _, ft in self.variants[vn].fields]) for vn in self.enums[t.name]]
@@ -1336,7 +1421,7 @@ class Checker:
                 p = r[0]
                 if irrefutable(p):
                     spec.append([Node("PWild", 0, 0)] * len(ftypes) + r[1:])
-                elif p.kind == "PVariant" and p.name == cname and len(p.subs) == len(ftypes):
+                elif p.kind in ("PVariant", "PTuple") and p.name == cname and len(p.subs) == len(ftypes):
                     spec.append(list(p.subs) + r[1:])
                 elif p.kind == "PLit" and isinstance(p.value, bool) and str(p.value).lower() == cname:
                     spec.append(r[1:])
@@ -1344,6 +1429,8 @@ class Checker:
             if miss is not None:
                 n = len(ftypes)
                 head = f"{cname}({', '.join(miss[:n])})" if n else cname
+                if is_tuple_name(cname):
+                    head = f"({', '.join(miss[:n])})"
                 return [head] + miss[n:]
         return None
 

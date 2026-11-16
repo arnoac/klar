@@ -1,0 +1,129 @@
+// std.api: typed calls from the browser (or any client) to the server, with no hand-written glue.
+//
+// Declare each call once, in a module that both sides import. The types say what goes in and what comes back:
+//
+//   fn add_card() -> Api[NewCard, Card] { return Api("add_card") }       // POST /api/add_card
+//
+// The server answers it with api_serve, the browser calls it with api_call, and another program with
+// api_fetch. Both ends are checked against the same In and Out types, and the JSON in between, the status
+// codes and the error replies are handled for you:
+//
+//   api_serve(add_card(), fn(req, new) => card_add(db, req, new))               // server: Result[Card, ApiError]
+//   api_call(add_card(), NewCard(title: "x", column: Todo), fn(r) => Added(r))  // browser: r is Result[Card, ApiError]
+//
+// Only programs that import std.api see its names, so your own ApiError elsewhere is fine.
+
+use std.http { HttpRequest, HttpResponse, http_request }
+use std.json { json_encode, json_decode }
+use std.web { Route, web_post, web_json, web_request }
+use std.ui { Cmd, CmdHttp }
+
+// A call named `name`, sent as POST /api/<name> with an In as JSON, answered with an Out.
+// Use `unit` for a call without input: Api[unit, User], called with ().
+struct Api[In, Out] { name: str }
+
+// Why a call did not give an Out.
+enum ApiError {
+  Refused(status: int, message: str),    // the server said no: 400 bad input, 401 not signed in, 403, 404, 409, ...
+  Internal(message: str),                // something broke: a server error (logged there), no network, a bad reply
+}
+
+// The body of every error reply: {"error": "a title is required"}.
+struct ApiFailure { error: str }
+
+// The URL path a call is served at.
+fn api_path[In, Out](call: Api[In, Out]) -> str {
+  return "/api/{call.name}"
+}
+
+// Turn a plain error (usually a validation message) into a refusal with this status, so the caller gets the
+// reason instead of a 500: `let title = check_title(input.title).or_refuse(400)?`
+fn or_refuse[T](r: Result[T, str], status: int) -> Result[T, ApiError] {
+  return match r { Ok(v) => Ok(v), Err(message) => Err(Refused(status, message)) }
+}
+
+// Text to show a person.
+fn api_error_text(e: ApiError) -> str {
+  return match e { Refused(_, m) => m, Internal(m) => m }
+}
+
+// Read a call's HTTP reply: 2xx carries the Out, 4xx a Refused with the server's message, anything else Internal.
+// (api_call and api_fetch use it; tests can too.)
+fn api_reply[Out](reply: Result[HttpResponse, str]) -> Result[Out, ApiError] {
+  let res = match reply { Ok(r) => r, Err(e) => { return Err(Internal("no answer from the server: {e}")) } }
+  if res.status >= 200 and res.status < 300 {
+    let out: Result[Out, str] = json_decode(res.body)
+    return match out { Ok(v) => Ok(v), Err(e) => Err(Internal("unexpected reply from the server: {e}")) }
+  }
+  let failure: Result[ApiFailure, str] = json_decode(res.body)
+  let message = match failure { Ok(f) => f.error, Err(_) => if trim(res.body) == "" then "status {res.status}" else trim(res.body) }
+  return Err(if res.status >= 400 and res.status < 500 then Refused(res.status, message) else Internal(message))
+}
+
+// Call the server from another program (a script, a test, another service): `base` is like "http://127.0.0.1:8080";
+// `headers` may carry a cookie.
+fn api_fetch[In, Out](base: str, call: Api[In, Out], input: In, headers: map[str, str]) -> Result[Out, ApiError] uses io {
+  let reply = http_request("POST", base + api_path(call), put(headers, "content-type", "application/json"), json_encode(input))
+  return api_reply(reply)
+}
+
+// ---- the browser
+
+// A command that calls the server (answered there by api_serve); `to_msg` gets the Out or why not.
+//   api_call(add_card(), NewCard(title: t, column: Todo), fn(r) => CardAdded(r))     // r: Result[Card, ApiError]
+fn api_call[In, Out, Msg](call: Api[In, Out], input: In, to_msg: fn(Result[Out, ApiError]) -> Msg) -> Cmd[Msg] {
+  return CmdHttp("POST", api_path(call), ["content-type": "application/json"], json_encode(input), fn(r) => to_msg(api_reply(r)))
+}
+
+// ---- the server
+//
+//   fn add_card() -> Api[NewCard, Card] { return Api("add_card") }        // shared by server and browser
+//   api_serve(add_card(), fn(req, new) => card_add(db, req, new))           // a Route for POST /api/add_card
+//
+// The body is read as an In (a body that does not fit answers 400 with the reason). The handler's Ok(out) is
+// sent as JSON, Err(Refused(status, message)) as that status with {"error": message}, and Err(Internal(m))
+// as 500: `m` is printed on the server and the browser only sees "the server had a problem".
+// In a handler returning Result[_, ApiError], `?` on a Result[_, str] (a database call) gives Internal.
+
+fn api_serve[In, Out](call: Api[In, Out], handler: fn(HttpRequest, In) -> Result[Out, ApiError] uses io) -> Route {
+  return api_serve_response(call, fn(req, input) => match handler(req, input) {
+    Ok(out) => Ok((out, fn(res) => res)),
+    Err(e) => Err(e),
+  })
+}
+
+// Like api_serve, for calls that also change the HTTP response, such as signing in (set a cookie) or out: the
+// handler returns the value and a function that finishes the response, e.g.
+//   Ok((user, fn(res) => web_set_cookie(res, "session", token)))
+fn api_serve_response[In, Out](call: Api[In, Out],
+  handler: fn(HttpRequest, In) -> Result[(Out, fn(HttpResponse) -> HttpResponse), ApiError] uses io) -> Route {
+  let name = call.name
+  return web_post(api_path(call), fn(req) => api_answer(name, req, handler))
+}
+
+fn api_answer[In, Out](name: str, req: HttpRequest,
+  handler: fn(HttpRequest, In) -> Result[(Out, fn(HttpResponse) -> HttpResponse), ApiError] uses io) -> HttpResponse uses io {
+  let input: Result[In, str] = json_decode(if trim(req.body) == "" then "null" else req.body)
+  let x = match input { Ok(v) => v, Err(e) => { return web_json(400, ApiFailure("the request does not fit: {e}")) } }
+  return match handler(req, x) {
+    Ok((out, finish)) => finish(web_json(200, out)),
+    Err(Internal(message)) => api_error_response(Internal("{name}: {message}")),
+    Err(e) => api_error_response(e),
+  }
+}
+
+// The reply api_serve sends for an error, for routes that are not typed calls (a live stream behind the same checks).
+fn api_error_response(e: ApiError) -> HttpResponse uses io {
+  return match e {
+    Refused(status, message) => web_json(status, ApiFailure(message)),
+    Internal(message) => {
+      print("api: {message}")
+      return web_json(500, ApiFailure("the server had a problem; please try again"))
+    }
+  }
+}
+
+// A request for a typed call, for tests: web_handle(routes, api_request(add_card(), NewCard(...))).
+fn api_request[In, Out](call: Api[In, Out], input: In) -> HttpRequest {
+  return web_request("POST", api_path(call), json_encode(input))
+}

@@ -31,6 +31,7 @@ function $json_enc(v, t) {
       if (t.kk.k === "s") return new $JO($entries(v).map(([k, x]) => [k, $json_enc(x, t.v)]));
       return $entries(v).map(([k, x]) => [$json_enc(k, t.kk), $json_enc(x, t.v)]);
     case "st": return new $JO(t.fs.map(([name, ft]) => [name, $json_enc(v[name], ft)]));
+    case "tu": return t.fs.map(([name, ft]) => $json_enc(v[name], ft));
     case "en": {
       if (t.n === "Json") return $json_from_klar_o(v);
       if (t.n === "Option") return v.t === "None" ? null : $json_enc(v.f[0], t.vs.Some[0][1]);
@@ -105,6 +106,9 @@ function $json_dec(x, t, path) {
           throw new $JsonErr(`expected a [key, value] pair at ${path}[${n}], found ${$json_kind(p)}`);
         return [$json_dec(p[0], t.kk, `${path}[${n}][0]`), $json_dec(p[1], t.v, `${path}[${n}][1]`)];
       }));
+    case "tu":
+      if (!Array.isArray(x) || x.length !== t.fs.length) bad(`an array of ${t.fs.length} values`);
+      return new $structs[t.n](...t.fs.map(([name, ft], i) => $json_dec(x[i], ft, `${path}[${i}]`)));
     case "st": {
       if (!$isobj(x)) bad(`an object (${t.n})`);
       const C = $structs[t.n];
@@ -164,6 +168,74 @@ const $json = {
   into: (j, t) => {
     try { return $Ok($json_dec($json_parse_raw($json_write($json_from_klar_o(j), "", "")), t, "$")); }
     catch (e) { if (e instanceof $JsonErr) return $Err(e.message); throw e; }
+  },
+};
+// ---------------------------------------------------------------- typed SQL rows (same rules as klar/sqlconv.py)
+class $SqlErr extends Error {}
+const $sql_plain = t => t.k === "en" && !["Option", "Result", "Json", "SqlValue"].includes(t.n) && Object.values(t.vs).every(f => f.length === 0);
+const $sql_kind = v => ({SqlInt: "a whole number", SqlFloat: "a decimal number", SqlText: "text"})[v.t] || "NULL";
+function $sql_value(v, t) {
+  switch (t.k) {
+    case "i": return new KE("SqlInt", [v]);
+    case "f": return new KE("SqlFloat", [v]);
+    case "s": return new KE("SqlText", [v]);
+    case "b": return new KE("SqlInt", [v ? 1 : 0]);
+    case "u": return new KE("SqlNull", []);
+  }
+  if (t.k === "en" && t.n === "Option") return v.t === "None" ? new KE("SqlNull", []) : $sql_value(v.f[0], t.vs.Some[0][1]);
+  if (t.k === "en" && t.n === "SqlValue") return v;
+  if ($sql_plain(t)) return new KE("SqlText", [v.t]);
+  return new KE("SqlText", [$json_write($json_enc(v, t), "", "")]);
+}
+function $sql_column(v, t, col, target) {
+  const x = v.f[0];
+  const bad = want => { throw new $SqlErr(`column \`${col}\` holds ${$sql_kind(v)}, but ${target} needs ${want}`); };
+  if (t.k === "en" && t.n === "Option") return v.t === "SqlNull" ? $None : $Some($sql_column(v, t.vs.Some[0][1], col, target));
+  if (v.t === "SqlNull" && t.k !== "u" && !(t.k === "en" && t.n === "SqlValue"))
+    throw new $SqlErr(`column \`${col}\` is NULL, but ${target} is not an Option; make it an Option, or select a value instead of NULL`);
+  switch (t.k) {
+    case "i": if (v.t !== "SqlInt") bad("a whole number"); return x;
+    case "f": if (v.t === "SqlInt") return $to_float(x); if (v.t !== "SqlFloat") bad("a number"); return x;
+    case "s": if (v.t !== "SqlText") bad("text"); return x;
+    case "b":
+      if (v.t !== "SqlInt" || (x != 0 && x != 1))
+        throw new $SqlErr(`column \`${col}\` holds ${v.t === "SqlInt" ? String(x) : $sql_kind(v)}, but ${target} needs 0 or 1`);
+      return x == 1;
+    case "u": if (v.t !== "SqlNull") bad("NULL"); return undefined;
+  }
+  if (t.k === "en" && t.n === "SqlValue") return v;
+  if ($sql_plain(t)) {
+    if (v.t !== "SqlText") bad(`the name of a ${t.n} variant`);
+    if (!$has(t.vs, x)) throw new $SqlErr(`column \`${col}\` holds "${x}", which is not a variant of ${t.n}`);
+    return new KE(x, []);
+  }
+  if (v.t !== "SqlText") bad("JSON text");
+  let raw;
+  try { raw = $json_parse_raw(x); } catch (e) { throw new $SqlErr(`column \`${col}\` is not valid JSON, but ${target} is read from JSON text`); }
+  try { return $json_dec(raw, t, "$"); } catch (e) { if (e instanceof $JsonErr) throw new $SqlErr(`column \`${col}\`: ${e.message}`); throw e; }
+}
+function $sql_row(row, t) {
+  const cols = $entries(row);
+  if (t.k === "tu") {
+    if (cols.length !== t.fs.length) throw new $SqlErr(`the query returns ${cols.length} column(s) but the tuple has ${t.fs.length} values`);
+    return new $structs[t.n](...t.fs.map(([name, ft], i) => $sql_column(cols[i][1], ft, cols[i][0], `tuple value .${i}`)));
+  }
+  if (t.k === "st") {
+    return new $structs[t.n](...t.fs.map(([f, ft]) => {
+      const c = cols.find(e => e[0] === f);
+      if (!c) throw new $SqlErr(`the query has no column \`${f}\` for field \`${t.n}.${f}\`; select it, or name a column with \`as ${f}\``);
+      return $sql_column(c[1], ft, f, `field \`${t.n}.${f}\``);
+    }));
+  }
+  if (cols.length !== 1)
+    throw new $SqlErr(`the query returns ${cols.length} columns; select exactly one to read single values, or read the rows into a struct or a tuple`);
+  return $sql_column(cols[0][1], t, cols[0][0], "the result");
+}
+const $sql = {
+  value: (v, t) => $sql_value(v, t),
+  read: (rows, t) => {
+    try { return $Ok($L($arr(rows).map(r => $sql_row(r, t)))); }
+    catch (e) { if (e instanceof $SqlErr) return $Err(e.message); throw e; }
   },
 };
 let $rng_state = (Date.now() ^ (Math.random() * 0x100000000)) >>> 0;

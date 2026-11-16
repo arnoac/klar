@@ -1,0 +1,76 @@
+// Tuples, `?` that wraps errors, ok_or and entries: the same output in every backend.
+use std.json { json_encode, json_decode }
+
+enum Problem { Refused(status: int, message: str), Internal(message: str) }
+
+fn lookup(id: int) -> Result[Option[str], str] {
+  if id == 0 {
+    return Err("database is down")
+  }
+  return Ok(if id == 1 then Some("ada") else None)
+}
+
+// `?` on Result[_, str] wraps the error in Internal; ok_or turns None into a chosen error.
+fn name_of(id: int) -> Result[str, Problem] {
+  let name = lookup(id)?.ok_or(Refused(404, "nobody has id {id}"))?
+  return Ok(upper(name))
+}
+
+fn divmod(a: int, b: int) -> (int, int) {
+  return (a / b, a % b)
+}
+
+fn classify(p: (Option[int], bool)) -> str {
+  return match p {
+    (Some(0), _) => "zero",
+    (Some(n), true) => "flagged {n}",
+    (Some(n), false) => "plain {n}",
+    (None, _) => "none",
+  }
+}
+
+fn swap[A, B](p: (A, B)) -> (B, A) {
+  let (a, b) = p
+  return (b, a)
+}
+
+fn main() uses io {
+  print(name_of(1))
+  print(name_of(2))
+  print(name_of(0))
+  print(ok_or(Some(3), "missing"))
+  let none: Option[int] = None
+  print(none.ok_or("missing"))
+
+  let (q, r) = divmod(17, 5)
+  print("{q} {r}")
+  let pair = ("ada", 36)
+  print(pair)
+  print("{pair.0} is {pair.1 + 1} next year")
+  print(swap(pair))
+  var total = 0
+  for (word, n) in [("a", 1), ("b", 2), ("c", 3)] {
+    total = total + n
+    print("{word}{n}")
+  }
+  print(total)
+  print(classify((Some(3), true)))
+  print(classify((Some(0), false)))
+  print(classify((None, true)))
+  let nested = ((1, 2), "x")
+  print(nested.0.1)
+  print(nested == ((1, 2), "x"))
+  let (_, last) = (1, "kept")
+  print(last)
+
+  let ages = ["ada": 36, "alan": 41]
+  for (who, age) in entries(ages) {
+    print("{who}: {age}")
+  }
+  let text = json_encode(entries(ages))
+  print(text)
+  let back: Result[list[(str, int)], str] = json_decode(text)
+  print(back)
+  let wrong: Result[(int, int), str] = json_decode("[1, 2, 3]")
+  print(wrong)
+}

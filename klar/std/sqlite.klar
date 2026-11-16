@@ -1,4 +1,8 @@
 // std.sqlite: embedded SQL database. Always pass values as parameters (`?`), never build SQL strings.
+//
+//   struct Card { id: int, title: str, column: Column, assignee: Option[int] }
+//   let cards: list[Card] = sqlite_rows(db, "select id, title, col as column, assignee from cards where board = ?", [sql(id)])?
+//   let total: Option[int] = sqlite_first(db, "select count(*) from cards", [])?
 
 extern type Database
 
@@ -27,4 +31,23 @@ fn sql_int(v: SqlValue) -> Option[int] {
 
 fn sql_float(v: SqlValue) -> Option[float] {
   return match v { SqlFloat(x) => Some(x), SqlInt(n) => Some(to_float(n)), _ => None }
+}
+
+// Any value as a query parameter: int, float, str, bool (1 or 0), Option (None is NULL), an enum whose variants have
+// no fields (its variant name); lists, maps, structs, tuples and other enums are stored as JSON text.
+extern "klar:sql.value" fn sql[T](value: T) -> SqlValue
+
+// Rows read as values of type T: a struct takes its fields from the columns of the same name (rename with `as`),
+// a tuple takes the columns in order, any other type the only column. Columns convert back by the rules of `sql`.
+extern "klar:sql.read" fn sql_read[T](rows: list[map[str, SqlValue]]) -> Result[list[T], str]
+
+// Every row of a query as a T. The type comes from where the result goes: `let cards: list[Card] = sqlite_rows(...)?`
+fn sqlite_rows[T](db: Database, query: str, params: list[SqlValue]) -> Result[list[T], str] uses io {
+  return sql_read(sqlite_query(db, query, params)?)
+}
+
+// The first row as a T, or None when the query returns no rows.
+fn sqlite_first[T](db: Database, query: str, params: list[SqlValue]) -> Result[Option[T], str] uses io {
+  let rows: list[T] = sqlite_rows(db, query, params)?
+  return Ok(get(rows, 0))
 }

@@ -7,6 +7,7 @@
   Option[T]                null or the value; a struct field of Option type may be missing
   Result[T, E]             {"ok": value} or {"err": error}
   struct                   object with one key per field, in declaration order; unknown keys are ignored
+  tuple                    array: (1, "a") is [1, "a"]
   enum                     "Variant" for a variant without fields, else {"type": "Variant", field: value, ...}
   Json                     itself
 """
@@ -14,6 +15,7 @@
 import math
 
 from .types import TCon, TFn, prune, substitute
+from .syntax import is_tuple_name
 
 INT_MIN, INT_MAX = -2 ** 63, 2 ** 63 - 1
 
@@ -137,6 +139,8 @@ class JsonConv:
             return [[self.encode(k, kt), self.encode(x, vt)] for k, x in v.items()]
         if isinstance(v, StructVal):
             ftypes = dict(self.c.struct_fields(t)) if n in self.c.structs and self.concrete(t) else {}
+            if is_tuple_name(v.name):
+                return [self.encode(x, ftypes.get(k)) for k, x in v.fields]
             return {k: self.encode(x, ftypes.get(k)) for k, x in v.fields}
         if isinstance(v, EnumVal):
             if v.variant == "None":
@@ -236,6 +240,10 @@ class JsonConv:
                 return errv(self.decode(j["err"], t.args[1], f"{path}.err"))
             bad('{"ok": ...} or {"err": ...}')
         c = self.c
+        if is_tuple_name(n):
+            if not isinstance(j, list) or len(j) != len(t.args):
+                bad(f"an array of {len(t.args)} values")
+            return StructVal(n, tuple((str(i), self.decode(x, at, f"{path}[{i}]")) for i, (x, at) in enumerate(zip(j, t.args))))
         if n in c.structs:
             if not isinstance(j, dict):
                 bad(f"an object ({n})")

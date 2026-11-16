@@ -1,5 +1,7 @@
-// Klar Board: types and rules shared by the server (server.klar), the browser app (app.klar) and the report tool.
-// Everything here is pure, so the same code decides where a moved card lands on the server and in the browser.
+// Klar Board: types, rules and calls shared by the server (server.klar), the browser app (app.klar) and the report
+// tool. Everything here is pure, so the same code decides where a moved card lands on the server and in the browser.
+
+use std.api { Api }
 
 enum Column { Todo, Doing, Done }
 
@@ -23,16 +25,27 @@ struct Event { id: int, board_id: int, user: str, text: str, at: float }
 // Everything the board page needs, in one reply (and in every live update).
 struct BoardPage { board: Board, members: list[User], cards: list[Card], events: list[Event] }
 
-// Request bodies.
+// What the browser sends.
 struct Credentials { name: str, password: str }
-struct NewBoard { name: str }
-struct NewCard { title: str, column: Column }
-struct CardEdit { title: str, notes: str, assignee: Option[int] }
-struct CardMove { column: Column, position: int }
-struct Invite { name: str }
+struct Invite { board_id: int, name: str }
+struct NewCard { board_id: int, title: str, column: Column }
+struct CardEdit { card_id: int, title: str, notes: str, assignee: Option[int] }
+struct CardMove { card_id: int, column: Column, position: int }
 
-// Error replies look like {"error": "title is required"}.
-struct ApiError { error: str }
+// ---- the calls the browser makes (POST /api/<name>; answered in server.klar)
+
+fn sign_up_call() -> Api[Credentials, User] { return Api("sign_up") }
+fn log_in_call() -> Api[Credentials, User] { return Api("log_in") }
+fn log_out_call() -> Api[unit, unit] { return Api("log_out") }
+fn me_call() -> Api[unit, User] { return Api("me") }
+fn boards_call() -> Api[unit, list[Board]] { return Api("boards") }
+fn create_board_call() -> Api[str, Board] { return Api("create_board") }       // the name
+fn board_call() -> Api[int, BoardPage] { return Api("board") }                  // the board id
+fn invite_call() -> Api[Invite, BoardPage] { return Api("invite") }
+fn add_card_call() -> Api[NewCard, Card] { return Api("add_card") }
+fn edit_card_call() -> Api[CardEdit, Card] { return Api("edit_card") }
+fn move_card_call() -> Api[CardMove, BoardPage] { return Api("move_card") }
+fn delete_card_call() -> Api[int, BoardPage] { return Api("delete_card") }     // the card id
 
 // ---- columns
 

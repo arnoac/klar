@@ -24,6 +24,7 @@ import time
 
 from .checker import check_source
 from .errors import KlarError
+from .loader import _is_std
 
 RELOAD_JS = """<script>(() => {
   const es = new EventSource("/__klar/events");
@@ -88,7 +89,8 @@ class Entry:
                 errors = [e]
         js = None
         if not errors:
-            is_ui = any(d.kind == "Extern" and d.target == "klar:ui.start" for d in prog.decls)
+            # A browser app imports std.ui itself; a server may reach it only through a library (std.api).
+            is_ui = any(d.kind == "Use" and not _is_std(d.module) and d.path == ["std", "ui"] for d in prog.decls)
             self.kind = "web" if is_ui else "node"
             try:
                 out = os.path.join(os.path.dirname(self.path) if self.kind == "web" else self.tmp, self.stem + ".x")

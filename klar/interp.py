@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from .errors import KlarError
 from .ownership import self_update
-from .syntax import Node
+from .syntax import Node, MAX_TUPLE, tuple_name, is_tuple_name
 from .interop import Converter, Opaque, PyFn, InteropError, resolve_target
 from .types import TCon, prune, resolve, substitute
 
@@ -108,6 +108,8 @@ def fmt(v, nested=False):
             return "[:]"
         return "[" + ", ".join(f"{fmt(k, True)}: {fmt(x, True)}" for k, x in v.items()) + "]"
     if isinstance(v, StructVal):
+        if is_tuple_name(v.name):
+            return "(" + ", ".join(fmt(x, True) for _, x in v.fields) + ")"
         return v.name + "(" + ", ".join(f"{k}: {fmt(x, True)}" for k, x in v.fields) + ")"
     if isinstance(v, EnumVal):
         if not v.values:
@@ -194,6 +196,8 @@ class Interpreter:
             elif d.kind == "Test" and d.module == prog_entry:
                 self.tests.append(d)
         self.variants.update({"Some": ["value"], "None": [], "Ok": ["value"], "Err": ["error"]})
+        for n in range(2, MAX_TUPLE + 1):
+            self.structs[tuple_name(n)] = [str(i) for i in range(n)]
 
     def rt_err(self, code, msg, node, hint=None):
         raise KlarError(code, msg, node.line, node.col, hint, self.file, trace=list(reversed(self.stack[-10:])))
@@ -440,6 +444,9 @@ class Interpreter:
             v = self.eval(e.value, env)
             if v.variant in ("Some", "Ok"):
                 return v.values[0]
+            wrap = getattr(e, "wrap", None)
+            if wrap is not None:
+                v = errv(EnumVal(wrap, (v.values[0],), tuple(self.variants[wrap])))
             raise ReturnSig(v)
         if k == "With":
             s = self.eval(e.target, env)
@@ -582,6 +589,8 @@ class Interpreter:
             return True
         if k == "PLit":
             return type(v) is type(p.value) and v == p.value
+        if k == "PTuple":
+            return all(self.match_pat(sp, sv, binds) for sp, (_, sv) in zip(p.subs, v.fields))
         if k == "PVariant":
             if not isinstance(v, EnumVal) or v.variant != p.name:
                 return False
@@ -643,6 +652,8 @@ class Interpreter:
                         "build with `klar build --target web app.klar` and open app.html; test update and view with `klar test`")
         if t == "klar:ui.load":
             return NONE
+        if t.startswith("klar:sql."):
+            return self.call_sql(t, args, node)
         if t.startswith("klar:json."):
             return self.call_json(t, d, args, node)
         if t.startswith(("klar:task.", "klar:chan.")):
@@ -676,6 +687,19 @@ class Interpreter:
             rt.chan_close(self, cid(args[0]), node)
             return None
         self.rt_err("E407", f"unknown intrinsic \"{t}\"", node)
+
+    def call_sql(self, target, args, node):
+        from .jsonconv import JsonConv
+        from .sqlconv import SqlConv, SqlReadError
+        conv = SqlConv(self.conv.checker, JsonConv(self.conv.checker))
+        inst = getattr(node, "inst", None)
+        ty = self.concrete_type(inst[0]) if inst else None
+        if target == "klar:sql.value":
+            return conv.value(args[0], ty)
+        try:
+            return ok(conv.read(args[0], ty))
+        except SqlReadError as ex:
+            return errv(str(ex))
 
     def call_json(self, target, d, args, node):
         from .jsonconv import JsonConv, JsonTypeError
@@ -909,6 +933,9 @@ class Interpreter:
     def b_keys(self, n, m):
         return tuple(m.keys())
 
+    def b_entries(self, n, m):
+        return tuple(StructVal("Tuple2", (("0", k), ("1", v))) for k, v in m.items())
+
     def b_values(self, n, m):
         return tuple(m.values())
 
@@ -935,6 +962,9 @@ class Interpreter:
 
     def b_unwrap_or(self, n, o, d):
         return o.values[0] if o.variant in ("Some", "Ok") else d
+
+    def b_ok_or(self, n, o, error):
+        return ok(o.values[0]) if o.variant == "Some" else errv(error)
 
     def b_is_some(self, n, o):
         return o.variant == "Some"

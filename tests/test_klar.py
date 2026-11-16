@@ -184,6 +184,15 @@ class CheckErrorsTest(unittest.TestCase):
                        "impl Show for P { fn show(self: P) -> str { return \"\" } }", [("E202", 4)]),
         "unknown trait": ("fn f[T: Shw](x: T) -> int { return 1 }", [("E201", 1)]),
         "trait method needs Self": ("trait T { fn m(x: int) -> int }", [("E301", 1)]),
+        "ambiguous error wrap": ("enum E { A(msg: str), B(msg: str) }\nfn g() -> Result[int, str] { return Ok(1) }\n"
+                                 "fn f() -> Result[int, E] {\n let x = g()?\n return Ok(x)\n}", [("E307", 4)]),
+        "unpack wrong count": (main_wrap("let (a, b) = (1, 2, 3)"), [("E301", 2)]),
+        "unpack non tuple": (main_wrap("let (a, b) = 1"), [("E301", 2)]),
+        "tuple value out of range": (main_wrap("let t = (1, 2)\nprint(t.2)"), [("E204", 3)]),
+        "tuple name reserved": ("struct Tuple2 { a: int }", [("E202", 1)]),
+        "non exhaustive tuple": ("fn f(t: (int, bool)) -> int {\n return match t { (_, false) => 1 }\n}", [("E306", 2)]),
+        "untyped sql rows": ("use std.sqlite { Database, sqlite_rows }\nfn f(db: Database) uses io {\n let r = sqlite_rows(db, \"select 1\", [])\n}",
+                             [("E304", 3)]),
         "multiple independent errors": (main_wrap("print(a)\nprint(b)\nlet c: int = \"s\""),
                                         [("E201", 2), ("E201", 3), ("E301", 4)]),
     }

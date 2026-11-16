@@ -274,6 +274,18 @@ def lex(src, file=None, line_offset=0, col_offset=0):
 
 # ---------------------------------------------------------------- parser
 
+MAX_TUPLE = 6
+
+
+def tuple_name(n):
+    """Tuples are built-in generic structs: (int, str) is Tuple2[int, str] with fields named 0 and 1."""
+    return f"Tuple{n}"
+
+
+def is_tuple_name(name):
+    return len(name) == 6 and name.startswith("Tuple") and name[5].isdigit() and 2 <= int(name[5]) <= MAX_TUPLE
+
+
 def is_upper(name):
     return name[0].isupper()
 
@@ -589,6 +601,16 @@ class Parser:
         if self.at_sym("("):
             self.advance()
             inner = self.parse_type()
+            if self.at_sym(","):
+                items = [inner]
+                while self.at_sym(","):
+                    self.advance()
+                    if self.at_sym(")"):
+                        break
+                    items.append(self.parse_type())
+                self.expect_sym(")")
+                self.check_arity(len(items), t)
+                return Node("TName", t.line, t.col, name=tuple_name(len(items)), args=items)
             self.expect_sym(")")
             return inner
         name = self.expect_ident("a type").value
@@ -615,15 +637,62 @@ class Parser:
             self.skip_semis()
             if self.at_sym("}"):
                 break
-            stmts.append(self.parse_stmt())
+            st = self.parse_stmt()
+            if st.kind == "Destructure":
+                stmts.extend(st.stmts)
+            else:
+                stmts.append(st)
             self.skip_semis()
         self.expect_sym("}")
         return Node("Block", t.line, t.col, stmts=stmts)
+
+    def check_arity(self, n, tok):
+        if n > MAX_TUPLE:
+            self.error(f"a tuple has at most {MAX_TUPLE} values, this one has {n}", "define a struct with named fields instead",
+                       tok=tok)
+
+    def parse_names_tuple(self, what):
+        """`(a, b, _)` in `let (a, b) = ...` and `for (k, v) in ...`: the names, in order."""
+        t = self.expect_sym("(")
+        names = []
+        while not self.at_sym(")"):
+            names.append(self.expect_ident(f"a name to bind in {what}", upper=False))
+            if self.at_sym(","):
+                self.advance()
+            elif not self.at_sym(")"):
+                self.error(f"expected `,` or `)` but found {self.describe(self.tok)}",
+                           f"{what} takes plain names: let (a, b) = pair")
+        self.expect_sym(")")
+        if len(names) < 2:
+            self.error(f"{what} needs at least two names", "for one value write `let a = ...`", tok=t)
+        self.check_arity(len(names), t)
+        return names
+
+    def destructure(self, names, tmp, at, mutable=False):
+        """`let (a, b) = tmp` as plain lets of tmp.0, tmp.1 (a `_` skips that value)."""
+        out = []
+        for i, nt in enumerate(names):
+            if nt.value == "_":
+                continue
+            field = Node("Field", nt.line, nt.col, target=Node("Name", nt.line, nt.col, name=tmp), name=str(i))
+            out.append(Node("Let", nt.line, nt.col, name=nt.value, mutable=mutable, ann=None, value=field, from_tuple=True))
+        return out
 
     def parse_stmt(self):
         t = self.tok
         if self.at_kw("let") or self.at_kw("var"):
             mutable = self.advance().value == "var"
+            if self.at_sym("("):
+                names = self.parse_names_tuple("`let (...)`")
+                ann = None
+                if self.at_sym(":"):
+                    self.advance()
+                    ann = self.parse_type()
+                self.expect_sym("=", "destructuring form: let (a, b) = pair")
+                value = self.parse_expr()
+                tmp = f"tuple__{t.line}_{t.col}"
+                first = Node("Let", t.line, t.col, name=tmp, mutable=False, ann=ann, value=value, unpack=len(names))
+                return Node("Destructure", t.line, t.col, stmts=[first] + self.destructure(names, tmp, t, mutable))
             name = self.expect_ident("a variable name", upper=False).value
             ann = None
             if self.at_sym(":"):
@@ -641,11 +710,18 @@ class Parser:
             return Node("While", t.line, t.col, cond=cond, body=body)
         if self.at_kw("for"):
             self.advance()
-            var = self.expect_ident("a loop variable", upper=False).value
+            names = None
+            if self.at_sym("("):
+                names = self.parse_names_tuple("`for (...)`")
+                var = f"tuple__{t.line}_{t.col}"
+            else:
+                var = self.expect_ident("a loop variable", upper=False).value
             self.expect_kw("in", "loop form: for x in xs { ... } or for i in range(0, n) { ... }")
             it = self.parse_expr()
             body = self.parse_block()
-            return Node("For", t.line, t.col, var=var, iter=it, body=body)
+            if names:
+                body.stmts = self.destructure(names, var, t) + body.stmts
+            return Node("For", t.line, t.col, var=var, iter=it, body=body, unpack=len(names) if names else None)
         if self.at_kw("return"):
             self.advance()
             value = None
@@ -775,6 +851,18 @@ class Parser:
                 e = Node("Index", t.line, t.col, target=e, index=idx)
             elif self.at_sym("."):
                 self.advance()
+                if self.at("int"):
+                    n = self.advance()
+                    e = Node("Field", n.line, n.col, target=e, name=str(n.value))
+                    continue
+                if self.at("float"):        # t.0.1 lexes as t . 0.1
+                    n = self.advance()
+                    raw = repr(n.value)
+                    if not all(part.isdigit() for part in raw.split(".")):
+                        self.error("expected a tuple position like .0 or .1", tok=n)
+                    for part in raw.split("."):
+                        e = Node("Field", n.line, n.col, target=e, name=part)
+                    continue
                 name = self.expect_ident("a field or function name after `.`").value
                 if self.at_sym("(") and self.tok.line == self.prev().line:
                     args, named = self.parse_args()
@@ -843,7 +931,16 @@ class Parser:
                 return Node("Unit", t.line, t.col)
             e = self.parse_expr()
             if self.at_sym(","):
-                self.error("tuples are not supported", "define a struct for grouped values")
+                items = [e]
+                while self.at_sym(","):
+                    self.advance()
+                    if self.at_sym(")"):
+                        break
+                    items.append(self.parse_expr())
+                self.expect_sym(")")
+                self.check_arity(len(items), t)
+                return Node("Call", t.line, t.col, callee=Node("Name", t.line, t.col, name=tuple_name(len(items))),
+                            args=items, named=[], tuple_lit=True)
             self.expect_sym(")")
             return e
         if self.at_sym("["):
@@ -939,7 +1036,8 @@ class Parser:
                     self.at("ident") and self.toks[self.pos + 1].kind == "sym" and self.toks[self.pos + 1].value == "="):
                 # `Pattern => return x`, `=> break`, `=> total = total + 1` are statements: treat as a one-line block
                 st = self.tok
-                body = Node("Block", st.line, st.col, stmts=[self.parse_stmt()])
+                one = self.parse_stmt()
+                body = Node("Block", st.line, st.col, stmts=one.stmts if one.kind == "Destructure" else [one])
             else:
                 body = self.parse_expr()
             arms.append(Node("Arm", pt.line, pt.col, pattern=pat, body=body))
@@ -968,6 +1066,19 @@ class Parser:
         if self.at_kw("true") or self.at_kw("false"):
             self.advance()
             return Node("PLit", t.line, t.col, value=t.value == "true")
+        if self.at_sym("("):
+            self.advance()
+            subs = [self.parse_pattern()]
+            while self.at_sym(","):
+                self.advance()
+                if self.at_sym(")"):
+                    break
+                subs.append(self.parse_pattern())
+            self.expect_sym(")")
+            if len(subs) < 2:
+                self.error("a tuple pattern needs at least two parts: (a, b)", tok=t)
+            self.check_arity(len(subs), t)
+            return Node("PTuple", t.line, t.col, name=tuple_name(len(subs)), subs=subs)
         if t.kind == "ident":
             self.advance()
             if is_upper(t.value):
@@ -982,7 +1093,7 @@ class Parser:
                 return Node("PVariant", t.line, t.col, name=t.value, subs=subs)
             return Node("PBind", t.line, t.col, name=t.value)
         self.error(f"expected a pattern but found {self.describe(t)}",
-                   "patterns: _, literals, a lowercase name to bind, or Variant(p1, p2)")
+                   "patterns: _, literals, a lowercase name to bind, Variant(p1, p2) or a tuple (p1, p2)")
 
     def parse_lambda(self):
         t = self.expect_kw("fn")

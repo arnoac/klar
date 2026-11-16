@@ -10,7 +10,7 @@ import os
 
 from .errors import KlarError
 from .ownership import self_update, is_fresh
-from .syntax import Node
+from .syntax import Node, is_tuple_name
 from .types import TCon, TFn, TVar, INT, prune, resolve, substitute, show
 
 RUNTIME = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime", "klar_rt.h")
@@ -391,7 +391,8 @@ class Compiler:
             fn = ", ".join(q(f) for f, _ in fields) or "0"
             ft = ", ".join(f"&{self.desc(ft)}" for _, ft in fields) or "0"
             self.descs.append(f"static const char *{name}_f[] = {{{fn}}}; static KD *{name}_t[] = {{{ft}}};")
-            init = f"{{KD_STRUCT, {q(tn)}, 0, 0, 0, {len(fields)}, {name}_f, {name}_t}}"
+            kd = "KD_TUPLE" if is_tuple_name(tn) else "KD_STRUCT"
+            init = f"{{{kd}, {q(tn)}, 0, 0, 0, {len(fields)}, {name}_f, {name}_t}}"
         elif k == "enum":
             vs = []
             for i, (vname, ftypes) in enumerate(self.variant_types(t)):
@@ -743,7 +744,9 @@ class Compiler:
     def e_Try(self, e):
         t = self.tmp()
         inner = self.T(e.ty)
-        return (f"({{ KEnum *{t} = {self.expr(e.value)}; if ({t}->tag == K_TAG_NONE || {t}->tag == K_TAG_ERR) return {t}; "
+        wrap = getattr(e, "wrap", None)
+        fail = f"k_err((KS)k_enum_new({self.tags[wrap]}, 1, {t}->f[0]))" if wrap else t
+        return (f"({{ KEnum *{t} = {self.expr(e.value)}; if ({t}->tag == K_TAG_NONE || {t}->tag == K_TAG_ERR) return {fail}; "
                 f"{self.from_s(f'{t}->f[0]', inner)}; }})")
 
     def e_With(self, e):
@@ -845,6 +848,13 @@ class Compiler:
             sig = self.c.fns[d.name]
             args = self.ordered_args(e, [p for p, _ in sig.params])
             pos = f"kx_line = {e.line}, kx_col = {e.col}, "
+            if d.target.startswith("klar:sql."):
+                self.uses_std = True
+                self.features.add("sqlite")
+                desc = self.desc(self.T(e.inst[0]))
+                if d.target == "klar:sql.value":
+                    return f"({pos}kx_sql_value({self.to_s(self.expr(args[0]), self.T(args[0].ty))}, &{desc}))"
+                return f"({pos}kx_sql_read({self.expr(args[0])}, &{desc}))"
             if d.target.startswith("klar:json."):
                 op = d.target.split(".", 1)[1]
                 if op not in JSON_OPS:
@@ -934,6 +944,11 @@ class Compiler:
                 conds.append(f"({code}) == {repr(v)}")
             else:
                 conds.append(f"({code}) == INT64_C({v})")
+            return
+        if k == "PTuple":
+            for i, (sub, at) in enumerate(zip(p.subs, t.args)):
+                st = self.T(at)
+                self.pattern(sub, self.from_s(f"({code})[{i}]", st), st, conds, binds)
             return
         info = self.c.variants[p.name]
         conds.append(f"({code})->tag == {self.tags[p.name]}")
@@ -1044,6 +1059,12 @@ class Compiler:
                         + self.show_into("b", self.from_s("v->d->keys[i]", kt), kt, True) + " ksb_c(b, \": \"); "
                         + self.show_into("b", self.from_s("v->d->vals[i]", vt), vt, True) + " }")
             body.append("ksb_c(b, \"]\");")
+        elif k == "struct" and is_tuple_name(t.name):
+            body.append("ksb_c(b, \"(\");")
+            for i, (fname, ft) in enumerate(self.c.struct_fields(t)):
+                ft = self.T(ft)
+                body.append(("ksb_c(b, \", \"); " if i else "") + self.show_into("b", self.from_s(f"v[{i}]", ft), ft, True))
+            body.append("ksb_c(b, \")\");")
         elif k == "struct":
             body.append(f"ksb_c(b, \"{t.name}(\");")
             for i, (fname, ft) in enumerate(self.c.struct_fields(t)):
@@ -1190,7 +1211,7 @@ class Compiler:
         simple = {"split": "k_split", "chars": "k_str_chars", "trim": "k_trim", "upper": "k_upper", "lower": "k_lower",
                   "starts_with": "k_starts_with", "ends_with": "k_ends_with", "replace": "k_replace", "repeat": "k_repeat",
                   "parse_int": "k_parse_int", "parse_float": "k_parse_float", "floor": "k_floor", "round": "k_round",
-                  "sqrt": "k_sqrt", "keys": "k_map_keys", "values": "k_map_values"}
+                  "sqrt": "k_sqrt", "keys": "k_map_keys", "values": "k_map_values", "entries": "k_map_entries"}
         if name in simple:
             return f"{simple[name]}({', '.join(a)})"
         if name == "to_float":
@@ -1219,6 +1240,9 @@ class Compiler:
             fail = (f"if ({o}->tag == K_TAG_NONE) k_fail(\"E403\", {L}, \"unwrap() called on None\"); "
                     f"if ({o}->tag == K_TAG_ERR) k_fail(\"E403\", {L}, \"unwrap() called on Err\");")
             return f"({{ KEnum *{o} = {a[0]}; {fail} {self.from_s(f'{o}->f[0]', rt)}; }})"
+        if name == "ok_or":
+            o = self.tmp()
+            return f"({{ KEnum *{o} = {a[0]}; {o}->tag == K_TAG_SOME ? k_ok({o}->f[0]) : k_err({self.to_s(a[1], ts[1])}); }})"
         tagtest = {"is_some": "K_TAG_SOME", "is_none": "K_TAG_NONE", "is_ok": "K_TAG_OK", "is_err": "K_TAG_ERR"}
         if name in tagtest:
             return f"(({a[0]})->tag == {tagtest[name]})"

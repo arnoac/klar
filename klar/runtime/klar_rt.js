@@ -276,6 +276,7 @@ function $mhas(m, k) { return $mfind(m, k) !== undefined; }
 function $entries(m) { return [...$reroot(m).values()]; }
 function $mkeys(m) { return $L($entries(m).map(e => e[0])); }
 function $mvalues(m) { return $L($entries(m).map(e => e[1])); }
+function $mentries(m) { return $L($entries(m).map(e => new $structs.Tuple2(e[0], e[1]))); }
 
 // ---------------------------------------------------------------- enums, Option, Result
 class KE { constructor(t, f) { this.t = t; this.f = f; } }
@@ -283,6 +284,7 @@ const $None = new KE("None", []);
 function $Some(x) { return new KE("Some", [x]); }
 function $Ok(x) { return new KE("Ok", [x]); }
 function $Err(x) { return new KE("Err", [x]); }
+function $ok_or(o, e) { return o.t === "Some" ? $Ok(o.f[0]) : $Err(e); }
 function $unwrap(o, l, c, show_err) {
   if (o.t === "Some" || o.t === "Ok") return o.f[0];
   if (o.t === "Err") $fail("E403", l, c, `unwrap() called on Err(${show_err(o.f[0])})`, "handle the error with match or `?` instead of unwrap");
@@ -322,7 +324,7 @@ function $index_of(l, x) { for (let i = 0; i < l.n; i++) if ($eq($d(l)[i], x)) r
 
 // ---------------------------------------------------------------- display (type-directed by descriptors)
 // Descriptor kinds: i int, f float, b bool, u unit, s str, fn, x extern, l list (e), m map (k, v),
-// st struct (n name, fs [[field, desc]]), en enum (vs {variant: [[label or "", desc]]}).
+// st struct (n name, fs [[field, desc]]), tu tuple (like st), en enum (vs {variant: [[label or "", desc]]}).
 function $quote(s) { return '"' + s.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n") + '"'; }
 function $show(v, t, nested) {
   switch (t.k) {
@@ -343,6 +345,8 @@ function $show(v, t, nested) {
       if (v.size === 0) return "[:]";
       return "[" + $entries(v).map(e => $show(e[0], t.kk, true) + ": " + $show(e[1], t.v, true)).join(", ") + "]";
     }
+    case "tu":
+      return "(" + t.fs.map(([name, ft]) => $show(v[name], ft, true)).join(", ") + ")";
     case "st":
       return t.n + "(" + t.fs.map(([name, ft]) => name + ": " + $show(v[name], ft, true)).join(", ") + ")";
     case "en": {
@@ -367,6 +371,7 @@ function $to_js(v, t) {
       for (const [name, ft] of t.fs) { const x = $to_js(v[name], ft); if (x !== undefined) o[name] = x; }
       return o;
     }
+    case "tu": return t.fs.map(([name, ft]) => $to_js(v[name], ft));
     case "en":
       if (t.n === "Option") return v.t === "Some" ? $to_js(v.f[0], t.vs.Some[0][1]) : undefined;
       return v.f.length ? { tag: v.t, values: v.f.map((x, i) => $to_js(x, t.vs[v.t][i][1])) } : v.t;
@@ -416,6 +421,10 @@ function $from_js(v, t, what, l = 0, c = 0) {
       if (typeof v !== "object" || v === null) bad();
       const C = $structs[t.n];
       return new C(...t.fs.map(([name, ft]) => $from_js(v[name], ft, `${what} (field \`${name}\`)`, l, c)));
+    }
+    case "tu": {
+      if (!Array.isArray(v) || v.length !== t.fs.length) bad();
+      return new $structs[t.n](...t.fs.map(([name, ft], i) => $from_js(v[i], ft, what, l, c)));
     }
     case "en":
       if (t.n === "Option") return v === null || v === undefined ? $None : $Some($from_js(v, t.vs.Some[0][1], what, l, c));

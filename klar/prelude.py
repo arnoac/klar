@@ -63,6 +63,7 @@ fn max(a: int, b: int) -> int {}
 // ---- maps (all return new maps)
 fn keys[K, V](m: map[K, V]) -> list[K] {}
 fn values[K, V](m: map[K, V]) -> list[V] {}
+fn entries[K, V](m: map[K, V]) -> list[(K, V)] {}
 fn has[K, V](m: map[K, V], key: K) -> bool {}
 fn put[K, V](m: map[K, V], key: K, value: V) -> map[K, V] {}
 fn remove[K, V](m: map[K, V], key: K) -> map[K, V] {}
@@ -70,6 +71,7 @@ fn remove[K, V](m: map[K, V], key: K) -> map[K, V] {}
 // ---- Option / Result
 fn unwrap[T](o: Option[T]) -> T {}
 fn unwrap_or[T](o: Option[T], default: T) -> T {}
+fn ok_or[T, E](o: Option[T], error: E) -> Result[T, E] {}
 fn is_some[T](o: Option[T]) -> bool {}
 fn is_none[T](o: Option[T]) -> bool {}
 fn is_ok[T, E](r: Result[T, E]) -> bool {}

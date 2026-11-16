@@ -16,6 +16,7 @@ import re
 
 from .errors import KlarError
 from .ownership import is_fresh, self_update
+from .syntax import is_tuple_name
 from .types import TCon, TFn, TVar, INT, prune, resolve, substitute, show
 
 RT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime")
@@ -513,7 +514,9 @@ class JSCompiler:
     def e_Try(self, e):
         t = self.tmp()
         self.emit(f"const {t} = {self.ex(e.value)};")
-        self.emit(f'if ({t}.t === "None" || {t}.t === "Err") return {t};')
+        wrap = getattr(e, "wrap", None)
+        fail = f"$Err(new KE({json.dumps(wrap)}, [{t}.f[0]]))" if wrap else t
+        self.emit(f'if ({t}.t === "None" || {t}.t === "Err") return {fail};')
         return f"{t}.f[0]"
 
     def e_With(self, e):
@@ -572,6 +575,10 @@ class JSCompiler:
                 (code,) = self.seq(self.ordered_args(e, [p for p, _ in self.c.fns[d.name].params]))
                 op = d.target.split(".", 1)[1]
                 return f"$json.{op}({code}, {self.desc(self.T(e.inst[0]))}, {e.line}, {e.col})"
+            if d.target.startswith("klar:sql."):
+                (code,) = self.seq(self.ordered_args(e, [p for p, _ in self.c.fns[d.name].params]))
+                op = d.target.split(".", 1)[1]
+                return f"$sql.{op}({code}, {self.desc(self.T(e.inst[0]))})"
             if d.target.startswith(("klar:task.", "klar:chan.")):
                 codes = self.seq(self.ordered_args(e, [p for p, _ in self.c.fns[d.name].params]))
                 op = d.target.split(".", 1)[1]
@@ -786,6 +793,10 @@ class JSCompiler:
             else:
                 conds.append(f"{code} === {repr(v)}")
             return
+        if k == "PTuple":
+            for i, (sp, at) in enumerate(zip(p.subs, t.args)):
+                self.pattern(sp, f"{code}[\"{i}\"]", self.T(at), conds, binds)
+            return
         info = self.c.variants[p.name]
         conds.append(f"{code}.t === {json.dumps(p.name)}")
         mapping = dict(zip(info.tparams, t.args))
@@ -823,7 +834,8 @@ class JSCompiler:
             self.desc_decls.append(f"const {name} = {{k: \"m\"}};")
             self.desc_fills.append(f"{name}.kk = {self.desc(t.args[0])}; {name}.v = {self.desc(t.args[1])};")
         elif k == "struct":
-            self.desc_decls.append(f"const {name} = {{k: \"st\", n: {json.dumps(t.name)}}};")
+            kind = "tu" if is_tuple_name(t.name) else "st"
+            self.desc_decls.append(f"const {name} = {{k: \"{kind}\", n: {json.dumps(t.name)}}};")
             fs = ", ".join(f"[{json.dumps(f)}, {self.desc(ft)}]" for f, ft in self.c.struct_fields(t))
             self.desc_fills.append(f"{name}.fs = [{fs}];")
         else:
@@ -900,6 +912,8 @@ class JSCompiler:
             t = prune(ts[0])
             show_err = f"(x => {self.show('x', t.args[1], True)})" if t.name == "Result" else "null"
             return f"$unwrap({a[0]}, {L}, {show_err})"
+        if name == "ok_or":
+            return f"$ok_or({a[0]}, {a[1]})"
         if name in ("is_some", "is_none", "is_ok", "is_err"):
             tag = {"is_some": "Some", "is_none": "None", "is_ok": "Ok", "is_err": "Err"}[name]
             return f"({a[0]}.t === \"{tag}\")"
@@ -916,7 +930,7 @@ class JSCompiler:
             "any": "$lany", "all": "$lall", "find": "$lfind", "fold": "$lfold", "sort": "$sort", "sort_by": "$sort_by",
             "join": "$join", "split": "$split", "chars": "$chars", "trim": "$trim", "replace": "$replace",
             "repeat": "$repeat", "parse_int": "$parse_int", "parse_float": "$parse_float", "floor": "$floor",
-            "round": "$round", "sqrt": "Math.sqrt", "keys": "$mkeys", "values": "$mvalues", "has": "$mhas",
+            "round": "$round", "sqrt": "Math.sqrt", "keys": "$mkeys", "values": "$mvalues", "entries": "$mentries", "has": "$mhas",
             "put": "$mput", "remove": "$mremove", "unwrap_or": "$unwrap_or", "min": "$min", "max": "$max",
         }
         if name in simple:

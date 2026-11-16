@@ -22,7 +22,7 @@ fn open_db(path: str) -> Result[Database, str] uses io {
   return Ok(db)
 }
 
-fn entries(db: Database) -> Result[list[Entry], str] uses io {
+fn recent_entries(db: Database) -> Result[list[Entry], str] uses io {
   let rows = sqlite_query(db, "select name, message, at from entries order by id desc limit 50", [])?
   return Ok(map(rows, fn(r) => Entry(unwrap_or(sql_text(r["name"]), ""), unwrap_or(sql_text(r["message"]), ""),
     unwrap_or(sql_text(r["at"]), ""))))
@@ -67,7 +67,7 @@ fn about_page() -> Html[unit] {
 fn home(db: Database, req: HttpRequest) -> HttpResponse uses io {
   let name = unwrap_or(get(web_cookies(req), "name"), "")
   let error = if unwrap_or(get(req.query, "error"), "") == "empty" then "Please write a name and a message." else ""
-  return match entries(db) {
+  return match recent_entries(db) {
     Ok(all) => web_page("Guestbook", home_page(all, name, error)),
     Err(e) => HttpResponse(500, [:], "database error: {e}\n"),
   }

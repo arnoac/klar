@@ -1,222 +1,128 @@
-// Klar Board, backend: a JSON API on SQLite with accounts, shared boards and live updates. It also serves the
-// browser app (app.html, built from app.klar).
+// Klar Board, backend: the typed calls declared in shared.klar, on SQLite, with accounts, shared boards and live
+// updates. It also serves the browser app (app.html, built from app.klar).
 //
 //   klar dev examples/apps/board/server.klar examples/apps/board/app.klar        then open http://127.0.0.1:8000
-//
-//   POST   /api/signup              {"name", "password"}        -> User, and a session cookie
-//   POST   /api/login               {"name", "password"}        -> User, and a session cookie
-//   POST   /api/logout
-//   GET    /api/me                                              -> User (401 when not signed in)
-//   GET    /api/boards                                          -> [Board] the boards you are a member of
-//   POST   /api/boards              {"name"}                    -> Board
-//   GET    /api/boards/:id                                      -> BoardPage
-//   GET    /api/boards/:id/live                                 -> a BoardPage after every change (server-sent events)
-//   POST   /api/boards/:id/members  {"name"}                    -> BoardPage
-//   POST   /api/boards/:id/cards    {"title", "column"}         -> Card
-//   PUT    /api/cards/:id           {"title", "notes", "assignee"} -> Card
-//   PUT    /api/cards/:id/move      {"column", "position"}      -> BoardPage
-//   DELETE /api/cards/:id                                       -> BoardPage
 //
 // Boards you are not a member of answer 404, the same as boards that do not exist.
 
 use std.http { HttpRequest, HttpResponse }
-use std.web { Route, web_get, web_post, web_put, web_delete, web_serve, web_port, web_file, web_json, web_body,
-  web_events, web_publish, web_set_cookie, web_clear_cookie }
+use std.web { Route, web_get, web_serve, web_port, web_file, web_events, web_publish }
+use std.api { ApiError, Refused, or_refuse, api_serve, api_serve_response, api_error_response }
 use std.json { json_encode }
 use std.sqlite { Database }
 use std.process { env_get }
-use shared { Column, User, Board, Card, BoardPage, Credentials, NewBoard, NewCard, CardEdit, CardMove, Invite, ApiError,
-  check_title, column_title }
+use shared { User, Board, Card, BoardPage, Credentials, Invite, NewCard, CardEdit, CardMove, check_title, column_title,
+  sign_up_call, log_in_call, log_out_call, me_call, boards_call, create_board_call, board_call, invite_call,
+  add_card_call, edit_card_call, move_card_call, delete_card_call }
 use store { store_open, boards_of, board_find, board_add, member_add, is_member, card_find, card_add, card_edit,
   card_move, card_delete, event_add, board_page, user_by_name }
-use auth { Login, LoggedIn, Refused, sign_up, log_in, log_out, current_user, session_cookie }
+use auth { sign_up, log_in, log_out, signed_in }
 
-// ---- replies
+// In these handlers `?` on a database call (Result[_, str]) answers 500 and logs the error; a Refused answers
+// with its status and message.
 
-fn error_json(status: int, message: str) -> HttpResponse {
-  return web_json(status, ApiError(error: message))
-}
-
-fn not_found() -> HttpResponse {
-  return error_json(404, "not found")
-}
-
-// Handlers return Result so `?` works on database calls; an Err becomes a 500.
-fn respond(r: Result[HttpResponse, str]) -> HttpResponse {
-  return match r { Ok(res) => res, Err(e) => error_json(500, e) }
-}
-
-fn id_param(req: HttpRequest) -> int {
-  return unwrap_or(parse_int(unwrap_or(get(req.params, "id"), "")), 0)
-}
-
-// ---- accounts
-
-fn login_reply(r: Login, status: int) -> HttpResponse {
-  return match r {
-    LoggedIn(user, token) => web_set_cookie(web_json(status, user), session_cookie(), token),
-    Refused(code, reason) => error_json(code, reason),
-  }
-}
-
-fn signup_handler(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  let body: Result[Credentials, str] = web_body(req)
-  return match body {
-    Err(e) => Ok(error_json(400, e)),
-    Ok(c) => Ok(login_reply(sign_up(db, c)?, 201)),
-  }
-}
-
-fn login_handler(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  let body: Result[Credentials, str] = web_body(req)
-  return match body {
-    Err(e) => Ok(error_json(400, e)),
-    Ok(c) => Ok(login_reply(log_in(db, c)?, 200)),
-  }
-}
-
-fn logout_handler(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  log_out(db, req)?
-  return Ok(web_clear_cookie(web_json(200, ["signed_out": true]), session_cookie()))
-}
-
-fn me_handler(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  return match current_user(db, req)? {
-    Some(user) => Ok(web_json(200, user)),
-    None => Ok(error_json(401, "not signed in")),
-  }
+fn not_found() -> ApiError {
+  return Refused(404, "not found")
 }
 
 // ---- boards
 
-// Every board handler starts with the signed-in user and the board, or answers 401 / 404.
+// Every board call starts with the signed-in user and the board, or answers 401 / 404.
 struct Access { user: User, board: Board }
 
-fn board_access(db: Database, req: HttpRequest, board_id: int) -> Result[Result[Access, HttpResponse], str] uses io {
-  let user = match current_user(db, req)? { Some(u) => u, None => { return Ok(Err(error_json(401, "not signed in"))) } }
-  let board = match board_find(db, board_id)? { Some(b) => b, None => { return Ok(Err(not_found())) } }
+fn board_access(db: Database, req: HttpRequest, board_id: int) -> Result[Access, ApiError] uses io {
+  let user = signed_in(db, req)?
+  let board = board_find(db, board_id)?.ok_or(not_found())?
   if not is_member(db, board.id, user.id)? {
-    return Ok(Err(not_found()))
+    return Err(not_found())
   }
-  return Ok(Ok(Access(user, board)))
+  return Ok(Access(user, board))
+}
+
+// A card and access to its board.
+fn card_access(db: Database, req: HttpRequest, card_id: int) -> Result[(Access, Card), ApiError] uses io {
+  let card = card_find(db, card_id)?.ok_or(not_found())?
+  return Ok((board_access(db, req, card.board_id)?, card))
 }
 
 // After a change: record it in the activity feed and send the new page to everyone watching the board.
-fn changed(db: Database, a: Access, what: str) -> Result[BoardPage, str] uses io {
+fn changed(db: Database, a: Access, what: str) -> Result[BoardPage, ApiError] uses io {
   event_add(db, a.board.id, a.user, what)?
   let page = board_page(db, a.board)?
   web_publish("board:{a.board.id}", json_encode(page))
   return Ok(page)
 }
 
-fn list_boards(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  return match current_user(db, req)? {
-    None => Ok(error_json(401, "not signed in")),
-    Some(user) => Ok(web_json(200, boards_of(db, user.id)?)),
+fn my_boards(db: Database, req: HttpRequest) -> Result[list[Board], ApiError] uses io {
+  return Ok(boards_of(db, signed_in(db, req)?.id)?)
+}
+
+fn create_board(db: Database, req: HttpRequest, name: str) -> Result[Board, ApiError] uses io {
+  let user = signed_in(db, req)?
+  let board = board_add(db, check_title(name).or_refuse(400)?, user)?
+  event_add(db, board.id, user, "created the board")?
+  return Ok(board)
+}
+
+fn show_board(db: Database, req: HttpRequest, board_id: int) -> Result[BoardPage, ApiError] uses io {
+  return Ok(board_page(db, board_access(db, req, board_id)?.board)?)
+}
+
+// GET /api/boards/:id/live: a BoardPage after every change (server-sent events), for members only.
+fn live_board(db: Database, req: HttpRequest) -> HttpResponse uses io {
+  let board_id = unwrap_or(parse_int(unwrap_or(get(req.params, "id"), "")), 0)
+  return match board_access(db, req, board_id) {
+    Ok(a) => web_events("board:{a.board.id}"),
+    Err(e) => api_error_response(e),
   }
 }
 
-fn create_board(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  let user = match current_user(db, req)? { Some(u) => u, None => { return Ok(error_json(401, "not signed in")) } }
-  let body: Result[NewBoard, str] = web_body(req)
-  let name = match body { Ok(b) => check_title(b.name), Err(e) => Err(e) }
-  return match name {
-    Err(e) => Ok(error_json(400, e)),
-    Ok(n) => {
-      let board = board_add(db, n, user)?
-      event_add(db, board.id, user, "created the board")?
-      return Ok(web_json(201, board))
-    }
-  }
-}
-
-fn show_board(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  return match board_access(db, req, id_param(req))? {
-    Err(res) => Ok(res),
-    Ok(a) => Ok(web_json(200, board_page(db, a.board)?)),
-  }
-}
-
-fn live_board(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  return match board_access(db, req, id_param(req))? {
-    Err(res) => Ok(res),
-    Ok(a) => Ok(web_events("board:{a.board.id}")),
-  }
-}
-
-fn invite(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  let a = match board_access(db, req, id_param(req))? { Ok(a) => a, Err(res) => { return Ok(res) } }
-  let body: Result[Invite, str] = web_body(req)
-  let name = match body { Ok(b) => lower(trim(b.name)), Err(e) => { return Ok(error_json(400, e)) } }
-  return match user_by_name(db, name)? {
-    None => Ok(error_json(404, "nobody is called {name}")),
-    Some(account) => {
-      member_add(db, a.board.id, account.user.id)?
-      return Ok(web_json(200, changed(db, a, "added {name} to the board")?))
-    }
-  }
+fn invite(db: Database, req: HttpRequest, inv: Invite) -> Result[BoardPage, ApiError] uses io {
+  let a = board_access(db, req, inv.board_id)?
+  let name = lower(trim(inv.name))
+  let (user, _) = user_by_name(db, name)?.ok_or(Refused(404, "nobody is called {name}"))?
+  member_add(db, a.board.id, user.id)?
+  return changed(db, a, "added {name} to the board")
 }
 
 // ---- cards
 
-fn add_card(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  let a = match board_access(db, req, id_param(req))? { Ok(a) => a, Err(res) => { return Ok(res) } }
-  let body: Result[NewCard, str] = web_body(req)
-  let new = match body { Ok(b) => b, Err(e) => { return Ok(error_json(400, e)) } }
-  return match check_title(new.title) {
-    Err(e) => Ok(error_json(400, e)),
-    Ok(title) => {
-      let card = card_add(db, a.board.id, title, new.column)?
-      let _ = changed(db, a, "added “{title}” to {column_title(new.column)}")?
-      return Ok(web_json(201, card))
-    }
-  }
+fn add_card(db: Database, req: HttpRequest, new: NewCard) -> Result[Card, ApiError] uses io {
+  let a = board_access(db, req, new.board_id)?
+  let title = check_title(new.title).or_refuse(400)?
+  let card = card_add(db, a.board.id, title, new.column)?
+  let _ = changed(db, a, "added “{title}” to {column_title(new.column)}")?
+  return Ok(card)
 }
 
-// The card and access to its board, or the reply to send instead.
-struct CardAccess { access: Access, card: Card }
-
-fn card_access(db: Database, req: HttpRequest) -> Result[Result[CardAccess, HttpResponse], str] uses io {
-  let card = match card_find(db, id_param(req))? { Some(c) => c, None => { return Ok(Err(not_found())) } }
-  return match board_access(db, req, card.board_id)? {
-    Err(res) => Ok(Err(res)),
-    Ok(a) => Ok(Ok(CardAccess(a, card))),
-  }
-}
-
-fn edit_card(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  let ca = match card_access(db, req)? { Ok(x) => x, Err(res) => { return Ok(res) } }
-  let body: Result[CardEdit, str] = web_body(req)
-  let edit = match body { Ok(b) => b, Err(e) => { return Ok(error_json(400, e)) } }
-  let title = match check_title(edit.title) { Ok(t) => t, Err(e) => { return Ok(error_json(400, e)) } }
+fn edit_card(db: Database, req: HttpRequest, edit: CardEdit) -> Result[Card, ApiError] uses io {
+  let (a, card) = card_access(db, req, edit.card_id)?
+  let title = check_title(edit.title).or_refuse(400)?
   match edit.assignee {
     Some(uid) => {
-      if not is_member(db, ca.card.board_id, uid)? {
-        return Ok(error_json(400, "only board members can be assigned"))
+      if not is_member(db, card.board_id, uid)? {
+        return Err(Refused(400, "only board members can be assigned"))
       }
     }
     None => {}
   }
-  let card = ca.card with (title: title, notes: trim(edit.notes), assignee: edit.assignee)
-  card_edit(db, card)?
-  let _ = changed(db, ca.access, "edited “{title}”")?
-  return Ok(web_json(200, card))
+  let saved = card with (title: title, notes: trim(edit.notes), assignee: edit.assignee)
+  card_edit(db, saved)?
+  let _ = changed(db, a, "edited “{title}”")?
+  return Ok(saved)
 }
 
-fn move_card_handler(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  let ca = match card_access(db, req)? { Ok(x) => x, Err(res) => { return Ok(res) } }
-  let body: Result[CardMove, str] = web_body(req)
-  let mv = match body { Ok(b) => b, Err(e) => { return Ok(error_json(400, e)) } }
-  card_move(db, ca.card, mv.column, mv.position)?
-  let what = if mv.column == ca.card.column then "reordered “{ca.card.title}”"
-    else "moved “{ca.card.title}” to {column_title(mv.column)}"
-  return Ok(web_json(200, changed(db, ca.access, what)?))
+fn move_card_to(db: Database, req: HttpRequest, mv: CardMove) -> Result[BoardPage, ApiError] uses io {
+  let (a, card) = card_access(db, req, mv.card_id)?
+  card_move(db, card, mv.column, mv.position)?
+  let what = if mv.column == card.column then "reordered “{card.title}”" else "moved “{card.title}” to {column_title(mv.column)}"
+  return changed(db, a, what)
 }
 
-fn delete_card(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  let ca = match card_access(db, req)? { Ok(x) => x, Err(res) => { return Ok(res) } }
-  card_delete(db, ca.card)?
-  return Ok(web_json(200, changed(db, ca.access, "deleted “{ca.card.title}”")?))
+fn delete_card(db: Database, req: HttpRequest, card_id: int) -> Result[BoardPage, ApiError] uses io {
+  let (a, card) = card_access(db, req, card_id)?
+  card_delete(db, card)?
+  return changed(db, a, "deleted “{card.title}”")
 }
 
 // ---- wiring
@@ -227,19 +133,19 @@ fn routes(db: Database, dir: str) -> list[Route] {
     web_get("/", app),
     web_get("/login", app),
     web_get("/boards/:id", app),
-    web_post("/api/signup", fn(req) => respond(signup_handler(db, req))),
-    web_post("/api/login", fn(req) => respond(login_handler(db, req))),
-    web_post("/api/logout", fn(req) => respond(logout_handler(db, req))),
-    web_get("/api/me", fn(req) => respond(me_handler(db, req))),
-    web_get("/api/boards", fn(req) => respond(list_boards(db, req))),
-    web_post("/api/boards", fn(req) => respond(create_board(db, req))),
-    web_get("/api/boards/:id", fn(req) => respond(show_board(db, req))),
-    web_get("/api/boards/:id/live", fn(req) => respond(live_board(db, req))),
-    web_post("/api/boards/:id/members", fn(req) => respond(invite(db, req))),
-    web_post("/api/boards/:id/cards", fn(req) => respond(add_card(db, req))),
-    web_put("/api/cards/:id", fn(req) => respond(edit_card(db, req))),
-    web_put("/api/cards/:id/move", fn(req) => respond(move_card_handler(db, req))),
-    web_delete("/api/cards/:id", fn(req) => respond(delete_card(db, req))),
+    web_get("/api/boards/:id/live", fn(req) => live_board(db, req)),
+    api_serve_response(sign_up_call(), fn(req, c) => sign_up(db, c)),
+    api_serve_response(log_in_call(), fn(req, c) => log_in(db, c)),
+    api_serve_response(log_out_call(), fn(req, nothing) => log_out(db, req)),
+    api_serve(me_call(), fn(req, nothing) => signed_in(db, req)),
+    api_serve(boards_call(), fn(req, nothing) => my_boards(db, req)),
+    api_serve(create_board_call(), fn(req, name) => create_board(db, req, name)),
+    api_serve(board_call(), fn(req, id) => show_board(db, req, id)),
+    api_serve(invite_call(), fn(req, inv) => invite(db, req, inv)),
+    api_serve(add_card_call(), fn(req, new) => add_card(db, req, new)),
+    api_serve(edit_card_call(), fn(req, edit) => edit_card(db, req, edit)),
+    api_serve(move_card_call(), fn(req, mv) => move_card_to(db, req, mv)),
+    api_serve(delete_card_call(), fn(req, id) => delete_card(db, req, id)),
   ]
 }
 

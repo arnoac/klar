@@ -12,8 +12,8 @@ import unittest
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_web import (EXAMPLES, NODE, PROGRAMS, FullStackApps, build_node, free_port, http, klar,  # noqa: E402
-                      run_node, wait_for, write)
+from test_web import (EXAMPLES, NODE, PROGRAMS, FullStackApps, build_node, call, free_port, http, klar,  # noqa: E402
+                      run_node, wait_call, wait_for, write)
 
 CC = shutil.which("tcc") or shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 
@@ -56,6 +56,11 @@ class NativeStd(unittest.TestCase):
         out = self.outputs(os.path.join(PROGRAMS, "std_native.klar"), with_dir=True)
         self.assert_all_same(out)
         self.assertIn('Err("IntegrityError: UNIQUE constraint failed: t.name")', out["native"])
+
+    def test_typed_sql_rows(self):
+        out = self.outputs(os.path.join(PROGRAMS, "sql_rows.klar"))
+        self.assert_all_same(out)
+        self.assertIn("is not an Option", out["interp"])
 
     def test_automatic_json_and_web_logic(self):
         for f in ("json_auto.klar", "web_features.klar", "web_security.klar"):
@@ -151,10 +156,10 @@ fn main() uses io {{
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(proc.kill)
         base = f"http://127.0.0.1:{port}"
-        self.assertEqual(wait_for(base + "/api/todos"), "[]")
+        self.assertEqual(wait_call(base, "list_todos"), "[]")
         stream = urllib.request.urlopen(base + "/api/live", timeout=10)
         self.assertEqual(stream.readline(), b": connected\n")
-        http("POST", base + "/api/todos", '{"title": "pushed"}')
+        call(base, "add_todo", '"pushed"')
         lines = [stream.readline() for _ in range(2)]
         self.assertEqual(lines[1], b'data: [{"id":1,"title":"pushed","done":false}]\n')
         stream.close()

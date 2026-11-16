@@ -927,7 +927,7 @@ struct KD {
     int nf; const char **fnames; KD **ftypes;     /* struct fields */
     int nv; KDV *vs;       /* enum variants */
 };
-enum { KD_INT, KD_FLOAT, KD_BOOL, KD_UNIT, KD_STR, KD_LIST, KD_MAP, KD_STRUCT, KD_ENUM, KD_OTHER };
+enum { KD_INT, KD_FLOAT, KD_BOOL, KD_UNIT, KD_STR, KD_LIST, KD_MAP, KD_STRUCT, KD_ENUM, KD_OTHER, KD_TUPLE };
 
 typedef struct { int failed; KStr *msg; } KJErr;
 static KJ *kj_num_i(int64_t v) {
@@ -978,6 +978,13 @@ static KJ *kj_enc(KS v, KD *d, KJErr *er) {
             p->items[1] = kj_enc(k_list_data(vs)[i], d->v, er);
             j->items[i] = p;
         }
+        return j;
+    }
+    case KD_TUPLE: {
+        KS *s = K_S2P(KS *, v);
+        j = kj_new(KJ_ARR); j->n = d->nf;
+        j->items = (KJ **)K_ALLOC(sizeof(KJ *) * (d->nf + 1));
+        for (int i = 0; i < d->nf; i++) j->items[i] = kj_enc(s[i], d->ftypes[i], er);
         return j;
     }
     case KD_STRUCT: {
@@ -1122,6 +1129,16 @@ static KS kj_dec(KJ *j, KD *d, KSB *path, KJErr *er) {
             m = k_map_put(m, k, v);
         }
         return k_p2s(m);
+    }
+    case KD_TUPLE: {
+        if (j->t != KJ_ARR || j->n != d->nf) { char w[64]; snprintf(w, sizeof w, "an array of %d values", d->nf); KJ_BAD(w); }
+        KS *s = (KS *)K_ALLOC(sizeof(KS) * d->nf);
+        for (int i = 0; i < d->nf; i++) {
+            int64_t save = path->len; char t[32]; snprintf(t, sizeof t, "[%d]", i); ksb_c(path, t);
+            s[i] = kj_dec(j->items[i], d->ftypes[i], path, er);
+            path->len = save;
+        }
+        return k_p2s(s);
     }
     case KD_STRUCT: {
         if (j->t != KJ_OBJ) { char w[300]; snprintf(w, sizeof w, "an object (%s)", d->name); KJ_BAD(w); }
@@ -1390,6 +1407,125 @@ static KEnum *kx_sqlite_query(void *dbp, KStr *sql, KList *params) {
 }
 static int64_t kx_sqlite_last_insert_id(void *db) { return sqlite3_last_insert_rowid((sqlite3 *)db); }
 static int64_t kx_sqlite_close(void *db) { sqlite3_close((sqlite3 *)db); return 0; }
+
+/* Typed rows: `sql(value)` and `sql_read(rows)` (same rules as klar/sqlconv.py). */
+static int kx_sql_plain(KD *d) {
+    if (d->k != KD_ENUM || !strcmp(d->name, "Option") || !strcmp(d->name, "Result") || !strcmp(d->name, "Json")
+        || !strcmp(d->name, "SqlValue")) return 0;
+    for (int i = 0; i < d->nv; i++) if (d->vs[i].nf) return 0;
+    return 1;
+}
+static KEnum *kx_sql_value(KS v, KD *d) {
+    switch (d->k) {
+    case KD_INT: return k_enum_new(KT_SqlInt, 1, v);
+    case KD_FLOAT: return k_enum_new(KT_SqlFloat, 1, v);
+    case KD_STR: return k_enum_new(KT_SqlText, 1, v);
+    case KD_BOOL: return k_enum_new(KT_SqlInt, 1, (KS)(int64_t)(v ? 1 : 0));
+    case KD_UNIT: return k_enum_new(KT_SqlNull, 0);
+    default: break;
+    }
+    if (d->k == KD_ENUM && !strcmp(d->name, "Option")) {
+        KEnum *o = K_S2P(KEnum *, v);
+        return o->tag == K_TAG_NONE ? k_enum_new(KT_SqlNull, 0) : kx_sql_value(o->f[0], d->vs[0].types[0]);
+    }
+    if (d->k == KD_ENUM && !strcmp(d->name, "SqlValue")) return K_S2P(KEnum *, v);
+    if (kx_sql_plain(d)) {
+        KEnum *e = K_S2P(KEnum *, v);
+        for (int i = 0; i < d->nv; i++) if (d->vs[i].tag == e->tag) return k_enum_new(KT_SqlText, 1, k_p2s(k_cstr(d->vs[i].name)));
+    }
+    return k_enum_new(KT_SqlText, 1, k_p2s(kx_json_encode_d(v, d, "", "encode")));
+}
+static const char *kx_sql_kind(KEnum *v) {
+    return v->tag == KT_SqlInt ? "a whole number" : v->tag == KT_SqlFloat ? "a decimal number" : v->tag == KT_SqlText ? "text" : "NULL";
+}
+#define KX_SQL_FAIL(...) do { er->failed = 1; er->msg = kx_fmt(__VA_ARGS__); return 0; } while (0)
+#define KX_SQL_BAD(want) KX_SQL_FAIL("column `%s` holds %s, but %s needs %s", col, kx_sql_kind(v), target, want)
+static KS kx_sql_col(KEnum *v, KD *d, const char *col, const char *target, KJErr *er) {
+    if (er->failed) return 0;
+    KS x = v->f[0];
+    if (d->k == KD_ENUM && !strcmp(d->name, "Option")) {
+        if (v->tag == KT_SqlNull) return k_p2s(K_NONE);
+        KS r = kx_sql_col(v, d->vs[0].types[0], col, target, er);
+        return er->failed ? 0 : k_p2s(k_some(r));
+    }
+    int raw = d->k == KD_ENUM && !strcmp(d->name, "SqlValue");
+    if (v->tag == KT_SqlNull && d->k != KD_UNIT && !raw)
+        KX_SQL_FAIL("column `%s` is NULL, but %s is not an Option; make it an Option, or select a value instead of NULL", col, target);
+    switch (d->k) {
+    case KD_INT: if (v->tag != KT_SqlInt) KX_SQL_BAD("a whole number"); return x;
+    case KD_FLOAT:
+        if (v->tag == KT_SqlInt) return k_d2s((double)(int64_t)x);
+        if (v->tag != KT_SqlFloat) KX_SQL_BAD("a number");
+        return x;
+    case KD_STR: if (v->tag != KT_SqlText) KX_SQL_BAD("text"); return x;
+    case KD_BOOL:
+        if (v->tag != KT_SqlInt) KX_SQL_FAIL("column `%s` holds %s, but %s needs 0 or 1", col, kx_sql_kind(v), target);
+        if ((int64_t)x != 0 && (int64_t)x != 1) KX_SQL_FAIL("column `%s` holds %lld, but %s needs 0 or 1", col, (long long)(int64_t)x, target);
+        return (KS)(int64_t)x;
+    case KD_UNIT: if (v->tag != KT_SqlNull) KX_SQL_BAD("NULL"); return 0;
+    default: break;
+    }
+    if (raw) return k_p2s(v);
+    if (kx_sql_plain(d)) {
+        if (v->tag != KT_SqlText) { char w[300]; snprintf(w, sizeof w, "the name of a %s variant", d->name); KX_SQL_BAD(w); }
+        KStr *t = K_S2P(KStr *, x);
+        for (int i = 0; i < d->nv; i++)
+            if ((int64_t)strlen(d->vs[i].name) == t->len && !memcmp(d->vs[i].name, t->data, t->len)) return k_p2s(k_enum_new(d->vs[i].tag, 0));
+        KX_SQL_FAIL("column `%s` holds \"%s\", which is not a variant of %s", col, t->data, d->name);
+    }
+    if (v->tag != KT_SqlText) KX_SQL_BAD("JSON text");
+    KStr *perr = NULL;
+    KJ *j = kj_parse(K_S2P(KStr *, x), &perr);
+    if (!j) KX_SQL_FAIL("column `%s` is not valid JSON, but %s is read from JSON text", col, target);
+    KJErr je = {0, NULL};
+    KSB path; ksb_init(&path); ksb_c(&path, "$");
+    KS r = kj_dec(j, d, &path, &je);
+    if (je.failed) KX_SQL_FAIL("column `%s`: %s", col, je.msg->data);
+    return r;
+}
+static KEnum *kx_sql_read(KList *rows, KD *d) {
+    KJErr er = {0, NULL};
+    KList *out = k_list_with_cap(0, rows->len + 1);
+    for (int64_t r = 0; r < rows->len && !er.failed; r++) {
+        KMap *m = k_map_compact(K_S2P(KMap *, k_list_data(rows)[r]));
+        int64_t n = m->len;
+        KS val = 0;
+        if (d->k == KD_TUPLE) {
+            if (n != d->nf) { er.failed = 1; er.msg = kx_fmt("the query returns %lld column(s) but the tuple has %d values", (long long)n, d->nf); break; }
+            KS *s = (KS *)K_ALLOC(sizeof(KS) * d->nf);
+            for (int i = 0; i < d->nf; i++) {
+                char target[32]; snprintf(target, sizeof target, "tuple value .%d", i);
+                s[i] = kx_sql_col(K_S2P(KEnum *, m->d->vals[i]), d->ftypes[i], K_S2P(KStr *, m->d->keys[i])->data, target, &er);
+            }
+            val = k_p2s(s);
+        } else if (d->k == KD_STRUCT) {
+            KS *s = (KS *)K_ALLOC(sizeof(KS) * (d->nf ? d->nf : 1));
+            for (int i = 0; i < d->nf && !er.failed; i++) {
+                const char *f = d->fnames[i];
+                int64_t at = -1;
+                for (int64_t c = 0; c < n; c++) if (!strcmp(K_S2P(KStr *, m->d->keys[c])->data, f)) at = c;
+                if (at < 0) {
+                    er.failed = 1;
+                    er.msg = kx_fmt("the query has no column `%s` for field `%s.%s`; select it, or name a column with `as %s`", f, d->name, f, f);
+                    break;
+                }
+                KStr *target = kx_fmt("field `%s.%s`", d->name, f);
+                s[i] = kx_sql_col(K_S2P(KEnum *, m->d->vals[at]), d->ftypes[i], f, target->data, &er);
+            }
+            val = k_p2s(s);
+        } else {
+            if (n != 1) {
+                er.failed = 1;
+                er.msg = kx_fmt("the query returns %lld columns; select exactly one to read single values, or read the rows into a struct or a tuple", (long long)n);
+                break;
+            }
+            val = kx_sql_col(K_S2P(KEnum *, m->d->vals[0]), d, K_S2P(KStr *, m->d->keys[0])->data, "the result", &er);
+        }
+        out = k_list_push(out, val);
+    }
+    if (er.failed) return k_err(k_p2s(er.msg));
+    return k_ok(k_p2s(out));
+}
 #endif
 
 /* ------------------------------------------------------------------ std.http (client and server) */

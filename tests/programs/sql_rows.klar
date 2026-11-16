@@ -1,0 +1,57 @@
+// Typed SQL rows: the same output in the interpreter, native builds and Node.
+use std.sqlite { Database, SqlValue, SqlInt, sqlite_open, sqlite_exec, sqlite_rows, sqlite_first, sql }
+
+enum Column { Todo, Doing, Done }
+enum Size { Small, Large(factor: int) }
+struct Card { id: int, title: str, column: Column, done: bool, assignee: Option[int], tags: list[str], score: float, size: Size }
+
+fn run(db: Database) -> Result[unit, str] uses io {
+  let _ = sqlite_exec(db, "create table cards (id integer primary key, title text, col text, done integer, assignee integer, tags text, score real, size text)", [])?
+  let insert = "insert into cards (title, col, done, assignee, tags, score, size) values (?, ?, ?, ?, ?, ?, ?)"
+  let _ = sqlite_exec(db, insert, [sql("Write docs"), sql(Doing), sql(true), sql(Some(7)), sql(["a", "b"]), sql(2), sql(Large(3))])?
+  let nobody: Option[int] = None
+  let _ = sqlite_exec(db, insert, [sql("Ship “it”"), sql(Todo), sql(false), sql(nobody), sql([]), sql(1.5), sql(Small)])?
+  let all = "select id, title, col as column, done, assignee, tags, score, size from cards"
+  let cards: list[Card] = sqlite_rows(db, all + " order by id", [])?
+  for c in cards {
+    print(c)
+  }
+  let count: Option[int] = sqlite_first(db, "select count(*) from cards", [])?
+  print(count)
+  let pairs: list[(int, str)] = sqlite_rows(db, "select id, title from cards order by id", [])?
+  print(pairs)
+  let none: Option[Card] = sqlite_first(db, all + " where id = ?", [sql(99)])?
+  print(none)
+  let raw: list[SqlValue] = sqlite_rows(db, "select assignee from cards order by id", [])?
+  print(raw)
+  print(sql(SqlInt(5)))
+  print([sql(()), sql(Done), sql((1, "x")), sql(["k": 2])])
+
+  // every way a row can fail to fit
+  let missing: Result[list[Card], str] = sqlite_rows(db, "select id, title from cards", [])
+  print(missing)
+  let null_value: Result[list[(int, int)], str] = sqlite_rows(db, "select id, assignee from cards order by id", [])
+  print(null_value)
+  let text_for_int: Result[list[int], str] = sqlite_rows(db, "select title from cards", [])
+  print(text_for_int)
+  let two_columns: Result[list[int], str] = sqlite_rows(db, "select id, title from cards", [])
+  print(two_columns)
+  let tuple_size: Result[list[(int, str, str)], str] = sqlite_rows(db, "select id, title from cards", [])
+  print(tuple_size)
+  let not_variant: Result[list[Column], str] = sqlite_rows(db, "select title from cards", [])
+  print(not_variant)
+  let not_bool: Result[list[bool], str] = sqlite_rows(db, "select 2", [])
+  print(not_bool)
+  let not_json: Result[list[list[int]], str] = sqlite_rows(db, "select title from cards", [])
+  print(not_json)
+  let json_shape: Result[list[list[int]], str] = sqlite_rows(db, "select tags from cards where id = 1", [])
+  print(json_shape)
+  return Ok(())
+}
+
+fn main() uses io {
+  match sqlite_open(":memory:") {
+    Ok(db) => print(run(db)),
+    Err(e) => print(e),
+  }
+}

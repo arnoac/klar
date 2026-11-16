@@ -1,4 +1,4 @@
-// Full-stack todo app, backend: a JSON API on SQLite that also serves the browser app (app.klar).
+// Full-stack todo app, backend: typed calls (api.klar) on SQLite, and the browser app itself (app.klar).
 //
 //   klar dev examples/apps/todo_web/server.klar examples/apps/todo_web/app.klar     (rebuilds and reloads on save)
 //
@@ -6,25 +6,14 @@
 //   klar build --target web examples/apps/todo_web/app.klar -o examples/apps/todo_web/app.html
 //   klar build --target node examples/apps/todo_web/server.klar -o todo_server.mjs
 //   APP_DIR=examples/apps/todo_web node todo_server.mjs        (or: klar run examples/apps/todo_web/server.klar)
-//
-//   GET    /                 the app (app.html)
-//   GET    /api/todos        all todos as JSON
-//   POST   /api/todos        {"title": "..."}  -> the new todo
-//   PUT    /api/todos/:id    {"done": true}    -> the updated todo
-//   DELETE /api/todos/:id
 
-use std.http { HttpRequest, HttpResponse }
-use std.web { Route, web_get, web_post, web_put, web_delete, web_serve, web_port, web_file, web_json, web_body,
-  web_events, web_publish }
+use std.web { Route, web_get, web_serve, web_port, web_file, web_events, web_publish }
+use std.api { ApiError, Refused, api_serve }
 use std.json { json_encode }
 use std.sqlite { Database }
 use std.process { env_get }
-use api { Todo, NewTodo, DoneChange, ApiError }
-use store { store_open, store_list, store_find, store_add, store_set_done, store_delete }
-
-fn error_json(status: int, message: str) -> HttpResponse {
-  return web_json(status, ApiError(error: message))
-}
+use api { Todo, DoneChange, list_todos, add_todo, set_done, remove_todo }
+use store { store_open, store_list, store_add, store_set_done, store_delete }
 
 // Every browser listening on /api/live gets the full list after each change.
 fn broadcast(db: Database) -> Result[unit, str] uses io {
@@ -32,61 +21,44 @@ fn broadcast(db: Database) -> Result[unit, str] uses io {
   return Ok(())
 }
 
-// Handlers return Result so `?` can be used; `respond` turns an Err into a 500.
-fn respond(r: Result[HttpResponse, str]) -> HttpResponse {
-  return match r { Ok(res) => res, Err(e) => error_json(500, e) }
+// In these handlers `?` turns a database error into Internal, which answers 500.
+fn todos(db: Database) -> Result[list[Todo], ApiError] uses io {
+  return Ok(store_list(db)?)
 }
 
-fn list_todos(db: Database) -> Result[HttpResponse, str] uses io {
-  return Ok(web_json(200, store_list(db)?))
-}
-
-fn create_todo(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  let body: Result[NewTodo, str] = web_body(req)
-  let title = match body { Ok(b) => trim(b.title), Err(e) => { return Ok(error_json(400, e)) } }
-  if title == "" {
-    return Ok(error_json(400, "title is required"))
+fn create(db: Database, title: str) -> Result[Todo, ApiError] uses io {
+  if trim(title) == "" {
+    return Err(Refused(400, "title is required"))
   }
-  let todo = store_add(db, title)?
+  let todo = store_add(db, trim(title))?
   broadcast(db)?
-  return Ok(web_json(201, todo))
+  return Ok(todo)
 }
 
-fn todo_id(req: HttpRequest) -> int {
-  return unwrap_or(parse_int(req.params["id"]), 0)
+fn change(db: Database, c: DoneChange) -> Result[unit, ApiError] uses io {
+  if not store_set_done(db, c.id, c.done)? {
+    return Err(Refused(404, "no such todo"))
+  }
+  broadcast(db)?
+  return Ok(())
 }
 
-fn update_todo(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  let body: Result[DoneChange, str] = web_body(req)
-  match body {
-    Err(e) => { return Ok(error_json(400, e)) }
-    Ok(change) => {
-      let _ = store_set_done(db, todo_id(req), change.done)?
-      broadcast(db)?
-    }
+fn delete(db: Database, id: int) -> Result[unit, ApiError] uses io {
+  if not store_delete(db, id)? {
+    return Err(Refused(404, "no such todo"))
   }
-  return match store_find(db, todo_id(req))? {
-    Some(t) => Ok(web_json(200, t)),
-    None => Ok(error_json(404, "no such todo")),
-  }
-}
-
-fn delete_todo(db: Database, req: HttpRequest) -> Result[HttpResponse, str] uses io {
-  if store_delete(db, todo_id(req))? {
-    broadcast(db)?
-    return Ok(web_json(200, ["deleted": true]))
-  }
-  return Ok(error_json(404, "no such todo"))
+  broadcast(db)?
+  return Ok(())
 }
 
 fn routes(db: Database, dir: str) -> list[Route] {
   return [
     web_get("/", fn(req) => web_file(dir + "/app.html")),
-    web_get("/api/todos", fn(req) => respond(list_todos(db))),
     web_get("/api/live", fn(req) => web_events("todos")),
-    web_post("/api/todos", fn(req) => respond(create_todo(db, req))),
-    web_put("/api/todos/:id", fn(req) => respond(update_todo(db, req))),
-    web_delete("/api/todos/:id", fn(req) => respond(delete_todo(db, req))),
+    api_serve(list_todos(), fn(req, nothing) => todos(db)),
+    api_serve(add_todo(), fn(req, title) => create(db, title)),
+    api_serve(set_done(), fn(req, c) => change(db, c)),
+    api_serve(remove_todo(), fn(req, id) => delete(db, id)),
   ]
 }
 

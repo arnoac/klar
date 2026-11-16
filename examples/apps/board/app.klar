@@ -6,7 +6,7 @@
 // Pages: /login, / (your boards) and /boards/:id (one board, live). Moves are shown at once using the same
 // rule the server applies (shared.move_card), then the server's reply or live update confirms them.
 
-use std.ui { Next, ui_start, ui_get, ui_send, ui_go, ui_focus, ui_listen, ui_unlisten }
+use std.ui { Next, ui_start, ui_go, ui_focus, ui_listen, ui_unlisten }
 use std.html { Html, h1, h2, h3, p, a, span, ul, li, form, input, textarea, button, small, header, text,
   nothing, class, id, href, attr, placeholder, value, input_type, disabled, on_input, on_submit, on_click, on_drag, on_drag_end, on_drop, html_render,
   html_theme_css }
@@ -14,11 +14,12 @@ use std.layout { Zero, Xs, Sm, Tablet, Narrow, Readable, Wide, Rem, container, r
   pad, pad_x, cols, cols_at, fit_cols, max_width, centered, grow, no_wrap }
 use std.kit { Outline, Ghost, Destructive, Link, Small, Neutral, Danger, Choice, variant, size, icon_button, field,
   select_box, badge, alert_dismissable, spinner, empty_state, dialog, panel, avatar, kit_theme, default_theme }
-use std.http { HttpResponse }
-use std.json { JNull, json_of, json_decode }
-use shared { Column, Todo, Doing, Done, User, Board, Card, Event, BoardPage, Credentials, NewBoard, NewCard, CardEdit,
-  CardMove, Invite, ApiError, columns, column_title, column_left, column_right, cards_in, move_card, search,
-  member_name, summary, check_title, check_user_name, check_password }
+use std.api { ApiError, Refused, Internal, api_call, api_error_text }
+use std.json { json_decode }
+use shared { Column, Todo, Doing, Done, User, Board, Card, Event, BoardPage, Credentials, NewCard, CardEdit, CardMove,
+  Invite, columns, column_title, column_left, column_right, cards_in, move_card, search, member_name, summary,
+  check_title, check_user_name, check_password, sign_up_call, log_in_call, log_out_call, me_call, boards_call,
+  create_board_call, board_call, invite_call, add_card_call, edit_card_call, move_card_call, delete_card_call }
 
 enum Page { Loading, LoginPage, BoardsPage, BoardView(board_id: int), Missing }
 
@@ -45,23 +46,23 @@ struct Model {
 
 enum Msg {
   UrlChanged(path: str),
-  GotMe(reply: Result[HttpResponse, str]),
+  GotMe(reply: Result[User, ApiError]),
   NameTyped(text: str),
   PasswordTyped(text: str),
   ToggleSignUp,
   SubmitLogin,
-  LoggedIn(reply: Result[HttpResponse, str]),
+  LoggedIn(reply: Result[User, ApiError]),
   LogOut,
-  LoggedOut(reply: Result[HttpResponse, str]),
-  GotBoards(reply: Result[HttpResponse, str]),
+  LoggedOut(reply: Result[unit, ApiError]),
+  GotBoards(reply: Result[list[Board], ApiError]),
   BoardNameTyped(text: str),
   CreateBoard,
-  BoardCreated(reply: Result[HttpResponse, str]),
-  GotBoard(reply: Result[HttpResponse, str]),
+  BoardCreated(reply: Result[Board, ApiError]),
+  GotBoard(reply: Result[BoardPage, ApiError]),
   Live(data: str),
   DraftTyped(column: Column, text: str),
   AddCard(column: Column),
-  CardAdded(reply: Result[HttpResponse, str]),
+  CardAdded(reply: Result[Card, ApiError]),
   Move(card_id: int, column: Column, position: int),
   DragCard(card_id: int),
   DragEnded,
@@ -76,8 +77,8 @@ enum Msg {
   QueryTyped(text: str),
   InviteTyped(text: str),
   SendInvite,
-  PageReply(reply: Result[HttpResponse, str]),     // replies that carry the whole board
-  Saved(reply: Result[HttpResponse, str]),         // replies we only check for errors
+  PageReply(reply: Result[BoardPage, ApiError]),   // replies that carry the whole board
+  Saved(reply: Result[Card, ApiError]),            // an edit: the live update brings the change
   DismissStatus,
 }
 
@@ -87,7 +88,7 @@ fn empty_model() -> Model {
 }
 
 fn init() -> Next[Model, Msg] {
-  return Next(empty_model(), [ui_get("/api/me", fn(r) => GotMe(r))])
+  return Next(empty_model(), [api_call(me_call(), (), fn(r) => GotMe(r))])
 }
 
 // ---- routing
@@ -115,8 +116,8 @@ fn open_page(m: Model, page: Page) -> Next[Model, Msg] {
   let url = live_url(page)
   var cmds = if m.live != "" and m.live != url then [ui_unlisten(m.live)] else []
   cmds = cmds + match page {
-    BoardsPage => [ui_get("/api/boards", fn(r) => GotBoards(r))],
-    BoardView(n) => [ui_get("/api/boards/{n}", fn(r) => GotBoard(r))] + (if url != m.live then [ui_listen(url, fn(d) => Live(d))] else []),
+    BoardsPage => [api_call(boards_call(), (), fn(r) => GotBoards(r))],
+    BoardView(n) => [api_call(board_call(), n, fn(r) => GotBoard(r))] + (if url != m.live then [ui_listen(url, fn(d) => Live(d))] else []),
     LoginPage => [ui_focus("name")],
     _ => [],
   }
@@ -130,7 +131,7 @@ fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
   return match msg {
     UrlChanged(path) => if is_none(m.me) and m.page == Loading then Next(m with (page: page_of(path)), [])
       else open_page(m, page_of(path)),
-    GotMe(reply) => match read_user(reply) {
+    GotMe(reply) => match reply {
       Ok(u) => open_page(m with (me: Some(u)), if m.page == LoginPage or m.page == Loading then BoardsPage else m.page),
       Err(_) => Next(m with (page: LoginPage), [ui_go("/login")]),
     },
@@ -140,32 +141,33 @@ fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
     SubmitLogin => match login_problem(m) {
       Some(problem) => Next(m with (status: problem), []),
       None => Next(m with (status: ""), [
-        ui_send("POST", if m.signing_up then "/api/signup" else "/api/login",
-          json_of(Credentials(name: m.name, password: m.password)), fn(r) => LoggedIn(r)),
+        api_call(if m.signing_up then sign_up_call() else log_in_call(), Credentials(name: m.name, password: m.password),
+          fn(r) => LoggedIn(r)),
       ]),
     },
-    LoggedIn(reply) => match read_user(reply) {
+    LoggedIn(reply) => match reply {
       Ok(u) => Next(m with (me: Some(u), password: "", status: ""), [ui_go("/")]),
-      Err(e) => Next(m with (status: e), []),
+      Err(e) => Next(m with (status: api_error_text(e)), []),
     },
-    LogOut => Next(m, [ui_send("POST", "/api/logout", JNull, fn(r) => LoggedOut(r))]),
+    LogOut => Next(m, [api_call(log_out_call(), (), fn(r) => LoggedOut(r))]),
     LoggedOut(_) => Next(empty_model() with (page: LoginPage), (if m.live != "" then [ui_unlisten(m.live)] else []) + [ui_go("/login")]),
-    GotBoards(reply) => match read_boards(reply) {
+    GotBoards(reply) => match reply {
       Ok(bs) => Next(m with (boards: bs), []),
       Err(e) => failed(m, e),
     },
     BoardNameTyped(t) => Next(m with (new_board: t), []),
     CreateBoard => match check_title(m.new_board) {
       Err(e) => Next(m with (status: e), []),
-      Ok(n) => Next(m with (new_board: ""), [ui_send("POST", "/api/boards", json_of(NewBoard(name: n)), fn(r) => BoardCreated(r))]),
+      Ok(n) => Next(m with (new_board: ""), [api_call(create_board_call(), n, fn(r) => BoardCreated(r))]),
     },
-    BoardCreated(reply) => match read_board(reply) {
+    BoardCreated(reply) => match reply {
       Ok(b) => Next(m with (boards: push(m.boards, b)), [ui_go("/boards/{b.id}")]),
       Err(e) => failed(m, e),
     },
-    GotBoard(reply) => match read_page(reply) {
+    GotBoard(reply) => match reply {
       Ok(page) => Next(m with (board: Some(page)), []),
-      Err(e) => if contains(e, "404") then Next(m with (page: Missing, board: None), []) else failed(m, e),
+      Err(Refused(404, _)) => Next(m with (page: Missing, board: None), []),
+      Err(e) => failed(m, e),
     },
     Live(data) => match json_decode(data) {
       Ok(page) => Next(m with (board: Some(page)), []),
@@ -175,10 +177,10 @@ fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
     AddCard(c) => match check_title(unwrap_or(get(m.drafts, column_title(c)), "")) {
       Err(e) => Next(m with (status: e), []),
       Ok(title) => Next(m with (drafts: put(m.drafts, column_title(c), ""), status: ""), [
-        ui_send("POST", "/api/boards/{board_id(m)}/cards", json_of(NewCard(title: title, column: c)), fn(r) => CardAdded(r)),
+        api_call(add_card_call(), NewCard(board_id: board_id(m), title: title, column: c), fn(r) => CardAdded(r)),
       ]),
     },
-    CardAdded(reply) => match read_card(reply) {
+    CardAdded(reply) => match reply {
       Ok(c) => Next(with_cards(m, fn(cards) => if any(cards, fn(x) => x.id == c.id) then cards else push(cards, c)), []),
       Err(e) => failed(m, e),
     },
@@ -189,7 +191,7 @@ fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
       None => Next(m, []),
     },
     Move(card_id, c, position) => Next(with_cards(m, fn(cards) => move_card(cards, card_id, c, position)), [
-      ui_send("PUT", "/api/cards/{card_id}/move", json_of(CardMove(column: c, position: position)), fn(r) => PageReply(r)),
+      api_call(move_card_call(), CardMove(card_id: card_id, column: c, position: position), fn(r) => PageReply(r)),
     ]),
     Edit(c) => Next(m with (editing: Some(CardForm(c.id, c.title, c.notes, match c.assignee { Some(n) => str(n), None => "" }))), [
       ui_focus("edit-title"),
@@ -203,27 +205,27 @@ fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
       Some(f) => match check_title(f.title) {
         Err(e) => Next(m with (status: e), []),
         Ok(title) => Next(m with (editing: None), [
-          ui_send("PUT", "/api/cards/{f.card_id}", json_of(CardEdit(title: title, notes: f.notes, assignee: parse_int(f.assignee))),
+          api_call(edit_card_call(), CardEdit(card_id: f.card_id, title: title, notes: f.notes, assignee: parse_int(f.assignee)),
             fn(r) => Saved(r)),
         ]),
       },
     },
     Delete(card_id) => Next(with_cards(m, fn(cards) => filter(cards, fn(x) => x.id != card_id)) with (editing: None), [
-      ui_send("DELETE", "/api/cards/{card_id}", JNull, fn(r) => PageReply(r)),
+      api_call(delete_card_call(), card_id, fn(r) => PageReply(r)),
     ]),
     QueryTyped(t) => Next(m with (query: t), []),
     InviteTyped(t) => Next(m with (invite: t), []),
     SendInvite => match check_user_name(m.invite) {
       Err(e) => Next(m with (status: e), []),
       Ok(n) => Next(m with (invite: ""), [
-        ui_send("POST", "/api/boards/{board_id(m)}/members", json_of(Invite(name: n)), fn(r) => PageReply(r)),
+        api_call(invite_call(), Invite(board_id: board_id(m), name: n), fn(r) => PageReply(r)),
       ]),
     },
-    PageReply(reply) => match read_page(reply) {
+    PageReply(reply) => match reply {
       Ok(page) => Next(m with (board: Some(page)), []),
       Err(e) => failed(m, e),
     },
-    Saved(reply) => match ok_body(reply) {
+    Saved(reply) => match reply {
       Ok(_) => Next(m, []),
       Err(e) => failed(m, e),
     },
@@ -231,12 +233,12 @@ fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
   }
 }
 
-// A failed request: show why; a lost session sends you to the login page.
-fn failed(m: Model, e: str) -> Next[Model, Msg] {
-  if contains(e, "(401)") {
-    return Next(empty_model() with (page: LoginPage, status: "please sign in again"), [ui_go("/login")])
+// A failed call: show why; a lost session sends you to the login page.
+fn failed(m: Model, e: ApiError) -> Next[Model, Msg] {
+  return match e {
+    Refused(401, _) => Next(empty_model() with (page: LoginPage, status: "please sign in again"), [ui_go("/login")]),
+    _ => Next(m with (status: api_error_text(e)), []),
   }
-  return Next(m with (status: e), [])
 }
 
 fn login_problem(m: Model) -> Option[str] {
@@ -262,37 +264,6 @@ fn with_cards(m: Model, change: fn(list[Card]) -> list[Card]) -> Model {
 
 fn with_form(m: Model, change: fn(CardForm) -> CardForm) -> Model {
   return match m.editing { None => m, Some(f) => m with (editing: Some(change(f))) }
-}
-
-// ---- replies
-
-fn ok_body(reply: Result[HttpResponse, str]) -> Result[str, str] {
-  let res = reply?
-  if res.status >= 300 {
-    let why: Result[ApiError, str] = json_decode(res.body)
-    return Err(match why { Ok(e) => "{e.error} ({res.status})", Err(_) => "the server answered {res.status}" })
-  }
-  return Ok(res.body)
-}
-
-fn read_user(reply: Result[HttpResponse, str]) -> Result[User, str] {
-  return json_decode(ok_body(reply)?)
-}
-
-fn read_boards(reply: Result[HttpResponse, str]) -> Result[list[Board], str] {
-  return json_decode(ok_body(reply)?)
-}
-
-fn read_board(reply: Result[HttpResponse, str]) -> Result[Board, str] {
-  return json_decode(ok_body(reply)?)
-}
-
-fn read_page(reply: Result[HttpResponse, str]) -> Result[BoardPage, str] {
-  return json_decode(ok_body(reply)?)
-}
-
-fn read_card(reply: Result[HttpResponse, str]) -> Result[Card, str] {
-  return json_decode(ok_body(reply)?)
 }
 
 // ---- view
@@ -519,15 +490,15 @@ test "sign-up explains problems before sending" {
 }
 
 test "a lost session goes back to login" {
-  let reply = Ok(HttpResponse(401, [:], r"{\"error\": \"not signed in\"}"))
-  let next = update(signed_in(), PageReply(reply))
+  let next = update(signed_in(), PageReply(Err(Refused(401, "not signed in"))))
   assert next.model.page == LoginPage
   assert next.model.me == None
 }
 
 test "server errors are shown with their reason" {
-  let reply = Ok(HttpResponse(400, [:], r"{\"error\": \"only board members can be assigned\"}"))
-  assert update(signed_in(), Saved(reply)).model.status == "only board members can be assigned (400)"
+  let refused = Saved(Err(Refused(400, "only board members can be assigned")))
+  assert update(signed_in(), refused).model.status == "only board members can be assigned"
+  assert update(signed_in(), Saved(Err(Internal("no answer from the server")))).model.status == "no answer from the server"
 }
 
 test "editing fills the form and saving sends it" {

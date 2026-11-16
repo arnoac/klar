@@ -1,11 +1,12 @@
-// Types shared by the browser app (app.klar) and the server (server.klar). They cross the network as JSON
-// with no hand-written conversion: json_encode / json_decode (and web_json / web_body) derive it from the type.
+// The calls between the browser app (app.klar) and the server (server.klar), and the types they carry. Both
+// sides import this file, so a change here is checked on both ends; the JSON in between is automatic (std.api).
+
+use std.api { Api }
 
 struct Todo { id: int, title: str, done: bool }
+struct DoneChange { id: int, done: bool }
 
-// Request bodies.
-struct NewTodo { title: str }
-struct DoneChange { done: bool }
-
-// Error replies look like {"error": "title is required"}.
-struct ApiError { error: str }
+fn list_todos() -> Api[unit, list[Todo]] { return Api("list_todos") }
+fn add_todo() -> Api[str, Todo] { return Api("add_todo") }            // the title
+fn set_done() -> Api[DoneChange, unit] { return Api("set_done") }
+fn remove_todo() -> Api[int, unit] { return Api("remove_todo") }      // the id
