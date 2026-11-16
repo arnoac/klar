@@ -32,6 +32,7 @@ CATALOG = {
     "E308": ("missing effect", "A function performs IO (directly or by calling an IO function) but its signature lacks `uses io`."),
     "E309": ("break/continue outside loop", "`break` and `continue` may only appear inside `while` or `for` loops."),
     "E312": ("trait not implemented", "A value is used where its type must implement a trait (a bound like `T: Show`, or a trait method), but there is no `impl Show for ThatType { ... }`, or a type parameter lacks the bound. Add the impl, or add the bound to the generic function's type parameter."),
+    "E313": ("SQL built from values", "The `sql` argument of a database call is assembled with interpolation or `+` from values. A value containing a quote would then change the query (SQL injection). Put `?` where each value goes and pass the values in the params list, e.g. sqlite_query(db, \"select * from users where name = ?\", [SqlText(name)]). A table or column name that varies cannot be a parameter: choose it from a fixed list of known names in your code."),
     "E311": ("captured var", "An anonymous function refers to a `var` declared outside it. Functions capture values, so copy the current value into a `let` first."),
     "E310": ("bad pattern", "This pattern cannot match a value of the scrutinee's type."),
     # Runtime (E4xx)

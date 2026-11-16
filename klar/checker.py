@@ -986,6 +986,21 @@ class Checker:
                      f"expected ({sig})")
         return list(e.args)
 
+    def check_sql_text(self, a, fn_name):
+        """SQL handed to a parameter named `sql` must not be assembled from values (SQL injection): values go in
+        `?` parameters. Interpolation or `+` with a non-literal in the argument itself is an error."""
+        def built(x):
+            if x.kind == "Interp":
+                return any(isinstance(p, Node) for p in x.parts)
+            if x.kind == "Binary" and x.op == "+":
+                return built(x.left) or built(x.right) or x.left.kind != "Str" or x.right.kind != "Str"
+            return False
+        if built(a):
+            self.err("E313", f"the SQL given to `{fn_name}` is built from values, which allows SQL injection", a,
+                     "write the query as one string with `?` where values go and pass the values in the params "
+                     "list: sqlite_query(db, \"select * from t where id = ?\", [SqlInt(id)]); a table or column "
+                     "name that varies must be picked from a fixed list of names")
+
     def infer_call(self, e, expected):
         callee = e.callee
         if callee.kind == "Name" and self.lookup(callee.name) is None:
@@ -1049,6 +1064,8 @@ class Checker:
                         pass
                 for (pname, pt), a in zip(params, args):
                     self.expect(self.infer(a, pt), pt, a, f"argument `{pname}` of `{name}`")
+                    if pname == "sql":
+                        self.check_sql_text(a, name)
                 if name in ("put", "has", "remove"):
                     self.check_key_type(prune(params[0][1]).args[0] if isinstance(prune(params[0][1]), TCon) else TVar(), e)
                 return ret
