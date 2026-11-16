@@ -1,0 +1,441 @@
+// Spreadsheet evaluator: reads "CELL: CONTENT" lines from stdin and prints the value of every defined cell.
+
+enum Expr {
+  ENum(v: int),
+  ERef(col: int, row: int),
+  EFunc(name: str, c1: int, r1: int, c2: int, r2: int),
+  ENeg(inner: Expr),
+  EBin(op: str, left: Expr, right: Expr),
+}
+
+enum Tok {
+  TNum(v: int),
+  TCell(col: int, row: int),
+  TFunc(name: str),
+  TSym(s: str),
+  TBad,
+}
+
+enum Cell {
+  CLit(v: int),
+  CBad,
+  CForm(e: Expr, deps: list[int]),
+}
+
+fn alpha() -> str {
+  return "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+}
+
+fn letters_set() -> str {
+  return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+}
+
+fn digits_set() -> str {
+  return "0123456789"
+}
+
+// Cell key: column index * 100 + row, so ascending keys give the output order.
+fn key_of(name: str) -> int {
+  let col = unwrap_or(index_of(chars(alpha()), slice(name, 0, 1)), 0)
+  let row = unwrap_or(parse_int(slice(name, 1, len(name))), 0)
+  return col * 100 + row
+}
+
+fn key_text(k: int) -> str {
+  return slice(alpha(), k / 100, k / 100 + 1) + str(k % 100)
+}
+
+// ---------- lexer ----------
+
+fn run_end(cs: list[str], start: int, allowed: str) -> int {
+  var j = start
+  while j < len(cs) and contains(allowed, cs[j]) {
+    j = j + 1
+  }
+  return j
+}
+
+fn classify(letters: str, digits: str) -> Tok {
+  if digits == "" {
+    if letters == "SUM" or letters == "MIN" or letters == "MAX" {
+      return TFunc(letters)
+    }
+    return TBad
+  }
+  if len(letters) != 1 or len(digits) > 2 or slice(digits, 0, 1) == "0" {
+    return TBad
+  }
+  let col_opt = index_of(chars(alpha()), letters)
+  let row = unwrap_or(parse_int(digits), 0)
+  return match col_opt {
+    Some(cidx) => TCell(cidx, row),
+    None => TBad,
+  }
+}
+
+fn lex(cs: list[str]) -> list[Tok] {
+  var out: list[Tok] = []
+  var i = 0
+  while i < len(cs) {
+    let ch = cs[i]
+    if ch == " " {
+      i = i + 1
+    } else if contains(digits_set(), ch) {
+      let dend = run_end(cs, i, digits_set())
+      out = push(out, TNum(unwrap_or(parse_int(join(slice(cs, i, dend), "")), 0)))
+      i = dend
+    } else if contains(letters_set(), ch) {
+      let lend = run_end(cs, i, letters_set())
+      let nend = run_end(cs, lend, digits_set())
+      out = push(out, classify(join(slice(cs, i, lend), ""), join(slice(cs, lend, nend), "")))
+      i = nend
+    } else if ch == "(" or ch == ")" or ch == ":" or ch == "+" or ch == "-" or ch == "*" or ch == "/" {
+      out = push(out, TSym(ch))
+      i = i + 1
+    } else {
+      out = push(out, TBad)
+      i = i + 1
+    }
+  }
+  return out
+}
+
+// ---------- parser (recursive descent; each function returns the next token index) ----------
+
+fn sym_at(ts: list[Tok], pos: int) -> str {
+  return match get(ts, pos) {
+    Some(TSym(s)) => s,
+    _ => "",
+  }
+}
+
+fn expect_sym(ts: list[Tok], pos: int, want: str) -> Result[int, str] {
+  if sym_at(ts, pos) == want {
+    return Ok(pos + 1)
+  }
+  return Err("expected")
+}
+
+fn cell_at(ts: list[Tok], pos: int) -> Result[(int, int), str] {
+  return match get(ts, pos) {
+    Some(TCell(cc, cr)) => Ok((cc, cr)),
+    _ => Err("cell"),
+  }
+}
+
+fn p_expr(ts: list[Tok], pos: int) -> Result[(Expr, int), str] {
+  let (first_term, after_first) = p_term(ts, pos)?
+  return expr_rest(ts, after_first, first_term)
+}
+
+fn expr_rest(ts: list[Tok], pos: int, left: Expr) -> Result[(Expr, int), str] {
+  let op = sym_at(ts, pos)
+  if op == "+" or op == "-" {
+    let (rhs, after_rhs) = p_term(ts, pos + 1)?
+    return expr_rest(ts, after_rhs, EBin(op, left, rhs))
+  }
+  return Ok((left, pos))
+}
+
+fn p_term(ts: list[Tok], pos: int) -> Result[(Expr, int), str] {
+  let (first_factor, after_first) = p_unary(ts, pos)?
+  return term_rest(ts, after_first, first_factor)
+}
+
+fn term_rest(ts: list[Tok], pos: int, left: Expr) -> Result[(Expr, int), str] {
+  let op = sym_at(ts, pos)
+  if op == "*" or op == "/" {
+    let (rhs, after_rhs) = p_unary(ts, pos + 1)?
+    return term_rest(ts, after_rhs, EBin(op, left, rhs))
+  }
+  return Ok((left, pos))
+}
+
+fn p_unary(ts: list[Tok], pos: int) -> Result[(Expr, int), str] {
+  if sym_at(ts, pos) == "-" {
+    let (operand, after_operand) = p_unary(ts, pos + 1)?
+    return Ok((ENeg(operand), after_operand))
+  }
+  return p_primary(ts, pos)
+}
+
+// `pos` is the index of the "(" after the function name.
+fn p_func(ts: list[Tok], pos: int, fname: str) -> Result[(Expr, int), str] {
+  let a_pos = expect_sym(ts, pos, "(")?
+  let (fc1, fr1) = cell_at(ts, a_pos)?
+  let b_pos = expect_sym(ts, a_pos + 1, ":")?
+  let (fc2, fr2) = cell_at(ts, b_pos)?
+  let end_pos = expect_sym(ts, b_pos + 1, ")")?
+  return Ok((EFunc(fname, fc1, fr1, fc2, fr2), end_pos))
+}
+
+fn p_primary(ts: list[Tok], pos: int) -> Result[(Expr, int), str] {
+  if sym_at(ts, pos) == "(" {
+    let (inner, after_inner) = p_expr(ts, pos + 1)?
+    let close_pos = expect_sym(ts, after_inner, ")")?
+    return Ok((inner, close_pos))
+  }
+  return match get(ts, pos) {
+    Some(TNum(n)) => Ok((ENum(n), pos + 1)),
+    Some(TCell(cc, cr)) => Ok((ERef(cc, cr), pos + 1)),
+    Some(TFunc(fname)) => p_func(ts, pos + 1, fname),
+    _ => Err("primary"),
+  }
+}
+
+fn parse_formula(ts: list[Tok]) -> Result[Expr, str] {
+  let (whole, end) = p_expr(ts, 0)?
+  if end != len(ts) {
+    return Err("trailing tokens")
+  }
+  return Ok(whole)
+}
+
+// ---------- dependencies ----------
+
+fn range_keys(c1: int, r1: int, c2: int, r2: int) -> list[int] {
+  var out: list[int] = []
+  let lo_c = min(c1, c2)
+  let hi_c = max(c1, c2)
+  let lo_r = min(r1, r2)
+  let hi_r = max(r1, r2)
+  for col in range(lo_c, hi_c + 1) {
+    for row in range(lo_r, hi_r + 1) {
+      out = push(out, col * 100 + row)
+    }
+  }
+  return out
+}
+
+fn expr_deps(e: Expr) -> list[int] {
+  return match e {
+    ENum(_) => [],
+    ERef(dc, dr) => [dc * 100 + dr],
+    EFunc(_, fc1, fr1, fc2, fr2) => range_keys(fc1, fr1, fc2, fr2),
+    ENeg(inner) => expr_deps(inner),
+    EBin(_, lhs, rhs) => expr_deps(lhs) + expr_deps(rhs),
+  }
+}
+
+fn is_int_text(s: str) -> bool {
+  let body = if starts_with(s, "-") then slice(s, 1, len(s)) else s
+  return body != "" and all(chars(body), fn(ch: str) => contains("0123456789", ch))
+}
+
+fn make_cell(content: str) -> Cell {
+  if starts_with(content, "=") {
+    let body = slice(chars(content), 1, len(chars(content)))
+    return match parse_formula(lex(body)) {
+      Ok(e) => CForm(e, expr_deps(e)),
+      Err(_) => CBad,
+    }
+  }
+  if is_int_text(content) {
+    return CLit(unwrap_or(parse_int(content), 0))
+  }
+  return CBad
+}
+
+// ---------- evaluation ----------
+
+fn cell_get(vals: map[int, Result[int, str]], k: int) -> Result[int, str] {
+  return match get(vals, k) {
+    Some(found) => found,
+    None => Ok(0),
+  }
+}
+
+fn apply_op(op: str, a: int, b: int) -> Result[int, str] {
+  if op == "+" {
+    return Ok(a + b)
+  }
+  if op == "-" {
+    return Ok(a - b)
+  }
+  if op == "*" {
+    return Ok(a * b)
+  }
+  if b == 0 {
+    return Err("#DIV0")
+  }
+  return Ok(a / b)
+}
+
+fn aggregate(fname: str, nums: list[int]) -> int {
+  if fname == "SUM" {
+    return sum(nums)
+  }
+  var best = nums[0]
+  for x in nums {
+    if fname == "MIN" {
+      if x < best {
+        best = x
+      }
+    } else {
+      if x > best {
+        best = x
+      }
+    }
+  }
+  return best
+}
+
+fn ev(e: Expr, vals: map[int, Result[int, str]]) -> Result[int, str] {
+  match e {
+    ENum(n) => {
+      return Ok(n)
+    }
+    ERef(rc, rr) => {
+      return cell_get(vals, rc * 100 + rr)
+    }
+    ENeg(inner) => {
+      let negated = ev(inner, vals)?
+      return Ok(0 - negated)
+    }
+    EBin(op, lhs, rhs) => {
+      let left_val = ev(lhs, vals)?
+      let right_val = ev(rhs, vals)?
+      return apply_op(op, left_val, right_val)
+    }
+    EFunc(fname, fc1, fr1, fc2, fr2) => {
+      var nums: list[int] = []
+      for k in range_keys(fc1, fr1, fc2, fr2) {
+        let kv = cell_get(vals, k)?
+        nums = push(nums, kv)
+      }
+      return Ok(aggregate(fname, nums))
+    }
+  }
+}
+
+// Value of one cell whose references are all already evaluated (or the cell is a literal).
+fn value_of(cells: map[int, Cell], k: int, vals: map[int, Result[int, str]]) -> Result[int, str] {
+  return match get(cells, k) {
+    Some(CLit(n)) => Ok(n),
+    Some(CBad) => Err("#PARSE"),
+    Some(CForm(fe, _)) => ev(fe, vals),
+    None => Ok(0),
+  }
+}
+
+fn deps_of(cells: map[int, Cell], k: int) -> list[int] {
+  return match get(cells, k) {
+    Some(CForm(_, fdeps)) => fdeps,
+    _ => [],
+  }
+}
+
+// Iterative Tarjan SCC walk. Components are emitted dependencies-first, so each
+// acyclic cell is evaluated right after its references. Members of a cycle (a
+// component with 2+ cells, or a self-reference) get #CYCLE; cells that merely use
+// them then get that error through normal evaluation.
+fn evaluate(cells: map[int, Cell]) -> map[int, Result[int, str]] {
+  var idx: map[int, int] = [:]
+  var low: map[int, int] = [:]
+  var onstk: map[int, bool] = [:]
+  var sstack: map[int, int] = [:]
+  var sp = 0
+  var fnode: map[int, int] = [:]
+  var fptr: map[int, int] = [:]
+  var depth = 0
+  var counter = 0
+  var vals: map[int, Result[int, str]] = [:]
+  for root in keys(cells) {
+    if not has(idx, root) {
+      idx = put(idx, root, counter)
+      low = put(low, root, counter)
+      counter = counter + 1
+      sstack = put(sstack, sp, root)
+      sp = sp + 1
+      onstk = put(onstk, root, true)
+      fnode = put(fnode, depth, root)
+      fptr = put(fptr, depth, 0)
+      depth = depth + 1
+      while depth > 0 {
+        let top = depth - 1
+        let v = fnode[top]
+        let p = fptr[top]
+        let ds = deps_of(cells, v)
+        if p < len(ds) {
+          fptr = put(fptr, top, p + 1)
+          let w = ds[p]
+          if has(cells, w) {
+            if not has(idx, w) {
+              idx = put(idx, w, counter)
+              low = put(low, w, counter)
+              counter = counter + 1
+              sstack = put(sstack, sp, w)
+              sp = sp + 1
+              onstk = put(onstk, w, true)
+              fnode = put(fnode, depth, w)
+              fptr = put(fptr, depth, 0)
+              depth = depth + 1
+            } else {
+              if onstk[w] {
+                low = put(low, v, min(low[v], idx[w]))
+              }
+            }
+          }
+        } else {
+          if low[v] == idx[v] {
+            var members: list[int] = []
+            var popped = false
+            while not popped {
+              sp = sp - 1
+              let member = sstack[sp]
+              onstk = put(onstk, member, false)
+              members = push(members, member)
+              if member == v {
+                popped = true
+              }
+            }
+            let cyclic = len(members) > 1 or contains(deps_of(cells, v), v)
+            for m in members {
+              if cyclic {
+                vals = put(vals, m, Err("#CYCLE"))
+              } else {
+                vals = put(vals, m, value_of(cells, m, vals))
+              }
+            }
+          }
+          depth = depth - 1
+          if depth > 0 {
+            let parent = fnode[depth - 1]
+            low = put(low, parent, min(low[parent], low[v]))
+          }
+        }
+      }
+    }
+  }
+  return vals
+}
+
+fn main() uses io {
+  var cells: map[int, Cell] = [:]
+  for raw in split(read_all(), "\n") {
+    let line = trim(raw)
+    match index_of(chars(line), ":") {
+      Some(at) => {
+        let cell_name = trim(slice(line, 0, at))
+        let content = trim(slice(line, at + 1, len(line)))
+        cells = put(cells, key_of(cell_name), make_cell(content))
+      }
+      None => {}
+    }
+  }
+
+  let final_vals = evaluate(cells)
+
+  for k in sort(keys(cells)) {
+    match get(final_vals, k) {
+      Some(res) => {
+        let label = key_text(k)
+        match res {
+          Ok(n) => print("{label} = {n}"),
+          Err(code) => print("{label} = {code}"),
+        }
+      }
+      None => {}
+    }
+  }
+}

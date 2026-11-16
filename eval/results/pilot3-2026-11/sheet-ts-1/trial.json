@@ -1,0 +1,33 @@
+{
+  "task": "sheet",
+  "lang": "ts",
+  "model": "small-agent",
+  "docs": "repo",
+  "max_rounds": 3,
+  "rounds": [
+    {
+      "round": 1,
+      "agent": {
+        "exit": null,
+        "seconds": 99.0,
+        "tokens": 82744,
+        "tool_uses": 7
+      },
+      "build_ok": true,
+      "passed": 22,
+      "total": 22,
+      "failing": []
+    }
+  ],
+  "first_try_pass": true,
+  "first_try_score": 1.0,
+  "rounds_to_pass": 1,
+  "final_score": 1.0,
+  "tools": {
+    "tool_calls": 2,
+    "check_calls": 2,
+    "failed_checks": 0,
+    "run_calls": 0,
+    "error_codes": {}
+  }
+}

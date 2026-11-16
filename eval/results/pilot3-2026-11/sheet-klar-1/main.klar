@@ -1,0 +1,581 @@
+// Spreadsheet evaluator: reads "CELL: CONTENT" lines from stdin and prints every defined cell's value.
+
+enum Tok {
+  TNum(v: int),
+  TCell(name: str),
+  TFunc(name: str),
+  TSym(s: str),
+}
+
+enum Expr {
+  Num(v: int),
+  Ref(name: str),
+  Range(func: str, first: str, last: str),
+  Neg(inner: Expr),
+  Bin(op: str, left: Expr, right: Expr),
+}
+
+enum Content {
+  CLit(v: int),
+  CBad,
+  CForm(e: Expr),
+}
+
+struct Parsed { node: Expr, next: int }
+
+struct Walk { done: map[str, bool], order: list[str] }
+
+fn main() uses io {
+  let text = read_all()
+  let defs = read_defs(text)
+  let graph = build_graph(defs)
+  let cyc = find_cycles(defs, graph)
+  let vals0 = initial_values(defs, cyc)
+  let w = walk_all(defs, graph, cyc)
+  let vals = evaluate_order(defs, vals0, w.order)
+  for k in sort(keys(defs)) {
+    show_cell(k, lookup(vals, k))
+  }
+}
+
+// ---- keys and cell names -------------------------------------------------
+
+fn canon(col: str, row: int) -> str {
+  let pad = if row < 10 then "0" else ""
+  return col + pad + str(row)
+}
+
+fn canon_name(name: str) -> str {
+  return canon(slice(name, 0, 1), digits_value(slice(name, 1, len(name))))
+}
+
+fn row_of(key: str) -> int {
+  return digits_value(slice(key, 1, len(key)))
+}
+
+fn col_index(c: str) -> int {
+  return unwrap(index_of(chars("ABCDEFGHIJKLMNOPQRSTUVWXYZ"), c))
+}
+
+fn digit_of(c: str) -> int {
+  return unwrap(index_of(chars("0123456789"), c))
+}
+
+fn digits_value(s: str) -> int {
+  var v = 0
+  for c in chars(s) {
+    v = v * 10 + digit_of(c)
+  }
+  return v
+}
+
+fn is_digit(c: str) -> bool {
+  return c >= "0" and c <= "9"
+}
+
+fn is_upper(c: str) -> bool {
+  return c >= "A" and c <= "Z"
+}
+
+fn all_digits(s: str) -> bool {
+  return all(chars(s), fn(c) => is_digit(c))
+}
+
+fn range_cells(a: str, b: str) -> list[str] {
+  let ca = col_index(slice(a, 0, 1))
+  let cb = col_index(slice(b, 0, 1))
+  let ra = row_of(a)
+  let rb = row_of(b)
+  let letters = chars("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+  var out: list[str] = []
+  for c in range(min(ca, cb), max(ca, cb) + 1) {
+    for r in range(min(ra, rb), max(ra, rb) + 1) {
+      out = push(out, canon(letters[c], r))
+    }
+  }
+  return out
+}
+
+// ---- reading input ---------------------------------------------------------
+
+fn read_defs(text: str) -> map[str, Content] {
+  var defs: map[str, Content] = [:]
+  for line in split(text, "\n") {
+    let t = trim(line)
+    if t != "" {
+      let colon = unwrap_or(index_of(chars(t), ":"), 0)
+      let key = canon_name(trim(slice(t, 0, colon)))
+      let body = trim(slice(t, colon + 1, len(t)))
+      defs = put(defs, key, parse_content(body))
+    }
+  }
+  return defs
+}
+
+fn int_literal(s: str) -> Option[int] {
+  var neg = false
+  var digits = s
+  if starts_with(s, "-") {
+    neg = true
+    digits = slice(s, 1, len(s))
+  }
+  if digits == "" or not all_digits(digits) {
+    return None
+  }
+  let v = digits_value(digits)
+  if neg {
+    return Some(-v)
+  }
+  return Some(v)
+}
+
+fn parse_content(body: str) -> Content {
+  if starts_with(body, "=") {
+    return match lex(slice(body, 1, len(body))) {
+      None => CBad,
+      Some(toks) => finish_formula(toks),
+    }
+  }
+  return match int_literal(body) {
+    Some(v) => CLit(v),
+    None => CBad,
+  }
+}
+
+fn finish_formula(ts: list[Tok]) -> Content {
+  if len(ts) == 0 {
+    return CBad
+  }
+  return match parse_expr(ts, 0) {
+    None => CBad,
+    Some(p) => if p.next == len(ts) then CForm(p.node) else CBad,
+  }
+}
+
+// ---- lexer -----------------------------------------------------------------
+
+fn digit_run_end(cs: list[str], i: int) -> int {
+  var j = i
+  while j < len(cs) and is_digit(cs[j]) {
+    j = j + 1
+  }
+  return j
+}
+
+fn upper_run_end(cs: list[str], i: int) -> int {
+  var j = i
+  while j < len(cs) and is_upper(cs[j]) {
+    j = j + 1
+  }
+  return j
+}
+
+fn is_sym(c: str) -> bool {
+  return c == "+" or c == "-" or c == "*" or c == "/" or c == "(" or c == ")" or c == ":"
+}
+
+fn word_token(word: str, digs: str) -> Option[Tok] {
+  if digs == "" {
+    if word == "SUM" or word == "MIN" or word == "MAX" {
+      return Some(TFunc(word))
+    }
+    return None
+  }
+  if len(word) != 1 {
+    return None
+  }
+  if starts_with(digs, "0") or len(digs) > 2 {
+    return None
+  }
+  return Some(TCell(canon(word, digits_value(digs))))
+}
+
+fn lex(s: str) -> Option[list[Tok]] {
+  let cs = chars(s)
+  let n = len(cs)
+  var out: list[Tok] = []
+  var i = 0
+  while i < n {
+    let c = cs[i]
+    if c == " " or c == "\t" {
+      i = i + 1
+    } else if is_digit(c) {
+      let j = digit_run_end(cs, i)
+      out = push(out, TNum(digits_value(join(slice(cs, i, j), ""))))
+      i = j
+    } else if is_upper(c) {
+      let j = upper_run_end(cs, i)
+      let k = digit_run_end(cs, j)
+      let tok = word_token(join(slice(cs, i, j), ""), join(slice(cs, j, k), ""))
+      if is_none(tok) {
+        return None
+      }
+      out = push(out, unwrap(tok))
+      i = k
+    } else if is_sym(c) {
+      out = push(out, TSym(c))
+      i = i + 1
+    } else {
+      return None
+    }
+  }
+  return Some(out)
+}
+
+// ---- parser ----------------------------------------------------------------
+
+fn tok_sym(ts: list[Tok], pos: int) -> str {
+  if pos >= len(ts) {
+    return ""
+  }
+  return match ts[pos] {
+    TSym(s) => s,
+    TNum(_) => "",
+    TCell(_) => "",
+    TFunc(_) => "",
+  }
+}
+
+fn tok_cell(ts: list[Tok], pos: int) -> str {
+  if pos >= len(ts) {
+    return ""
+  }
+  return match ts[pos] {
+    TCell(name) => name,
+    TNum(_) => "",
+    TFunc(_) => "",
+    TSym(_) => "",
+  }
+}
+
+fn parse_expr(ts: list[Tok], start: int) -> Option[Parsed] {
+  let first = parse_term(ts, start)?
+  var node = first.node
+  var pos = first.next
+  while pos < len(ts) {
+    let op = tok_sym(ts, pos)
+    if op != "+" and op != "-" {
+      break
+    }
+    let rhs = parse_term(ts, pos + 1)?
+    node = Bin(op: op, left: node, right: rhs.node)
+    pos = rhs.next
+  }
+  return Some(Parsed(node: node, next: pos))
+}
+
+fn parse_term(ts: list[Tok], start: int) -> Option[Parsed] {
+  let first = parse_unary(ts, start)?
+  var node = first.node
+  var pos = first.next
+  while pos < len(ts) {
+    let op = tok_sym(ts, pos)
+    if op != "*" and op != "/" {
+      break
+    }
+    let rhs = parse_unary(ts, pos + 1)?
+    node = Bin(op: op, left: node, right: rhs.node)
+    pos = rhs.next
+  }
+  return Some(Parsed(node: node, next: pos))
+}
+
+fn parse_unary(ts: list[Tok], start: int) -> Option[Parsed] {
+  if start < len(ts) and tok_sym(ts, start) == "-" {
+    let inner = parse_unary(ts, start + 1)?
+    return Some(Parsed(node: Neg(inner: inner.node), next: inner.next))
+  }
+  return parse_primary(ts, start)
+}
+
+fn parse_primary(ts: list[Tok], start: int) -> Option[Parsed] {
+  if start >= len(ts) {
+    return None
+  }
+  return match ts[start] {
+    TNum(v) => Some(Parsed(node: Num(v: v), next: start + 1)),
+    TCell(name) => Some(Parsed(node: Ref(name: name), next: start + 1)),
+    TFunc(fname) => parse_range_call(ts, start, fname),
+    TSym(s) => if s == "(" then parse_paren(ts, start) else None,
+  }
+}
+
+fn parse_paren(ts: list[Tok], start: int) -> Option[Parsed] {
+  let inner = parse_expr(ts, start + 1)?
+  if inner.next < len(ts) and tok_sym(ts, inner.next) == ")" {
+    return Some(Parsed(node: inner.node, next: inner.next + 1))
+  }
+  return None
+}
+
+fn parse_range_call(ts: list[Tok], start: int, fname: str) -> Option[Parsed] {
+  if start + 5 >= len(ts) {
+    return None
+  }
+  let a = tok_cell(ts, start + 2)
+  let b = tok_cell(ts, start + 4)
+  if tok_sym(ts, start + 1) == "(" and tok_sym(ts, start + 3) == ":" and tok_sym(ts, start + 5) == ")" and a != "" and b != "" {
+    return Some(Parsed(node: Range(func: fname, first: a, last: b), next: start + 6))
+  }
+  return None
+}
+
+// ---- dependencies and cycles -----------------------------------------------
+
+fn refs_of(e: Expr) -> list[str] {
+  return match e {
+    Num(_) => [],
+    Ref(name) => [name],
+    Range(_, first, last) => range_cells(first, last),
+    Neg(inner) => refs_of(inner),
+    Bin(_, left, right) => refs_of(left) + refs_of(right),
+  }
+}
+
+fn content_refs(c: Content) -> list[str] {
+  return match c {
+    CForm(e) => refs_of(e),
+    CLit(_) => [],
+    CBad => [],
+  }
+}
+
+fn build_graph(defs: map[str, Content]) -> map[str, list[str]] {
+  var graph: map[str, list[str]] = [:]
+  for (key, c) in entries(defs) {
+    graph = put(graph, key, content_refs(c))
+  }
+  return graph
+}
+
+fn graph_succ(graph: map[str, list[str]], key: str) -> list[str] {
+  return match get(graph, key) {
+    Some(xs) => xs,
+    None => [],
+  }
+}
+
+// Writes x at position pos of a stack that may have stale entries above pos.
+fn stack_put[T](xs: list[T], pos: int, x: T) -> list[T] {
+  if pos < len(xs) {
+    return set_at(xs, pos, x)
+  }
+  return push(xs, x)
+}
+
+// Iterative Tarjan: marks every cell that lies on a reference cycle (an SCC of size > 1, or a self-reference).
+fn find_cycles(defs: map[str, Content], graph: map[str, list[str]]) -> map[str, bool] {
+  var idx: map[str, int] = [:]
+  var low: map[str, int] = [:]
+  var onst: map[str, bool] = [:]
+  var cyc: map[str, bool] = [:]
+  var sstk: list[str] = []
+  var ssp = 0
+  var cnode: list[str] = []
+  var cpos: list[int] = []
+  var csp = 0
+  var counter = 0
+  for root in keys(defs) {
+    if has(idx, root) {
+      continue
+    }
+    idx = put(idx, root, counter)
+    low = put(low, root, counter)
+    counter = counter + 1
+    sstk = stack_put(sstk, ssp, root)
+    ssp = ssp + 1
+    onst = put(onst, root, true)
+    cnode = stack_put(cnode, csp, root)
+    cpos = stack_put(cpos, csp, 0)
+    csp = csp + 1
+    while csp > 0 {
+      let v = cnode[csp - 1]
+      let p = cpos[csp - 1]
+      let succs = graph_succ(graph, v)
+      if p < len(succs) {
+        cpos = set_at(cpos, csp - 1, p + 1)
+        let w = succs[p]
+        if not has(idx, w) {
+          idx = put(idx, w, counter)
+          low = put(low, w, counter)
+          counter = counter + 1
+          sstk = stack_put(sstk, ssp, w)
+          ssp = ssp + 1
+          onst = put(onst, w, true)
+          cnode = stack_put(cnode, csp, w)
+          cpos = stack_put(cpos, csp, 0)
+          csp = csp + 1
+        } else if unwrap_or(get(onst, w), false) {
+          low = put(low, v, min(unwrap(get(low, v)), unwrap(get(idx, w))))
+        }
+      } else {
+        if unwrap(get(low, v)) == unwrap(get(idx, v)) {
+          var members: list[str] = []
+          var m = v
+          var going = true
+          while going {
+            ssp = ssp - 1
+            m = sstk[ssp]
+            onst = put(onst, m, false)
+            members = push(members, m)
+            if m == v {
+              going = false
+            }
+          }
+          if len(members) > 1 or contains(succs, v) {
+            for x in members {
+              cyc = put(cyc, x, true)
+            }
+          }
+        }
+        csp = csp - 1
+        if csp > 0 {
+          let parent = cnode[csp - 1]
+          low = put(low, parent, min(unwrap(get(low, parent)), unwrap(get(low, v))))
+        }
+      }
+    }
+  }
+  return cyc
+}
+
+// Post-order walk over the dependencies of every cell, skipping cyclic cells.
+// Recursion depth is bounded by the length of the longest reference chain.
+fn walk(key: str, graph: map[str, list[str]], cyc: map[str, bool], w: Walk) -> Walk {
+  if has(w.done, key) or has(cyc, key) {
+    return w
+  }
+  var cur = Walk(done: put(w.done, key, true), order: w.order)
+  for d in graph_succ(graph, key) {
+    cur = walk(d, graph, cyc, cur)
+  }
+  return Walk(done: cur.done, order: push(cur.order, key))
+}
+
+fn walk_all(defs: map[str, Content], graph: map[str, list[str]], cyc: map[str, bool]) -> Walk {
+  var w = Walk(done: [:], order: [])
+  for key in keys(defs) {
+    w = walk(key, graph, cyc, w)
+  }
+  return w
+}
+
+// ---- evaluation ------------------------------------------------------------
+
+fn initial_value(c: Content, cyclic: bool) -> Result[int, str] {
+  if cyclic {
+    return Err("#CYCLE")
+  }
+  return match c {
+    CLit(v) => Ok(v),
+    CBad => Err("#PARSE"),
+    CForm(_) => Ok(0),
+  }
+}
+
+fn initial_values(defs: map[str, Content], cyc: map[str, bool]) -> map[str, Result[int, str]] {
+  var vals: map[str, Result[int, str]] = [:]
+  for (key, c) in entries(defs) {
+    vals = put(vals, key, initial_value(c, has(cyc, key)))
+  }
+  return vals
+}
+
+fn formula_of(c: Content) -> Option[Expr] {
+  return match c {
+    CForm(e) => Some(e),
+    CLit(_) => None,
+    CBad => None,
+  }
+}
+
+fn formula_at(defs: map[str, Content], key: str) -> Option[Expr] {
+  return match get(defs, key) {
+    Some(c) => formula_of(c),
+    None => None,
+  }
+}
+
+fn lookup(vals: map[str, Result[int, str]], key: str) -> Result[int, str] {
+  return match get(vals, key) {
+    Some(r) => r,
+    None => Ok(0),
+  }
+}
+
+fn eval_bin(op: str, left: Expr, right: Expr, vals: map[str, Result[int, str]]) -> Result[int, str] {
+  let a = eval_expr(left, vals)?
+  let b = eval_expr(right, vals)?
+  if op == "+" {
+    return Ok(a + b)
+  }
+  if op == "-" {
+    return Ok(a - b)
+  }
+  if op == "*" {
+    return Ok(a * b)
+  }
+  if b == 0 {
+    return Err("#DIV0")
+  }
+  return Ok(a / b)
+}
+
+fn eval_range(func: str, first: str, last: str, vals: map[str, Result[int, str]]) -> Result[int, str] {
+  var acc = 0
+  var seen = false
+  for key in range_cells(first, last) {
+    let v = lookup(vals, key)?
+    if not seen {
+      acc = v
+      seen = true
+    } else if func == "SUM" {
+      acc = acc + v
+    } else if func == "MIN" {
+      if v < acc {
+        acc = v
+      }
+    } else {
+      if v > acc {
+        acc = v
+      }
+    }
+  }
+  return Ok(acc)
+}
+
+fn eval_expr(e: Expr, vals: map[str, Result[int, str]]) -> Result[int, str] {
+  return match e {
+    Num(v) => Ok(v),
+    Ref(name) => lookup(vals, name),
+    Range(func, first, last) => eval_range(func, first, last, vals),
+    Neg(inner) => eval_neg(inner, vals),
+    Bin(op, left, right) => eval_bin(op, left, right, vals),
+  }
+}
+
+fn eval_neg(inner: Expr, vals: map[str, Result[int, str]]) -> Result[int, str] {
+  let v = eval_expr(inner, vals)?
+  return Ok(-v)
+}
+
+fn evaluate_order(defs: map[str, Content], vals: map[str, Result[int, str]], order: list[str]) -> map[str, Result[int, str]] {
+  var out = vals
+  for key in order {
+    let o = formula_at(defs, key)
+    if is_some(o) {
+      out = put(out, key, eval_expr(unwrap(o), out))
+    }
+  }
+  return out
+}
+
+// ---- output ----------------------------------------------------------------
+
+fn show_cell(key: str, r: Result[int, str]) uses io {
+  let name = slice(key, 0, 1) + str(row_of(key))
+  match r {
+    Ok(v) => print("{name} = {v}"),
+    Err(e) => print("{name} = {e}"),
+  }
+}

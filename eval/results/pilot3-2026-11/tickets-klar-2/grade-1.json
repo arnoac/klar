@@ -1,0 +1,98 @@
+{
+  "task": "tickets",
+  "lang": "klar",
+  "build_ok": true,
+  "build_log": "{\n  \"ok\": true,\n  \"errors\": []\n}\n",
+  "tests": [
+    {
+      "name": "test_basic_flow_without_price_change",
+      "ok": true,
+      "seconds": 0.07
+    },
+    {
+      "name": "test_capacity_command",
+      "ok": true,
+      "seconds": 0.08
+    },
+    {
+      "name": "test_capacity_down_to_sold",
+      "ok": true,
+      "seconds": 0.09
+    },
+    {
+      "name": "test_existing_errors_unchanged",
+      "ok": true,
+      "seconds": 0.1
+    },
+    {
+      "name": "test_filled_buyer_refund_pays_fill_price",
+      "ok": true,
+      "seconds": 0.07
+    },
+    {
+      "name": "test_generated_sessions",
+      "ok": false,
+      "message": "line 65 of output: expected 'ok: b bought 2 for e1 (18.30)', got 'error: already waiting: b'\n  input:\nevent e0 5 1419\nevent e1 6 1310\nevent e2 4 338\nbuy e1 c 3\nbuy e0 a 2\ncapacity e2 7\nrefund e0 a\nbuy e2 c 1\ncapacity e1 1\nprice e1 19\nprice e1 990\nbuy e2 g 4\nrefund e0 c\nreport\nbuy e0 f 2\nbuy e1 f 1\nbuy e0 c 2\nbuy e0 e 3\nrefund e0 f\nbuy e2 b 3\nbuy e0 b 3\nreport\nbuy e0 g 1\nrefund e2 g\nbuy e1 f 4\nrefund e1 g\nrefund e0 f\nprice e0 527\nprice e2 183\nrefund e2 a\nbuy e2 g 2\nprice e1 2318\ncapacity e1 6\nbuy e0 f 4\nprice e0 2793\nbuy e1 e 1\nbuy e2 c 4\nprice e1 73\nreport\nrefund e2 d\nbuy e2 a 2\nbuy e0 c 4\ncapacity e1 6\nprice e1 915\nbuy e2 f 4\nbuy e0 e 4\nbuy e0 b 3\nbuy e1 d 4\nbuy e1 e 4\ncapacity e2 9\nbuy e1 c 4\nbuy e0 d 1\nbuy e2 e 2\nbuy e1 b 4\ncapacity e1 7\nbuy e1 b 2\nbuy e0 e 3\nrefund e1 e\nrefund e2 e\nrefund e1 d\nrefund e2 f\nreport\nbuy e0 f 4\nreport\n",
+      "seconds": 0.08
+    },
+    {
+      "name": "test_leave_waitlist",
+      "ok": true,
+      "seconds": 0.09
+    },
+    {
+      "name": "test_no_events_report",
+      "ok": true,
+      "seconds": 0.12
+    },
+    {
+      "name": "test_refund_after_several_prices",
+      "ok": true,
+      "seconds": 0.13
+    },
+    {
+      "name": "test_refund_fills_waitlist_in_order_at_current_price",
+      "ok": true,
+      "seconds": 0.11
+    },
+    {
+      "name": "test_refund_pays_what_was_paid",
+      "ok": true,
+      "seconds": 0.08
+    },
+    {
+      "name": "test_skips_request_that_does_not_fit",
+      "ok": true,
+      "seconds": 0.09
+    },
+    {
+      "name": "test_too_big_requests_stay_and_later_ones_fill",
+      "ok": true,
+      "seconds": 0.09
+    },
+    {
+      "name": "test_wait_only_once",
+      "ok": true,
+      "seconds": 0.08
+    },
+    {
+      "name": "test_waitlist_instead_of_sold_out",
+      "ok": true,
+      "seconds": 0.09
+    },
+    {
+      "name": "test_waitlisted_holder_refund_refunds_tickets",
+      "ok": true,
+      "seconds": 0.08
+    },
+    {
+      "name": "test_waitlists_are_per_event",
+      "ok": true,
+      "seconds": 0.08
+    }
+  ],
+  "passed": 16,
+  "total": 17,
+  "seconds": 1.58,
+  "all_pass": false
+}

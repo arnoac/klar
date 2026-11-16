@@ -20,8 +20,9 @@ different prices), and revenue must go down by that amount.
 
 * The request joins the event's waitlist and the program prints
   `waitlist: PERSON wants QTY for ID (position P)`, where P is its 1-based position in that event's waitlist.
-* A person can only wait once per event. If PERSON is already on the waitlist, print
-  `error: already waiting: PERSON` and change nothing.
+* A person can only wait once per event. If a request that does not fit comes from someone already on the
+  waitlist, print `error: already waiting: PERSON` and change nothing. A `buy` that fits is sold as before,
+  even if PERSON is waiting.
 * Whenever seats become free (after a refund, or after the new `capacity` command below), go through the
   waitlist from the front. Every request that now fits is filled at the event's **current** price, printing
   the same line a normal purchase prints (`ok: PERSON bought QTY for ID (TOTAL)`), and leaves the waitlist. A

@@ -1,5 +1,57 @@
 # Results
 
+## Third pilot, November 2026: a smaller model
+
+**Setup.** The second pilot's tasks and method with a smaller, cheaper model from the same family as the
+subject (recorded as `small-agent`), to test the idea that a weaker model gains more from Klar's checker.
+`tickets` and `sheet` twice per language, `splitter` once. 10 trials. Raw records and programs are in
+[results/pilot3-2026-11](results/pilot3-2026-11).
+
+| task | language | first try | first-try tests | rounds to pass | checks (failed) | compiler errors | agent time | agent tokens |
+|---|---|---|---|---|---|---|---|---|
+| tickets (1) | Klar | pass | 17/17 | 1 | 2 (0) | - | 72 s | 88,075 |
+| tickets (2) | Klar | **fail** | 16/17 | 2 | 3 (0) | - | 141 s | 99,382 |
+| tickets (1) | TypeScript | pass | 17/17 | 1 | 1 (0) | - | 57 s | 73,471 |
+| tickets (2) | TypeScript | pass | 17/17 | 1 | 3 (0) | - | 58 s | 72,958 |
+| splitter | Klar | pass | 14/14 | 1 | 2 (0) | - | 110 s | 113,222 |
+| splitter | TypeScript | pass | 14/14 | 1 | 2 (0) | - | 56 s | 71,599 |
+| sheet (1) | Klar | pass | 22/22 | 1 | 3 (0) | - | 371 s | 127,729 |
+| sheet (2) | Klar | pass | 22/22 | 1 | 3 (0) | - | 340 s | 133,401 |
+| sheet (1) | TypeScript | pass | 22/22 | 1 | 2 (0) | - | 99 s | 82,744 |
+| sheet (2) | TypeScript | pass | 22/22 | 1 | 3 (0) | - | 95 s | 80,867 |
+
+Medians: Klar 141 s and 113,222 tokens, TypeScript 58 s and 73,471 tokens (times and tokens include fix
+rounds).
+
+### What this says
+
+* **The smaller model is also at the ceiling.** 9 of 10 trials passed first try, and none of the 24 checks in
+  either language failed: the smaller model did not write a single program the compiler rejected. So the
+  "weaker models need the checker more" idea gets no support at this task size either.
+* **The one failure was the task's fault, not the language's.** The ticket said "If PERSON is already on the
+  waitlist, print `error: already waiting`" under the waitlist bullet; this agent applied it to every buy,
+  while the hidden tests (and the other 7 agents given this task in pilots 2 and 3) applied it only to a buy
+  that does not fit. The agent fixed it in one round from the feedback. `TASK.md` now says which reading is
+  meant.
+* **Klar's cost gap is larger with the smaller model: about 2.4x the time and 54% more tokens.** `sheet` is the
+  worst case (3.6x the time): both Klar agents first wrote a correct but slow design, found it took 20 to 120
+  seconds on large inputs in the interpreter, and rewrote it.
+* **Harness fixes from this run:** the feedback file cut each failing test's message at 500 characters, which
+  cut the test input mid-line; it now keeps 4,000. Tool calls were logged for every trial this time.
+
+### New Klar friction
+
+Repeats of pilot 2 (asynchronous `std.ui` redraws, `std.ui` signatures and `on_key`'s key string only in the
+sources, no top-level constants, `klar` vs `klarc`, interpreter speed) plus:
+
+1. **No `ord`/character code and no list `pop`.** Digit and column values went through `index_of` over
+   `chars("0123456789")`; an explicit stack needed `set_at` and a separate top index.
+2. **No assignment to several existing variables from a tuple** (`(a, b) = f()`), so agents used small structs.
+3. **The E403 stack trace did not point where the agent expected** for a failed `unwrap`; it had to read
+   the reported line to tell which `unwrap` failed.
+4. **Unclear whether passing a large map to a function copies it**; one agent suspected that as the cause of a
+   slow program and could not confirm it.
+
 ## Second pilot, November 2026: harder tasks
 
 **Setup.** Same agent and method as the first pilot below, after fixing findings 1 to 5 of that pilot. Two new

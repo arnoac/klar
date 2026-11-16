@@ -1,0 +1,48 @@
+{
+  "task": "tickets",
+  "lang": "klar",
+  "model": "small-agent",
+  "docs": "repo",
+  "max_rounds": 3,
+  "rounds": [
+    {
+      "round": 1,
+      "agent": {
+        "exit": null,
+        "seconds": 80.1,
+        "tokens": 93633,
+        "tool_uses": 11
+      },
+      "build_ok": true,
+      "passed": 16,
+      "total": 17,
+      "failing": [
+        "test_generated_sessions"
+      ]
+    },
+    {
+      "round": 2,
+      "agent": {
+        "exit": null,
+        "seconds": 61.0,
+        "tokens": 5749,
+        "tool_uses": 7
+      },
+      "build_ok": true,
+      "passed": 17,
+      "total": 17,
+      "failing": []
+    }
+  ],
+  "first_try_pass": false,
+  "first_try_score": 0.941,
+  "rounds_to_pass": 2,
+  "final_score": 1.0,
+  "tools": {
+    "tool_calls": 16,
+    "check_calls": 3,
+    "failed_checks": 0,
+    "run_calls": 13,
+    "error_codes": {}
+  }
+}

@@ -1,0 +1,214 @@
+// Splitter: shared expenses between friends. Runs entirely in the browser.
+//
+//   klarc check main.klar
+//   klarc build --target web main.klar     -> main.html
+//   klarc test main.klar
+
+use std.ui { Next, Cmd, ui_run, ui_save, ui_load }
+use std.json { json_encode, json_decode }
+use std.html { Html, div, h1, p, ul, li, span, button, input, text, id, class, value, placeholder, input_type, on_input, on_click, on_key, nothing }
+
+struct Expense { name: str, cents: int, desc: str }
+
+struct Model { name: str, amount: str, desc: str, error: str, expenses: list[Expense] }
+
+enum Msg { NameIn(v: str), AmountIn(v: str), DescIn(v: str), AddExpense, RemoveExpense(i: int) }
+
+fn storage_key() -> str { return "splitter-expenses" }
+
+// ---- parsing and formatting (money is kept as whole cents)
+
+fn digits_ok(s: str) -> bool {
+  if len(s) == 0 { return false }
+  for c in chars(s) {
+    if not contains("0123456789", c) { return false }
+  }
+  return true
+}
+
+// "12.50" -> Some(1250); "5" -> Some(500); "0.01" -> Some(1); anything else, or zero, -> None
+fn parse_cents(s: str) -> Option[int] {
+  let parts = split(s, ".")
+  if len(parts) > 2 { return None }
+  let whole = parts[0]
+  if not digits_ok(whole) { return None }
+  var frac = 0
+  if len(parts) == 2 {
+    let f = parts[1]
+    if len(f) < 1 or len(f) > 2 or not digits_ok(f) { return None }
+    let scale = if len(f) == 1 then 10 else 1
+    frac = unwrap(parse_int(f)) * scale
+  }
+  let cents = unwrap(parse_int(whole)) * 100 + frac
+  if cents <= 0 { return None }
+  return Some(cents)
+}
+
+// non-negative cents as "W.FF"
+fn two(c: int) -> str {
+  let f = c % 100
+  let fs = if f < 10 then "0{f}" else "{f}"
+  return "{c / 100}.{fs}"
+}
+
+// balance in cents with a sign: "+10.00", "-3.33", "0.00"
+fn signed(c: int) -> str {
+  if c > 0 { return "+" + two(c) }
+  if c < 0 { return "-" + two(0 - c) }
+  return "0.00"
+}
+
+fn expense_line(e: Expense) -> str {
+  let base = "{e.name} paid {two(e.cents)}"
+  if e.desc == "" { return base }
+  return base + " for " + e.desc
+}
+
+// ---- totals and balances
+
+fn total_cents(xs: list[Expense]) -> int {
+  return fold(xs, 0, fn(acc: int, e: Expense) => acc + e.cents)
+}
+
+// everyone who appears in an expense, sorted by name (code point order)
+fn people(xs: list[Expense]) -> list[str] {
+  var uniq: list[str] = []
+  for e in xs {
+    if not contains(uniq, e.name) { uniq = push(uniq, e.name) }
+  }
+  return sort(uniq)
+}
+
+fn paid_by(xs: list[Expense], who: str) -> int {
+  return fold(xs, 0, fn(acc: int, e: Expense) => if e.name == who then acc + e.cents else acc)
+}
+
+// total divided by the number of people, rounded half up to the cent
+fn share_cents(total: int, n: int) -> int {
+  return (2 * total + n) / (2 * n)
+}
+
+fn balance_items(xs: list[Expense]) -> list[Html[Msg]] {
+  let names = people(xs)
+  let n = len(names)
+  if n == 0 { return [] }
+  let share = share_cents(total_cents(xs), n)
+  return map(names, fn(who: str) => li([], [text("{who}: {signed(paid_by(xs, who) - share)}")]))
+}
+
+// ---- storage
+
+fn save_cmd(xs: list[Expense]) -> Cmd[Msg] {
+  return ui_save(storage_key(), json_encode(xs))
+}
+
+fn load_expenses() -> list[Expense] uses io {
+  let saved = ui_load(storage_key())
+  if is_none(saved) { return [] }
+  let decoded: Result[list[Expense], str] = json_decode(unwrap(saved))
+  if is_err(decoded) { return [] }
+  return unwrap(decoded)
+}
+
+// ---- update
+
+fn without(xs: list[Expense], i: int) -> list[Expense] {
+  var out: list[Expense] = []
+  var k = 0
+  for e in xs {
+    if k != i { out = push(out, e) }
+    k = k + 1
+  }
+  return out
+}
+
+fn add_expense(m: Model) -> Next[Model, Msg] {
+  let who = trim(m.name)
+  if who == "" {
+    return Next(m with (error: "Please enter the name of the person who paid."), [])
+  }
+  let parsed = parse_cents(trim(m.amount))
+  if is_none(parsed) {
+    return Next(m with (error: "Please enter an amount greater than zero, such as 12.50."), [])
+  }
+  let xs = push(m.expenses, Expense(name: who, cents: unwrap(parsed), desc: trim(m.desc)))
+  return Next(Model(name: m.name, amount: "", desc: "", error: "", expenses: xs), [save_cmd(xs)])
+}
+
+fn update(m: Model, msg: Msg) -> Next[Model, Msg] {
+  return match msg {
+    NameIn(v) => Next(m with (name: v), []),
+    AmountIn(v) => Next(m with (amount: v), []),
+    DescIn(v) => Next(m with (desc: v), []),
+    AddExpense => add_expense(m),
+    RemoveExpense(i) => {
+      let xs = without(m.expenses, i)
+      return Next(m with (expenses: xs), [save_cmd(xs)])
+    },
+  }
+}
+
+// ---- view
+
+fn key_add(k: str) -> Option[Msg] {
+  if k == "Enter" { return Some(AddExpense) }
+  return None
+}
+
+fn expense_item(xs: list[Expense], i: int) -> Html[Msg] {
+  return li([], [
+    span([], [text(expense_line(xs[i]))]),
+    button([class("remove"), on_click(RemoveExpense(i))], [text("Remove")]),
+  ])
+}
+
+fn view(m: Model) -> Html[Msg] {
+  return div([class("splitter")], [
+    h1([], [text("Splitter")]),
+    div([class("form")], [
+      input([id("name"), input_type("text"), placeholder("Who paid"), value(m.name),
+        on_input(fn(v: str) => NameIn(v)), on_key(fn(k: str) => key_add(k))]),
+      input([id("amount"), input_type("text"), placeholder("Amount, e.g. 12.50"), value(m.amount),
+        on_input(fn(v: str) => AmountIn(v)), on_key(fn(k: str) => key_add(k))]),
+      input([id("desc"), input_type("text"), placeholder("What for (optional)"), value(m.desc),
+        on_input(fn(v: str) => DescIn(v)), on_key(fn(k: str) => key_add(k))]),
+      button([id("add"), on_click(AddExpense)], [text("Add expense")]),
+    ]),
+    if m.error == "" then nothing() else p([id("error"), class("error")], [text(m.error)]),
+    ul([id("expenses")], map(range(0, len(m.expenses)), fn(i: int) => expense_item(m.expenses, i))),
+    p([id("total")], [text("Total: {two(total_cents(m.expenses))}")]),
+    ul([id("balances")], balance_items(m.expenses)),
+  ])
+}
+
+fn main() uses io {
+  ui_run(Next(Model(name: "", amount: "", desc: "", error: "", expenses: load_expenses()), []), update, view)
+}
+
+test "amounts" {
+  assert parse_cents("12.50") == Some(1250)
+  assert parse_cents("5") == Some(500)
+  assert parse_cents("0.01") == Some(1)
+  assert parse_cents("5.5") == Some(550)
+  assert parse_cents("0") == None
+  assert parse_cents("-1") == None
+  assert parse_cents("1.234") == None
+  assert parse_cents("5.") == None
+  assert parse_cents(".5") == None
+  assert parse_cents("abc") == None
+  assert parse_cents("") == None
+}
+
+test "formatting" {
+  assert two(1250) == "12.50"
+  assert two(5) == "0.05"
+  assert signed(1000) == "+10.00"
+  assert signed(0 - 333) == "-3.33"
+  assert signed(0) == "0.00"
+}
+
+test "shares round half up" {
+  assert share_cents(4000, 2) == 2000
+  assert share_cents(1, 2) == 1
+  assert share_cents(100, 3) == 33
+}

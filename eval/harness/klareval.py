@@ -137,7 +137,7 @@ def feedback_text(result):
     for t in result["tests"]:
         if not t["ok"]:
             name = t["name"][len("test_"):].replace("_", " ")
-            lines.append(f"* {name}: {t['message'][:500]}")
+            lines.append(f"* {name}: {t['message'][:4000]}")
     return "\n".join(lines) + "\n"
 
 

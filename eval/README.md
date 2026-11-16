@@ -107,9 +107,10 @@ reference and standard library sources instead of the repository's README, desig
 
 ## What a full run needs
 
-The two pilots in [RESULTS.md](RESULTS.md) are 20 trials with one model. They show the harness works and where
-Klar hurts, but every trial passed, including the browser app and the change to existing code, so they cannot
-separate the languages on correctness. A run that can needs:
+The three pilots in [RESULTS.md](RESULTS.md) are 30 trials with two models of different sizes. They show the
+harness works and where Klar hurts, but all but one trial passed (that one through an ambiguity in the task),
+including the browser app and the change to existing code, so they cannot separate the languages on
+correctness. A run that can needs:
 
 * at least 5 trials per task, language and model (agents are not deterministic), so 60 trials per model for the
   current six tasks;
