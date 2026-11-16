@@ -2,11 +2,11 @@
 
 The [Computer Language Benchmarks Game](https://benchmarksgame-team.pages.debian.net/benchmarksgame/) is the
 best-known public site that compares programming languages on the same set of small programs. This folder
-ports six of its ten programs to Klar and runs them next to C, Go and Python on the same machine.
+ports nine of its ten programs to Klar and runs them next to C, Go and Python on the same machine.
 
 ```sh
-python3 bench/benchmarksgame/run.py          # scaled sizes, all four languages (~5 min)
-python3 bench/benchmarksgame/run.py --full   # plus the official sizes for C, Go and Klar (~35 min)
+python3 bench/benchmarksgame/run.py          # scaled sizes, all languages (~10 min)
+python3 bench/benchmarksgame/run.py --full   # plus the official sizes for C, Go and Klar (~60 min)
 ```
 
 `run.py` builds everything, checks that all languages print byte-identical output, and writes
@@ -19,7 +19,8 @@ python3 bench/benchmarksgame/run.py --full   # plus the official sizes for C, Go
   Benchmarks Game site use all cores and hand-written SIMD; Klar has neither yet, so comparing against those
   would measure threads, not code generation.
 * **Official sizes vs. scaled sizes.** The official sizes (nbody 50M steps, spectral-norm 5,500,
-  fannkuch-redux 12, binary-trees 21, mandelbrot 16,000, fasta 25M) take minutes in Python, so the main table
+  fannkuch-redux 12, binary-trees 21, mandelbrot 16,000, fasta 25M, and fasta 25M / 25M / 5M output as the input
+  of k-nucleotide / reverse-complement / regex-redux) take minutes in Python, so the main table
   uses smaller sizes for all four languages, and `--full` adds the official sizes for the compiled ones.
 * **mandelbrot output.** The official program writes a binary PBM image. Klar cannot write raw bytes (strings
   are UTF-8 text and `print` adds a newline), so every language here prints the PBM header plus a checksum of
@@ -31,42 +32,60 @@ python3 bench/benchmarksgame/run.py --full   # plus the official sizes for C, Go
 
 ## Results in short
 
-Scaled sizes, Klar v0.5. At the official sizes the picture is the same (1.0-4.0x C, 1.0-3.0x Go; nbody is
-4.0x C there). Ratios are slower-than unless marked. Exact numbers are in [RESULTS.md](RESULTS.md).
+Klar v0.14 at the official sizes, single-threaded; ratios are slower-than. Python numbers are from the scaled
+sizes. Exact numbers are in [RESULTS.md](RESULTS.md).
 
 | Program | What it stresses | Klar vs C | Klar vs Go | Klar vs Python | Klar on Node vs C |
 |---|---|---|---|---|---|
-| mandelbrot | float loops | 1.0x | 0.9x (faster) | 39x faster | 1.4x |
-| binary-trees | allocation + GC | 1.7x | 0.9x (faster) | 3.3x faster | 4.1x |
-| fasta | string building, output | 2.0x | 1.8x | 6.3x faster | 4.1x |
-| spectral-norm | float loops over arrays | 2.2x | 1.9x | 54x faster | 7.9x |
-| nbody | small arrays updated every step | 2.6x (was 28x) | 2.0x (was 16x) | 19x faster | 3.6x |
-| fannkuch-redux | in-place array permutation | 2.7x (was 29x) | 2.9x | 7x faster (was 1.5x slower) | 4.1x |
+| mandelbrot | float loops | 1.1x | 1.0x | 37x faster | 1.5x |
+| spectral-norm | float loops over arrays | 1.7x | 1.8x | 57x faster | 6.9x |
+| fasta | string building, output | 1.8x | 1.8x | 6.4x faster | 3.4x |
+| binary-trees | allocation + GC | 2.1x | 1.5x | 2.7x faster | 4.4x |
+| fannkuch-redux | in-place array permutation | 3.0x | 2.8x | 5x faster | 4.6x |
+| nbody | small arrays updated every step | 4.8x | 2.9x | 14x faster | 4.7x |
+| regex-redux | regular expressions (PCRE2) | 8.3x | 2.2x faster | 1.5x slower | 2.4x |
+| k-nucleotide | hash map of string keys | 26x | 9.1x | 1.3x slower | 41x |
+| reverse-complement | byte-level rewrite of ~250 MB | 40x | 15x | 8x slower | 45x |
 
-**What changed in v0.5: lists update in place.** `xs = set_at(xs, i, v)` and `xs = push(xs, v)` on a list held
-only by that `var` now write straight into the list's buffer, so nbody and fannkuch-redux went from 23-29x C to
-about 2.7x. The compiler tracks a hidden "owned" flag per list `var` (see `klar/ownership.py`): a list literal,
-`range()` or the copy made by the first `set_at` is owned; reading `xs[i]` or `len(xs)` keeps it owned; any other
-use (passing it on, storing it, iterating it) clears the flag first, so no other value can ever see a write. A
-`set_at` on a list that is not owned still works in place on the newest version of its buffer and keeps an undo
-log for older versions. Values stay immutable as far as any program can tell (tests/programs/owned_lists.klar).
-On Node, list reads are also inlined at each site, which made nbody 7x faster there.
+**Where Klar is at C/Go speed:** numeric loops (mandelbrot, spectral-norm), output-heavy string code
+(fasta), allocation-heavy recursive data (binary-trees, within 1.5x of Go) and, since v0.5, array code that
+updates lists in place (fannkuch-redux, nbody: 3-5x C, down from 23-29x). The rest of that gap is bounds
+checks, overflow checks and the version check on each list read, which keep gcc from vectorising.
 
-**Where the remaining 2-3x goes:** every `xs[i]` is bounds-checked, every integer `+`/`*` is overflow-checked
-(E408), and the version check on each read keeps gcc from vectorising the inner loops. fasta has no byte
-buffer or string builder.
+**Where Klar is far behind, and why** (the three programs added last):
+
+* **k-nucleotide (26x C, 9x Go).** `counts = put(counts, key, n + 1)` never updates in place: every `put`
+  appends a new version of the key to the map's log, allocates a new map value, and compacts the log every
+  few updates. Each k-mer is also a freshly allocated `slice` of the sequence, hashed twice (`get`, then
+  `put`). Lists got in-place updates in v0.5; maps have not.
+* **reverse-complement (40x C, 6.4 GB of memory).** Klar has no byte buffer, so the program turns each
+  sequence into a list of one-character strings with `chars()`, looks every character up in a
+  `map[str, str]`, and joins lines back together. 125 million small strings is where the memory goes.
+* **regex-redux (8x C, but 2x faster than Go).** Matching is already PCRE2, as in C. The difference is that
+  the C program uses PCRE2's JIT and Klar doesn't, and `regex_find_all` builds a list of matched strings
+  where only the count is needed. Before the fix described below it was quadratic.
 
 ## Compiler and runtime findings
 
-No compiler bug blocked any program: all six compiled on the first try and match C's output exactly. Next
-improvements, in order of payoff:
+Porting these programs found two real problems, both fixed on main:
 
-1. **Hoist bounds, version and overflow checks out of simple `for i in range(...)` loops**, which would let gcc
-   vectorise spectral-norm and nbody.
-2. **Atomic allocation for numeric buffers.** Lists of `int`/`float` could use `GC_MALLOC_ATOMIC`, so the GC
-   doesn't scan them.
-3. **A string builder or byte buffer** for fasta and reverse-complement.
-4. **Warn when building without a GC.** On a machine without `libgc-dev`, `klar build` silently produces a
+1. **Native regex was O(length x matches).** PCRE2 checks that the whole subject is valid UTF-8 on every
+   `pcre2_match` call unless told not to, and `regex_find_all`/`regex_replace` call it once per match.
+   regex-redux on a 1 MB input took 25 s; it now checks once per scan and takes 0.3 s.
+2. **The interpreter copied lists on every `push`/`set_at`**, although SPEC promises O(1). It now uses the
+   same ownership rule as the compiled backends (an agent evaluation found a program going from 8 s to 91 s
+   because of it).
+
+Next improvements, in order of payoff:
+
+1. **In-place `put` for maps held by one `var`**, the same ownership rule lists use. This is most of
+   k-nucleotide's gap, and maps are everywhere in real programs.
+2. **A byte buffer or string builder type** (and a way to write raw bytes, which mandelbrot's PBM output
+   needs) for reverse-complement, fasta and any text processing.
+3. **PCRE2 JIT** for patterns used on long strings, and a `regex_count` that doesn't build the match list.
+4. **Hoist bounds, version and overflow checks out of simple `for i in range(...)` loops**, which would let
+   gcc vectorise spectral-norm and nbody.
+5. **Warn when building without a GC.** On a machine without `libgc-dev`, `klar build` silently produces a
    binary that never frees memory; binary-trees at the official size would need many GB.
 
 ## Programs not ported yet
@@ -74,21 +93,13 @@ improvements, in order of payoff:
 | Program | Status |
 |---|---|
 | pidigits | Needs arbitrary-precision integers. The interpreter has them, but compiled `int` is 64-bit (overflow is E408), and the interpreter is far too slow for this benchmark. Needs a compiled bignum type. |
-| regex-redux | Needs regular expressions. `std.regex` is Python-backed and interpreter-only, so `klar build` rejects it (E501). |
-| k-nucleotide | Expressible today (`read_line`, `map[str, int]`): reads fasta output from stdin and counts substrings in a hash map. A good next port; it would mainly measure Klar's maps and string slicing. |
-| reverse-complement | Expressible but would be slow: it rewrites ~250 MB of input, which needs a mutable byte buffer that Klar doesn't have. |
 
-## Web frameworks (TechEmpower) later
+## Web frameworks (TechEmpower) next
 
 The [TechEmpower Framework Benchmarks](https://www.techempower.com/benchmarks/) are the public comparison for
 web servers: plaintext, JSON serialisation, single and multiple database queries, "fortunes" (query + HTML
-template) and updates, all under heavy concurrent load. Klar can already serve these endpoints
-(`std.http` + `std.json` + `std.sqlite`, see `examples/apps/todo_api`), but only in the interpreter, on top of
-Python's `http.server`, so a TechEmpower run today would measure Python. It becomes meaningful once:
-
-1. `std.http` and `std.json` compile natively (today they are E501 in `klar build`), on an event loop or
-   thread pool, since TechEmpower runs hundreds to thousands of concurrent connections;
-2. Klar has concurrency (on the ROADMAP);
-3. there is a PostgreSQL or MySQL driver, because TechEmpower's database tests use those, not SQLite.
-
-The plaintext and JSON tests need only step 1 and would be the natural first entries.
+template) and updates, all under heavy concurrent load. Since v0.8 `std.http` and `std.json` compile natively
+and since v0.9 servers handle requests concurrently, so the plaintext and JSON tests can be written today (the
+todo API already serves about 7,700 requests/s natively). Before the database tests mean anything Klar needs
+a PostgreSQL or MySQL driver, because TechEmpower's database tests use those, not SQLite, and a CPU-heavy
+handler still holds up the others because Klar code runs one task at a time.
