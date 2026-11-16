@@ -1224,6 +1224,7 @@ static pcre2_code *kx_re(KStr *pat) {
         PCRE2_UCHAR msg[256]; pcre2_get_error_message(ec, msg, sizeof msg);
         k_fail("E407", kx_line, kx_col, "error: %s at position %d", (char *)msg, (int)off);
     }
+    pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);   /* machine code for the pattern where PCRE2 supports it; ignored otherwise */
     last = re; last_pat = pat;
     return re;
 }
