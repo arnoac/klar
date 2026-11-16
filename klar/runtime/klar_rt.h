@@ -255,7 +255,13 @@ static inline void ksb_str(KSB *b, KStr *s) { ksb_add(b, s->data, s->len); }
 static inline void ksb_c(KSB *b, const char *s) { ksb_add(b, s, (int64_t)strlen(s)); }
 static KStr *ksb_done(KSB *b) { return k_str_new(b->p, b->len); }
 
-static void ksb_int(KSB *b, int64_t v) { char t[32]; int n = snprintf(t, sizeof t, "%lld", (long long)v); ksb_add(b, t, n); }
+static void ksb_int(KSB *b, int64_t v) {
+    char t[24], *q = t + sizeof t;
+    uint64_t u = v < 0 ? 0 - (uint64_t)v : (uint64_t)v;
+    do { *--q = (char)('0' + u % 10); u /= 10; } while (u);
+    if (v < 0) *--q = '-';
+    ksb_add(b, q, t + sizeof t - q);
+}
 
 /* d in %e form with the fewest digits that read back as d (the caller drops trailing zeros). Two different
  * 15-digit decimals never read back as the same double, so when 15 digits read back, those digits without their

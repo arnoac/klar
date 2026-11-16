@@ -40,6 +40,18 @@ are limited, security headers and Secure cookies are set (see [SECURITY.md](SECU
 Install the Boehm garbage collector where you build (`apt install libgc-dev`, `brew install bdw-gc`): without
 it a server's memory grows with every request, and `klar build` warns about it.
 
+**How fast.** Klar Board's executable, against the same endpoints written by hand for Node.js (4 cores, 32
+connections; [bench/deploy](bench/deploy/README.md) has the method and every row):
+
+| requests per second | Klar executable | hand-written Node.js |
+|---|---:|---:|
+| the app page | 41,363 | 6,919 |
+| board read (session, 3 queries, 4 KB of JSON) | 5,286 | 4,758 |
+| add card (2 inserts, reads the board) | 216 | 237 |
+| `/healthz` | 25,728 | 41,209 |
+
+It starts in about 10 to 20 ms and idles at 4 MB.
+
 ## Configuration
 
 Everything is set through environment variables, so the same executable runs anywhere.

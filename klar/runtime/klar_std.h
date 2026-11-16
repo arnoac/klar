@@ -814,10 +814,15 @@ static void kx_js_num(KSB *b, double f) {
         ksb_c(b, t);
     }
 }
-static void kx_json_quote(KSB *b, KStr *s) {
+static void kx_json_quote_n(KSB *b, const char *data, int64_t len) {
     ksb_c(b, "\"");
-    for (int64_t i = 0; i < s->len; i++) {
-        unsigned char c = (unsigned char)s->data[i];
+    const unsigned char *d = (const unsigned char *)data;
+    int64_t run = 0;                       /* characters that need no escape are copied in one go */
+    for (int64_t i = 0; i < len; i++) {
+        unsigned char c = d[i];
+        if (c >= 0x20 && c != '"' && c != '\\') continue;
+        if (i > run) ksb_add(b, (const char *)d + run, i - run);
+        run = i + 1;
         switch (c) {
         case '"': ksb_c(b, "\\\""); break;
         case '\\': ksb_c(b, "\\\\"); break;
@@ -826,13 +831,13 @@ static void kx_json_quote(KSB *b, KStr *s) {
         case '\t': ksb_c(b, "\\t"); break;
         case '\b': ksb_c(b, "\\b"); break;
         case '\f': ksb_c(b, "\\f"); break;
-        default:
-            if (c < 0x20) { char t[8]; snprintf(t, sizeof t, "\\u%04x", c); ksb_c(b, t); }
-            else ksb_add(b, (char *)&c, 1);
+        default: { char t[8]; snprintf(t, sizeof t, "\\u%04x", c); ksb_c(b, t); }
         }
     }
+    if (len > run) ksb_add(b, (const char *)d + run, len - run);
     ksb_c(b, "\"");
 }
+static void kx_json_quote(KSB *b, KStr *s) { kx_json_quote_n(b, s->data, s->len); }
 static void kx_indent(KSB *b, const char *ind, int depth) { ksb_c(b, "\n"); for (int i = 0; i < depth; i++) ksb_c(b, ind); }
 /* writes a KJ tree */
 static void kj_write(KSB *b, KJ *j, const char *ind, int depth) {
@@ -1021,6 +1026,88 @@ static KJ *kj_enc(KS v, KD *d, KJErr *er) {
         return kj_new(KJ_NULL);
     }
 }
+/* Compact JSON written straight from a value and its descriptor, without building a KJ tree first: the same
+   output as kj_write(kj_enc(...), "") (a request handler's answer goes through here). */
+static void kj_encw(KSB *b, KS v, KD *d, KJErr *er) {
+    if (er->failed) return;
+    switch (d->k) {
+    case KD_INT: ksb_int(b, (int64_t)v); return;
+    case KD_FLOAT: kx_js_num(b, k_s2d(v)); return;
+    case KD_BOOL: ksb_c(b, v ? "true" : "false"); return;
+    case KD_UNIT: ksb_c(b, "null"); return;
+    case KD_STR: kx_json_quote(b, K_S2P(KStr *, v)); return;
+    case KD_LIST: {
+        KList *l = K_S2P(KList *, v);
+        ksb_c(b, "[");
+        for (int64_t i = 0; i < l->len; i++) { if (i) ksb_c(b, ","); kj_encw(b, k_list_data(l)[i], d->e, er); }
+        ksb_c(b, "]");
+        return;
+    }
+    case KD_MAP: {
+        KMap *m = K_S2P(KMap *, v);
+        KList *ks = k_map_keys(m), *vs = k_map_values(m);
+        int obj = d->kk->k == KD_STR;
+        ksb_c(b, obj ? "{" : "[");
+        for (int64_t i = 0; i < ks->len; i++) {
+            if (i) ksb_c(b, ",");
+            if (obj) { kx_json_quote(b, K_S2P(KStr *, k_list_data(ks)[i])); ksb_c(b, ":"); }
+            else { ksb_c(b, "["); kj_encw(b, k_list_data(ks)[i], d->kk, er); ksb_c(b, ","); }
+            kj_encw(b, k_list_data(vs)[i], d->v, er);
+            if (!obj) ksb_c(b, "]");
+        }
+        ksb_c(b, obj ? "}" : "]");
+        return;
+    }
+    case KD_TUPLE: {
+        KS *s = K_S2P(KS *, v);
+        ksb_c(b, "[");
+        for (int i = 0; i < d->nf; i++) { if (i) ksb_c(b, ","); kj_encw(b, s[i], d->ftypes[i], er); }
+        ksb_c(b, "]");
+        return;
+    }
+    case KD_STRUCT: {
+        KS *s = K_S2P(KS *, v);
+        ksb_c(b, "{");
+        for (int i = 0; i < d->nf; i++) {
+            if (i) ksb_c(b, ",");
+            ksb_c(b, "\""); ksb_c(b, d->fnames[i]); ksb_c(b, "\":");      /* field names are identifiers */
+            kj_encw(b, s[i], d->ftypes[i], er);
+        }
+        ksb_c(b, "}");
+        return;
+    }
+    case KD_ENUM: {
+        KEnum *e = K_S2P(KEnum *, v);
+#ifdef KT_JNull
+        if (!strcmp(d->name, "Json")) { kj_write(b, kj_from_json(e), "", 0); return; }
+#endif
+        if (!strcmp(d->name, "Option")) {
+            if (e->tag == K_TAG_NONE) ksb_c(b, "null"); else kj_encw(b, e->f[0], d->vs[0].types[0], er);
+            return;
+        }
+        if (!strcmp(d->name, "Result")) {
+            int ok = e->tag == K_TAG_OK;
+            ksb_c(b, ok ? "{\"ok\":" : "{\"err\":");
+            kj_encw(b, e->f[0], d->vs[ok ? 0 : 1].types[0], er);
+            ksb_c(b, "}");
+            return;
+        }
+        KDV *var = NULL;
+        for (int i = 0; i < d->nv; i++) if (d->vs[i].tag == e->tag) var = &d->vs[i];
+        if (!var->nf) { kx_json_quote_n(b, var->name, (int64_t)strlen(var->name)); return; }
+        ksb_c(b, "{\"type\":"); kx_json_quote_n(b, var->name, (int64_t)strlen(var->name));
+        for (int i = 0; i < var->nf; i++) {
+            ksb_c(b, ",\""); ksb_c(b, var->labels[i]); ksb_c(b, "\":");
+            kj_encw(b, e->f[i], var->types[i], er);
+        }
+        ksb_c(b, "}");
+        return;
+    }
+    default:
+        er->failed = 1;
+        er->msg = kx_fmt("a %s value cannot be turned into JSON", d->name ? d->name : "function");
+    }
+}
 static const char *kj_kind(KJ *j, char *buf, size_t n) {
     switch (j->t) {
     case KJ_NULL: return "null";
@@ -1181,9 +1268,15 @@ static KS kj_dec(KJ *j, KD *d, KSB *path, KJErr *er) {
 static void kx_json_fail(const char *op, KJErr *er) { k_fail("E407", kx_line, kx_col, "json_%s: %s", op, er->msg->data); }
 static KStr *kx_json_encode_d(KS v, KD *d, const char *ind, const char *op) {
     KJErr er = {0, NULL};
+    KSB b; ksb_init(&b);
+    if (!*ind) {
+        kj_encw(&b, v, d, &er);
+        if (er.failed) kx_json_fail(op, &er);
+        return ksb_done(&b);
+    }
     KJ *j = kj_enc(v, d, &er);
     if (er.failed) kx_json_fail(op, &er);
-    KSB b; ksb_init(&b); kj_write(&b, j, ind, 0);
+    kj_write(&b, j, ind, 0);
     return ksb_done(&b);
 }
 static KStr *kx_json_encode(KS v, KD *d) { return kx_json_encode_d(v, d, "", "encode"); }
@@ -1421,17 +1514,20 @@ static KEnum *kx_sqlite_query(void *dbp, KStr *sql, KList *params) {
     if (e) return e;
     KList *rows = kx_list_empty();
     int rc, nc = sqlite3_column_count(st);
+    KS names[64];                         /* the column names, made once per query */
+    for (int c = 0; c < nc && c < 64; c++) names[c] = k_p2s(k_cstr(sqlite3_column_name(st, c)));
+    KEnum *null = k_enum_new(KT_SqlNull, 0);   /* holds no fields, so every NULL can share it */
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
-        KMap *m = k_map_empty(1);
+        KMap *m = k_map_view(k_mapdata_new(nc, 1), 0);
         for (int c = 0; c < nc; c++) {
             KEnum *v;
             switch (sqlite3_column_type(st, c)) {
             case SQLITE_INTEGER: v = k_enum_new(KT_SqlInt, 1, (KS)sqlite3_column_int64(st, c)); break;
             case SQLITE_FLOAT: v = k_enum_new(KT_SqlFloat, 1, k_d2s(sqlite3_column_double(st, c))); break;
-            case SQLITE_NULL: v = k_enum_new(KT_SqlNull, 0); break;
+            case SQLITE_NULL: v = null; break;
             default: v = k_enum_new(KT_SqlText, 1, k_p2s(k_str_new((const char *)sqlite3_column_text(st, c), sqlite3_column_bytes(st, c))));
             }
-            m = k_map_put(m, k_p2s(k_cstr(sqlite3_column_name(st, c))), k_p2s(v));
+            m = k_map_put(m, c < 64 ? names[c] : k_p2s(k_cstr(sqlite3_column_name(st, c))), k_p2s(v));
         }
         rows = k_list_push(rows, k_p2s(m));
     }
@@ -1479,12 +1575,22 @@ static const char *kx_sql_kind(KEnum *v) {
 }
 #define KX_SQL_FAIL(...) do { er->failed = 1; er->msg = kx_fmt(__VA_ARGS__); return 0; } while (0)
 #define KX_SQL_BAD(want) KX_SQL_FAIL("column `%s` holds %s, but %s needs %s", col, kx_sql_kind(v), target, want)
-static KS kx_sql_col(KEnum *v, KD *d, const char *col, const char *target, KJErr *er) {
+/* what a column is read into, for error messages (formatted only when one is needed) */
+typedef struct { const char *type, *field; int index; } KXSqlTarget;
+static const char *kx_sql_target(const KXSqlTarget *t, char *buf, size_t n) {
+    if (t->type) snprintf(buf, n, "field `%s.%s`", t->type, t->field);
+    else if (t->index >= 0) snprintf(buf, n, "tuple value .%d", t->index);
+    else snprintf(buf, n, "the result");
+    return buf;
+}
+static KS kx_sql_col(KEnum *v, KD *d, const char *col, const KXSqlTarget *tg, KJErr *er) {
     if (er->failed) return 0;
+    char tbuf[300];
+#define target kx_sql_target(tg, tbuf, sizeof tbuf)
     KS x = v->tag == KT_SqlNull ? 0 : v->f[0];  /* NULL carries no value */
     if (d->k == KD_ENUM && !strcmp(d->name, "Option")) {
         if (v->tag == KT_SqlNull) return k_p2s(K_NONE);
-        KS r = kx_sql_col(v, d->vs[0].types[0], col, target, er);
+        KS r = kx_sql_col(v, d->vs[0].types[0], col, tg, er);
         return er->failed ? 0 : k_p2s(k_some(r));
     }
     int raw = d->k == KD_ENUM && !strcmp(d->name, "SqlValue");
@@ -1521,10 +1627,12 @@ static KS kx_sql_col(KEnum *v, KD *d, const char *col, const char *target, KJErr
     KS r = kj_dec(j, d, &path, &je);
     if (je.failed) KX_SQL_FAIL("column `%s`: %s", col, je.msg->data);
     return r;
+#undef target
 }
 static KEnum *kx_sql_read(KList *rows, KD *d) {
     KJErr er = {0, NULL};
     KList *out = k_list_with_cap(0, rows->len + 1);
+    int64_t cols[64];
     for (int64_t r = 0; r < rows->len && !er.failed; r++) {
         KMap *m = k_map_compact(K_S2P(KMap *, k_list_data(rows)[r]));
         int64_t n = m->len;
@@ -1533,8 +1641,8 @@ static KEnum *kx_sql_read(KList *rows, KD *d) {
             if (n != d->nf) { er.failed = 1; er.msg = kx_fmt("the query returns %lld column(s) but the tuple has %d values", (long long)n, d->nf); break; }
             KS *s = (KS *)K_ALLOC(sizeof(KS) * d->nf);
             for (int i = 0; i < d->nf; i++) {
-                char target[32]; snprintf(target, sizeof target, "tuple value .%d", i);
-                s[i] = kx_sql_col(K_S2P(KEnum *, m->d->vals[i]), d->ftypes[i], K_S2P(KStr *, m->d->keys[i])->data, target, &er);
+                KXSqlTarget tg = {NULL, NULL, i};
+                s[i] = kx_sql_col(K_S2P(KEnum *, m->d->vals[i]), d->ftypes[i], K_S2P(KStr *, m->d->keys[i])->data, &tg, &er);
             }
             val = k_p2s(s);
         } else if (d->k == KD_STRUCT) {
@@ -1542,14 +1650,17 @@ static KEnum *kx_sql_read(KList *rows, KD *d) {
             for (int i = 0; i < d->nf && !er.failed; i++) {
                 const char *f = d->fnames[i];
                 int64_t at = -1;
-                for (int64_t c = 0; c < n; c++) if (!strcmp(K_S2P(KStr *, m->d->keys[c])->data, f)) at = c;
+                /* every row has the same columns in the same order: look each field up once */
+                if (r > 0 && i < 64 && cols[i] >= 0 && cols[i] < n && !strcmp(K_S2P(KStr *, m->d->keys[cols[i]])->data, f)) at = cols[i];
+                else for (int64_t c = 0; c < n; c++) if (!strcmp(K_S2P(KStr *, m->d->keys[c])->data, f)) at = c;
+                if (i < 64) cols[i] = at;
                 if (at < 0) {
                     er.failed = 1;
                     er.msg = kx_fmt("the query has no column `%s` for field `%s.%s`; select it, or name a column with `as %s`", f, d->name, f, f);
                     break;
                 }
-                KStr *target = kx_fmt("field `%s.%s`", d->name, f);
-                s[i] = kx_sql_col(K_S2P(KEnum *, m->d->vals[at]), d->ftypes[i], f, target->data, &er);
+                KXSqlTarget tg = {d->name, f, -1};
+                s[i] = kx_sql_col(K_S2P(KEnum *, m->d->vals[at]), d->ftypes[i], f, &tg, &er);
             }
             val = k_p2s(s);
         } else {
@@ -1558,7 +1669,8 @@ static KEnum *kx_sql_read(KList *rows, KD *d) {
                 er.msg = kx_fmt("the query returns %lld columns; select exactly one to read single values, or read the rows into a struct or a tuple", (long long)n);
                 break;
             }
-            val = kx_sql_col(K_S2P(KEnum *, m->d->vals[0]), d, K_S2P(KStr *, m->d->keys[0])->data, "the result", &er);
+            KXSqlTarget tg = {NULL, NULL, -1};
+            val = kx_sql_col(K_S2P(KEnum *, m->d->vals[0]), d, K_S2P(KStr *, m->d->keys[0])->data, &tg, &er);
         }
         out = k_list_push(out, val);
     }
