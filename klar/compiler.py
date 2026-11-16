@@ -884,12 +884,15 @@ class Compiler:
                 return f"({pos}{JSON_OPS[op]}({code}, &{desc}))"
             cname = self.native_extern(e, d)
             codes = []
+            def generic(t):           # a bare type parameter (`T`): the C function takes or returns a KS slot
+                t = prune(t)
+                return isinstance(t, TVar) or (isinstance(t, TCon) and t.name in sig.tparams and not t.args)
             for a, (_, pt) in zip(args, sig.params):
                 code = self.expr(a)
-                codes.append(self.to_s(code, self.T(a.ty)) if isinstance(prune(pt), TVar) else code)
+                codes.append(self.to_s(code, self.T(a.ty)) if generic(pt) else code)
             rt = self.T(e.ty)
             call = f"{cname}({', '.join(codes)})"
-            if isinstance(prune(sig.ret), TVar):
+            if generic(sig.ret):
                 call = self.from_s(call, rt)
             if self.kind(rt) == "extern":
                 return f"({pos}(void*){call})"
