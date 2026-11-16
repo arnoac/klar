@@ -162,7 +162,7 @@ marked = "18.2.0"
 
 `use textkit { shout }` loads the dependency's `lib.klar`; `use textkit.case { ... }` its `case.klar`.
 `klar add NAME --path DIR | --git URL [--tag T]` (or `klar add --python NAME==VERSION`) edits `klar.toml` and
-installs; `klar install` fetches into `.klar/`; `klar.lock` pins each git dependency to a commit (commit it);
+installs; `klar install` fetches into `.klar/`; `klar.lock` pins each dependency by commit or hash (commit it);
 `klar update` moves pins forward. Unimported dependency functions never clash with yours;
 types and variants must be unique. Package errors are E601.
 
@@ -361,7 +361,7 @@ Operations that can fail return `Result[T, str]`.
 **Pages are values.** `std.html` element functions take attributes and children:
 `div([class("card")], [h2([], [text("Hi {name}")])])`. Text is escaped (except `raw_html`).
 `Html[M]` is parameterised by the message type its events produce; server pages use `Html[unit]`.
-`html_page(title, css, body)` makes a full document with the built-in theme (slim, neutral, light and dark);
+`html_page(title, css, body)` makes a full document with the built-in theme (light and dark);
 restyle it with `kit_theme(...)` or CSS variables (`--accent`, `--radius`, `--font`).
 **Layout:** options are attributes; phone first, then wider screens:
 `grid([cols(1), cols_at(Tablet, 3), gap(Sm)], tiles)`, `container([max_width(Narrow)], ...)`.
@@ -379,6 +379,9 @@ web_serve(8080, routes)   // 404 / 405 automatically; HOST=0.0.0.0 to listen bey
 `web_cookies(req)` read requests; `web_redirect`, `web_set_cookie`, `web_clear_cookie`, `web_json` and `web_file` answer.
 Test handlers by calling `web_handle(routes, web_request("GET", "/items/3", ""))`. Listen on
 `web_port(8080)`, which reads PORT (set by `klar dev` and hosting platforms).
+
+**Safe by default:** cross-site POST/PUT/PATCH/DELETE get 403 unless `web_cross_origin(route)`; `web_redirect`
+stays on-site.
 
 **JSON is automatic.** `json_encode(value)` and `json_decode(text)` work for every type; the type to read
 comes from where the result goes. Share one module of types between the frontend and the backend:
@@ -422,9 +425,8 @@ storage (`ui_save`; read back with `ui_load` in `main`), navigation (`ui_go`), f
 (`ui_listen`). `ui_run_routed` adds an `on_url: fn(str) -> Msg` called on start-up, link clicks and
 back/forward.
 
-**Develop with `klar dev`.** `klar dev server.klar app.klar` runs the backend on Node (PORT set), builds
-`app.html`, and serves both at http://127.0.0.1:8000. Saving rebuilds and reloads pages, showing
-build errors. `klar dev app.klar` alone serves a browser app.
+**Develop with `klar dev`.** `klar dev server.klar app.klar` serves the backend (on Node) and the app at
+http://127.0.0.1:8000, rebuilding and reloading on save.
 
 ## 8. Diagnostics
 
@@ -453,6 +455,7 @@ checker reports all independent errors in one run. `klar check --json file.klar`
 | E501 | not supported by this `klar build` target | E312 | trait not implemented |
 | E601 | klar.toml or a dependency is missing or invalid | E409 | deadlock: every task waiting |
 | E206 | bad named arguments | E401–E407 | runtime: index, div by zero, panic, assert, missing key, stack overflow, io/interop |
+| E313 | SQL built from strings | | |
 
 `klar explain E306` explains any code.
 
@@ -460,16 +463,17 @@ checker reports all independent errors in one run. `klar check --json file.klar`
 
 ```
 klar run file.klar [args...]     check, then run main() in the interpreter
-klar build file.klar [-o exe]    native executable (tcc if installed: fast compile)
+klar build file.klar [-o exe]    native executable
 klar build --release file.klar   gcc/clang -O2 (fastest code)
-klar build --target node f.klar  Node.js module (servers, tools): node f.mjs
-klar build --target web f.klar   self-contained web page (std.ui apps): f.html
+klar build --target node f.klar  Node.js module: node f.mjs
+klar build --target web f.klar   self-contained web page: f.html
 klar build --target wasm f.klar  WebAssembly: f.wasm, f.mjs
-klar dev server.klar app.klar    serve a backend and/or browser app; rebuild and reload on save (--port N)
+klar dev server.klar app.klar    serve a backend and/or app, reloading on save (--port N)
 klar check file.klar [--json]    type-check only
 klar test file.klar [--json]     run every `test` block
 klar fmt file.klar dir/          format in place (--check: list unformatted files)
 klar new|add|install|update      packages (see Packages)
+klar audit                       check dependencies for known vulnerabilities
 klar lsp                         language server for editors (see editors/README.md)
 klar spec                        print this reference
 klar explain CODE                explain an error code

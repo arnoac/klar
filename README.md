@@ -121,6 +121,15 @@ extern "js:marked.parse" fn markdown_to_html(markdown: str) -> str
 For editors, `./klarc lsp` is a language server: errors as you type with quick fixes, hover types, go to
 definition, rename and completion. Setup for VS Code, Neovim and Helix is in [editors/README.md](editors/README.md).
 
+## Security
+
+Web apps are safe by default: escaped HTML, no event-handler or `javascript:` attributes, cross-site form
+posts refused, security headers and Secure, HttpOnly cookies, on-site redirects, request size limits. SQL
+built from strings is a compile error (E313). Dependencies are pinned and hash-checked, and no install script
+ever runs. `./klarc audit` checks every Python, npm and git dependency, and Klar itself, against published
+vulnerability advisories; run it in CI. [SECURITY.md](SECURITY.md) covers reporting a vulnerability, how fixes
+reach you, and the known limits.
+
 ## Layout
 
 | Path | Contents |

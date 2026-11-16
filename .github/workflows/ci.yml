@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 5 * * *"     # daily, so a newly published advisory fails `klar audit` the next morning
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: C libraries for native builds
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsqlite3-dev libpcre2-dev libssl-dev
+      - name: Tests
+        run: python -m unittest discover tests
+
+  # Every native test again, with the generated C compiled under AddressSanitizer and UndefinedBehaviorSanitizer:
+  # any out-of-bounds access, use after free or undefined behaviour in the C runtime fails the run.
+  sanitizers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: C libraries (no Boehm GC: it does not mix with AddressSanitizer)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsqlite3-dev libpcre2-dev libssl-dev
+      - name: Tests with sanitizers
+        env:
+          KLAR_CFLAGS: -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined
+          ASAN_OPTIONS: detect_leaks=0:use_sigaltstack=0
+        run: python -m unittest discover tests
+
+  # Known vulnerabilities in the dependencies of the example apps and in Klar itself.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: klar audit
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          status=0
+          for d in $(find examples -name klar.toml -not -path "*/node_modules/*" -exec dirname {} \; | sort); do
+            echo "::group::$d"
+            (cd "$d" && python -m klar audit) || status=1
+            echo "::endgroup::"
+          done
+          exit $status

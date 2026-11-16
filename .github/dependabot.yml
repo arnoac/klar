@@ -1,0 +1,17 @@
+# Keeps the pinned GitHub Actions and the VS Code extension's npm packages up to date. Known vulnerabilities in
+# any package-lock.json in the repository (including the example apps) are reported as Dependabot alerts once
+# alerts are on; the example apps take their npm versions from klar.toml, so fix those with `klar add --npm`.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /editors/vscode
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

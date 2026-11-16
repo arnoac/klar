@@ -42,16 +42,19 @@ structured errors).
      where the checker can prove no overflow (recursive `fib` is about 2 times behind C);
    * WebAssembly: a garbage collector for long allocation-heavy calls (today each call gets a fresh heap, up
      to 4 GB), and closing the 1.7-1.9x gap to hand-written JavaScript on list-heavy kernels (bench/wasm).
-5. **More for the web.** Keyed list diffing for long lists, websockets for two-way messages, CSRF protection in
-   `std.web` (the board relies on SameSite cookies), and keeping the app's state across `klar dev` reloads.
-6. **GUI and games.** Browser apps work today through `std.ui` (and a canvas command is a small addition);
+5. **More for the web.** Keyed list diffing for long lists, websockets for two-way messages, and keeping the
+   app's state across `klar dev` reloads.
+6. **Security** (see [SECURITY.md](SECURITY.md)): an opt-in for packages that must run build scripts,
+   rate limiting and login lockout helpers in `std.web`, a stricter per-app Content-Security-Policy, and
+   detecting edits inside `.klar/deps`.
+7. **GUI and games.** Browser apps work today through `std.ui` (and a canvas command is a small addition);
    desktop toolkits through Python `extern`.
 
 ## Known limits today
 
 * Servers handle requests concurrently in every backend, but Klar code runs one task at a time, so a
-  CPU-heavy handler still holds up the others (io waits do not). A runtime error in a handler ends a native
-  server (the interpreter and Node answer 500 and go on). Both bind to 127.0.0.1
+  CPU-heavy handler still holds up the others (io waits do not). A runtime error in a handler answers that
+  request with 500 in every backend (a stack overflow still ends a native server). Servers bind to 127.0.0.1
   unless HOST is set.
 * In the interpreter, lists are copied on update, so building a large list one `push` at a time is O(n²)
   (compiled code does it in O(1) amortised). The interpreter is about 20 to 100 times slower than Python.
